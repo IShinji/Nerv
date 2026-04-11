@@ -26,7 +26,10 @@ Model tiers (higher = more capable but more expensive):
 - 2: complex tasks, paid API
 - 3: critical/frontier tasks
 
-Agent types: general, coder, researcher, writer, sysadmin
+Agent types:
+DO NOT restrict yourself to basic names. Provide the MOST SPECIFIC professional \
+role title required for the user's task in lowercase snake_case. 
+Examples: `frontend_developer`, `database_admin`, `financial_analyst`, `legal_advisor`, `system_architect`, `writer`, `general`.
 
 RULES:
 1. Return ONLY valid JSON, no explanation

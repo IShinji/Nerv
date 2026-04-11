@@ -106,3 +106,37 @@ def shell(command: str) -> ToolResult:
     except Exception as e:
          return ToolResult(content=f"Shell execution failed: {e}", is_error=True)
 
+# -----------------------------------------------------------------------------
+# Swarm Tools (Orchestration context needed)
+# -----------------------------------------------------------------------------
+
+@registry.register(
+    name="delegate_task",
+    description="Ask another specialized professional agent to do a task and return the result to you. Use this to consult domain experts.",
+    requires_confirmation=False,
+)
+async def delegate_task(role_name: str, task_description: str) -> ToolResult:
+    """Spawn or consult a sub-agent for a specific task."""
+    from nerv.orchestrator.orchestrator import Orchestrator
+    import pathlib
+    
+    # We build a temporary orchestrator for the sub-agent
+    orch = Orchestrator(pathlib.Path.cwd())
+    
+    # Fake the route result
+    from nerv.models import RouteResult
+    route = RouteResult(
+        intent=role_name,
+        complexity="high",
+        model_tier=1,
+        agent_type=role_name, # This forces the Factory to spawn this exact role!
+        reply=""
+    )
+    
+    # We prefix the message so the sub-agent knows its context
+    prompt = f"[DELEGATION TASK]\nYou have been spawned by a higher-level architect agent to handle a sub-task.\nTask Description: {task_description}"
+    
+    response = await orch.dispatch(prompt, route)
+    
+    return ToolResult(content=f"Expert ({role_name}) replied: {response}")
+

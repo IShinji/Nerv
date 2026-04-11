@@ -43,8 +43,8 @@ class Orchestrator:
         if route_result.reply:
             return route_result.reply
 
-        # Find the matching agent
-        agent = self._find_agent(route_result)
+        # Find the matching agent, or manufacture one
+        agent = await self._find_agent(route_result, message)
         logger.info(
             "Dispatching to agent '%s' (intent=%s, tier=%d)",
             agent.name,
@@ -80,14 +80,30 @@ class Orchestrator:
             logger.error("Model call failed: %s", e)
             return f"I encountered an error while processing your request: {e}"
 
-    def _find_agent(self, route_result: RouteResult) -> AgentDefinition:
-        """Find the best matching agent for the routing result."""
+    async def _find_agent(self, route_result: RouteResult, message_hint: str) -> AgentDefinition:
+        """Find the best matching agent for the routing result, or create one if missing."""
         agent = self.registry.find_by_type(route_result.agent_type)
         if agent:
             return agent
 
+        logger.info("Agent '%s' not found. Manufacturing via AgentFactory...", route_result.agent_type)
+        
+        # Avoid circular import at top level
+        from nerv.orchestrator.factory import AgentFactory
+        import pathlib
+        
+        factory = AgentFactory(pathlib.Path.cwd())
+        # The user's original message is a hint for persona creation
+        new_agent = await factory.create_agent(route_result.agent_type, message_hint)
+        
+        if new_agent:
+            # Hot-reload the new agent into memory
+            self.registry.agents[new_agent.name] = new_agent
+            logger.info("Successfully birthed and registered new expert: '%s'", new_agent.name)
+            return new_agent
+
         logger.warning(
-            "No agent found for type '%s', using default",
+            "AgentFactory failed for type '%s', using default general fallback",
             route_result.agent_type,
         )
         return self.registry.get_default()
@@ -160,7 +176,11 @@ class Orchestrator:
                     else:
                         # Execute natively
                         logger.debug("Executing tool %s with args %s", func_name, arguments)
-                        result = tool_def.func(**arguments)
+                        import inspect
+                        if inspect.iscoroutinefunction(tool_def.func):
+                            result = await tool_def.func(**arguments)
+                        else:
+                            result = tool_def.func(**arguments)
                         tool_result_content = result.content
 
                     # Send the result back to the model
