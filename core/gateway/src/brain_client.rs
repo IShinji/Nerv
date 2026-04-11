@@ -16,6 +16,7 @@ pub struct BrainClient {
     python_command: String,
     brain_module: String,
     brain_dir: String,
+    #[allow(dead_code)]
     restart_max: u32,
 }
 
@@ -157,6 +158,7 @@ impl BrainClient {
     }
 
     /// Check if the process is running by checking its existence.
+    #[allow(dead_code)]
     pub async fn is_running(&self) -> bool {
         if let Some(child) = self.child.lock().await.as_mut() {
             // try_wait returns Ok(None) if the process is still running

@@ -25,8 +25,10 @@ pub trait ChannelAdapter: Send + Sync {
     async fn start(&self, gateway_tx: mpsc::Sender<IncomingMessage>) -> Result<()>;
 
     /// Stop the adapter gracefully.
+    #[allow(dead_code)]
     async fn stop(&self) -> Result<()>;
 
     /// Identify which channel this adapter serves.
+    #[allow(dead_code)]
     fn channel_type(&self) -> ChannelType;
 }
