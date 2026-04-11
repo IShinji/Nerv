@@ -137,24 +137,43 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Start the appropriate adapter(s)
-    // For now we only run one adapter at a time based on config priority
+    // Start the appropriate adapter(s) concurrently!
+    let mut adapter_tasks = vec![];
+
     if config.channels.cli.enabled {
         info!("Starting CLI adapter...");
-        let cli = CliAdapter::new();
-        cli.start(gateway_tx.clone()).await?;
+        let tx_cli = gateway_tx.clone();
+        adapter_tasks.push(tokio::spawn(async move {
+            let cli = CliAdapter::new();
+            if let Err(e) = cli.start(tx_cli).await {
+                error!("CLI adapter crashed: {}", e);
+            }
+        }));
     }
 
     #[cfg(feature = "telegram")]
     if config.channels.telegram.enabled && !config.channels.telegram.bot_token.is_empty() {
         info!("Starting Telegram adapter...");
-        let telegram = TelegramAdapter::new(config.channels.telegram.bot_token.clone());
-        telegram.start(gateway_tx.clone()).await?;
+        let tx_tg = gateway_tx.clone();
+        let token = config.channels.telegram.bot_token.clone();
+        adapter_tasks.push(tokio::spawn(async move {
+            let telegram = TelegramAdapter::new(token);
+            if let Err(e) = telegram.start(tx_tg).await {
+                error!("Telegram adapter crashed: {}", e);
+            }
+        }));
+    }
+
+    // Hang until all running adapters close or crash
+    drop(gateway_tx);
+    for task in adapter_tasks {
+        if let Err(e) = task.await {
+            error!("Adapter task spawned failed: {}", e);
+        }
     }
 
     // Cleanup
     heartbeat_task.abort();
-    drop(gateway_tx);
     processor.await?;
     brain.stop().await?;
     info!("Nerv gateway stopped");
