@@ -1,0 +1,72 @@
+use anyhow::Result;
+use nerv_shared::message::{ChannelType, Message};
+use teloxide::prelude::*;
+use teloxide::types::Message as TgMessage;
+use tokio::sync::mpsc;
+use tracing::{error, info};
+
+use super::IncomingMessage;
+
+/// Telegram adapter — communicates with Telegram Bot API via teloxide.
+pub struct TelegramAdapter {
+    bot_token: String,
+}
+
+impl TelegramAdapter {
+    pub fn new(bot_token: String) -> Self {
+        Self { bot_token }
+    }
+}
+
+#[async_trait::async_trait]
+impl super::ChannelAdapter for TelegramAdapter {
+    async fn start(&self, gateway_tx: mpsc::Sender<IncomingMessage>) -> Result<()> {
+        info!("Telegram adapter started");
+
+        let bot = Bot::new(&self.bot_token);
+
+        teloxide::repl(bot, move |bot: Bot, msg: TgMessage| {
+            let gateway_tx = gateway_tx.clone();
+            async move {
+                let text = msg.text().unwrap_or("").to_string();
+                if text.is_empty() {
+                    return Ok(());
+                }
+
+                let chat_id = msg.chat.id;
+                let sender = chat_id.0.to_string();
+
+                let message = Message::new_text(ChannelType::Telegram, &sender, &text);
+                let (reply_tx, mut reply_rx) = mpsc::channel::<Message>(1);
+
+                let incoming = IncomingMessage { message, reply_tx };
+
+                if gateway_tx.send(incoming).await.is_err() {
+                    error!("Gateway channel closed");
+                    return Ok(());
+                }
+
+                // Wait for the brain's response and send it back to Telegram
+                if let Some(response) = reply_rx.recv().await {
+                    if let Some(response_text) = response.text() {
+                        bot.send_message(chat_id, response_text).await?;
+                    }
+                }
+
+                Ok(())
+            }
+        })
+        .await;
+
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<()> {
+        info!("Telegram adapter stopped");
+        Ok(())
+    }
+
+    fn channel_type(&self) -> ChannelType {
+        ChannelType::Telegram
+    }
+}

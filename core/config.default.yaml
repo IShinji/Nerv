@@ -1,0 +1,25 @@
+# Nerv — Default Configuration
+# Copy to config.yaml and customize for your setup.
+# config.yaml is gitignored — safe for secrets.
+
+channels:
+  cli:
+    enabled: true          # Terminal adapter for development/debugging
+  telegram:
+    enabled: false         # Set to true and add bot_token in config.yaml
+    bot_token: ""          # Telegram Bot API token
+
+models:
+  router:
+    provider: "ollama"     # ollama | anthropic | openai | google
+    model: "qwen2.5:3b"   # Local model for intent classification (~200 tokens)
+    base_url: "http://localhost:11434"
+
+logging:
+  level: "info"            # trace | debug | info | warn | error
+
+# Brain (Python) process settings
+brain:
+  python_command: "uv run python"  # Uses uv-managed venv in brain/
+  module: "nerv"            # Python module to run (python -m nerv)
+  restart_max: 3            # Max restart attempts on crash

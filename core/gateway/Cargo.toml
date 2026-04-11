@@ -1,0 +1,28 @@
+[package]
+name = "nerv-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nerv"
+path = "src/main.rs"
+
+[dependencies]
+nerv-shared = { path = "../shared" }
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+teloxide = { version = "0.13", features = ["macros"], optional = true }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = ["telegram"]
+telegram = ["dep:teloxide"]
+
+[dev-dependencies]
+tempfile = "3"

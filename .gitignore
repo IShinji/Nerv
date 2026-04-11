@@ -1,0 +1,42 @@
+# Rust
+/core/target/
+**/*.rs.bk
+
+# Internal docs (never commit)
+NERV-PRD.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+brain/.venv/
+
+# uv
+brain/uv.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment / Secrets
+.env
+*.env
+config.yaml
+api_keys.encrypted
+
+# Nerv personal data (never commit)
+personal/
+
+# Logs
+*.log
+logs/
