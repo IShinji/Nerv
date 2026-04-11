@@ -17,9 +17,11 @@ from nerv.router.prompt import ROUTER_SYSTEM_PROMPT, ROUTER_USER_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
+from nerv.hardware import PROFILE
+
 # Defaults — can be overridden by environment variables for flexibility
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
-DEFAULT_MODEL = "qwen2.5:3b"
+DEFAULT_MODEL = PROFILE["recommended_router_model"]
 OLLAMA_TIMEOUT = 30.0
 
 
@@ -66,6 +68,13 @@ class Router:
     async def _call_ollama(self, user_prompt: str) -> RouteResult:
         """Call Ollama HTTP API for chat completion."""
         url = f"{self.base_url}/api/chat"
+        options = {
+            "temperature": 0.1,  # Low temp for consistent classification
+            "num_predict": 256,  # Cap output tokens
+        }
+        # Merge in hardware optimizations (like num_thread, num_ctx)
+        options.update(PROFILE.get("ollama_options", {}))
+        
         payload = {
             "model": self.model,
             "messages": [
@@ -74,10 +83,7 @@ class Router:
             ],
             "stream": False,
             "format": "json",
-            "options": {
-                "temperature": 0.1,  # Low temp for consistent classification
-                "num_predict": 256,  # Cap output tokens
-            },
+            "options": options,
         }
 
         logger.debug("Calling Ollama: %s", url)

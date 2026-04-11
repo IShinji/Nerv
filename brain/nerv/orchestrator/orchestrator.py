@@ -111,8 +111,9 @@ class Orchestrator:
 
     def _select_model(self, tier: int) -> str:
         """Select an Ollama model based on the tier."""
+        from nerv.hardware import PROFILE
         model_map = {
-            0: os.environ.get("NERV_MODEL_TIER0", "qwen2.5:3b"),
+            0: os.environ.get("NERV_MODEL_TIER0", PROFILE["recommended_router_model"]),
             1: os.environ.get("NERV_MODEL_TIER1", "qwen2.5:7b"),
             2: os.environ.get("NERV_MODEL_TIER2", "qwen2.5:14b"),
             3: os.environ.get("NERV_MODEL_TIER3", "qwen2.5:32b"),
@@ -125,15 +126,21 @@ class Orchestrator:
         """Call Ollama with the resolved messages payload and handle function calling loop."""
         url = f"{self.base_url}/api/chat"
         
+        # Import the runtime hardware sniff results
+        from nerv.hardware import PROFILE
+        
         # We loop until the LLM stops calling tools and provides a regular reply
         while True:
+            options = {
+                "num_predict": 1024,
+            }
+            options.update(PROFILE.get("ollama_options", {}))
+            
             payload = {
                 "model": model,
                 "messages": messages,
                 "stream": False,
-                "options": {
-                    "num_predict": 1024,
-                },
+                "options": options,
             }
             if tools_schemas:
                 payload["tools"] = tools_schemas
