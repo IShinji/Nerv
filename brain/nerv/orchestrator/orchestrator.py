@@ -62,9 +62,15 @@ class Orchestrator:
         # Note: the current user_msg is passed in separately for context bounds
         messages = self.context_manager.build_messages(agent, message, max_history_msg=10)
 
+        # Build tools payload if agent has any
+        tools_schemas = None
+        if agent.tools:
+            from nerv.tools.builtins import registry
+            tools_schemas = registry.get_schemas(agent.tools)
+
         # Call the model
         try:
-            response = await self._call_model(model, messages)
+            response = await self._call_model(model, messages, tools_schemas)
             
             # 3. Save assistant's reply to memory
             self.memory.append_message("assistant", response)
@@ -98,26 +104,76 @@ class Orchestrator:
         logger.debug("Selected model for tier %d: %s", tier, model)
         return model
 
-    async def _call_model(self, model: str, messages: list[dict[str, Any]]) -> str:
-        """Call Ollama with the resolved messages payload."""
+    async def _call_model(self, model: str, messages: list[dict[str, Any]], tools_schemas: list[dict[str, Any]] = None) -> str:
+        """Call Ollama with the resolved messages payload and handle function calling loop."""
         url = f"{self.base_url}/api/chat"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            "options": {
-                "num_predict": 1024,
-            },
-        }
+        
+        # We loop until the LLM stops calling tools and provides a regular reply
+        while True:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "options": {
+                    "num_predict": 1024,
+                },
+            }
+            if tools_schemas:
+                payload["tools"] = tools_schemas
 
-        logger.debug("Calling model %s via %s (messages count: %d)", model, url, len(messages))
-        response = await self._client.post(url, json=payload)
-        response.raise_for_status()
+            logger.debug("Calling model %s via %s (messages count: %d)", model, url, len(messages))
+            response = await self._client.post(url, json=payload)
+            response.raise_for_status()
 
-        data = response.json()
-        content = data.get("message", {}).get("content", "")
+            data = response.json()
+            message_obj = data.get("message", {})
+            content = message_obj.get("content", "")
+            tool_calls = message_obj.get("tool_calls", [])
 
-        if not content:
-            return "I received an empty response from the model."
+            # Append the assistant's action to history
+            messages.append(message_obj)
 
-        return content
+            if tool_calls:
+                # LLM wants to use tools - we must intercept and execute
+                logger.info("Model requested %d tool calls", len(tool_calls))
+                from nerv.tools.builtins import registry
+                
+                for tc in tool_calls:
+                    func_details = tc.get("function", {})
+                    func_name = func_details.get("name")
+                    arguments = func_details.get("arguments", {})
+
+                    tool_def = registry.get_tool(func_name)
+                    if not tool_def:
+                        # Agent hallucinated a tool
+                        messages.append({
+                            "role": "tool",
+                            "content": f"Unknown tool: {func_name}",
+                        })
+                        continue
+
+                    # TODO: Implement the PENDING SUSPENSION check properly
+                    if tool_def.requires_confirmation:
+                        # For MVP: We mock the suspended queue reply to the model
+                        tool_result_content = f"[ACTION SUSPENDED] The execution of {func_name} requires user confirmation. I have queued it in 'Pending Actions'. Inform the user."
+                        logger.warning("Tool %s suspended for confirmation.", func_name)
+                    else:
+                        # Execute natively
+                        logger.debug("Executing tool %s with args %s", func_name, arguments)
+                        result = tool_def.func(**arguments)
+                        tool_result_content = result.content
+
+                    # Send the result back to the model
+                    messages.append({
+                        "role": "tool",
+                        "content": tool_result_content,
+                    })
+
+                # Loop continues, querying the LLM with the new context
+                continue
+                
+            # If no tool calls, it's a solid final answer.
+            if not content:
+                return "I received an empty response from the model."
+
+            return content

@@ -4,6 +4,7 @@
 
 # Internal docs (never commit)
 NERV-PRD.md
+claude
 
 # Python
 __pycache__/
