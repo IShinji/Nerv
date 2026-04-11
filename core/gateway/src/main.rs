@@ -120,6 +120,23 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Start heartbeat loop (Priority 4)
+    let brain_heartbeat = brain.clone();
+    let heartbeat_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            if let Ok(result) = brain_heartbeat.call("heartbeat", serde_json::json!({})).await {
+                if let Some(reply) = result.get("reply").and_then(|v| v.as_str()) {
+                    if !reply.is_empty() {
+                        // Print the proactive background hook message to the screen!
+                        println!("\n{reply}\n");
+                    }
+                }
+            }
+        }
+    });
+
     // Start the appropriate adapter(s)
     // For now we only run one adapter at a time based on config priority
     if config.channels.cli.enabled {
@@ -136,6 +153,7 @@ async fn main() -> Result<()> {
     }
 
     // Cleanup
+    heartbeat_task.abort();
     drop(gateway_tx);
     processor.await?;
     brain.stop().await?;

@@ -63,6 +63,15 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
         result = route_result.model_dump()
         result["reply"] = reply
         return result
+    elif method == "heartbeat":
+        orchestrator = _get_orchestrator()
+        import inspect
+        if inspect.iscoroutinefunction(orchestrator.check_background_tasks):
+            reply = await orchestrator.check_background_tasks()
+        else:
+            reply = orchestrator.check_background_tasks()
+        
+        return {"reply": reply or ""}
     elif method == "ping":
         return {"status": "ok"}
     else:

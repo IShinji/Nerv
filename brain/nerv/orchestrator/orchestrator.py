@@ -35,6 +35,7 @@ class Orchestrator:
         self.context_manager = ContextManager(self.memory)
         self.base_url = os.environ.get("NERV_OLLAMA_URL", DEFAULT_OLLAMA_URL)
         self._client = httpx.AsyncClient(timeout=OLLAMA_TIMEOUT)
+        self._pending_notifications: list[str] = []
         logger.info("Orchestrator initialized with %d agents", len(self.registry.list_agents()))
 
     async def dispatch(self, message: str, route_result: RouteResult) -> str:
@@ -171,7 +172,8 @@ class Orchestrator:
                     # TODO: Implement the PENDING SUSPENSION check properly
                     if tool_def.requires_confirmation:
                         # For MVP: We mock the suspended queue reply to the model
-                        tool_result_content = f"[ACTION SUSPENDED] The execution of {func_name} requires user confirmation. I have queued it in 'Pending Actions'. Inform the user."
+                        tool_result_content = f"[ACTION SUSPENDED] The execution of '{func_name}' requires user confirmation. I have queued it in 'Pending Actions'. Inform the user."
+                        self._pending_notifications.append(f"⚠️ [SYSTEM BACKGROUND ALERT] A {func_name} action was suspended requiring your manual confirmation.")
                         logger.warning("Tool %s suspended for confirmation.", func_name)
                     else:
                         # Execute natively
@@ -197,3 +199,15 @@ class Orchestrator:
                 return "I received an empty response from the model."
 
             return content
+
+    async def check_background_tasks(self) -> str | None:
+        """Called periodically by the Gateway heartbeat to check for pending actions.
+        
+        For the MVP, we scan for any suspended actions in the pending_actions queue
+        and remind the user. In real scenarios, this could trigger background LLM sub-tasks.
+        """
+        # A simple hook to notify users if they forgot to approve something.
+        if hasattr(self, "_pending_notifications") and self._pending_notifications:
+            notification = self._pending_notifications.pop(0)
+            return notification
+        return None
