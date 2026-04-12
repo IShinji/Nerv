@@ -834,6 +834,45 @@ def propose_workflow(
 
 
 @registry.register(
+    name="execute_workflow",
+    description=(
+        "Execute a named shared workflow. This delegates control to the Workflow Executor engine "
+        "which will sequentially perform the steps and return the final structurally extracted response."
+    ),
+    requires_confirmation=False,
+)
+async def execute_workflow(workflow_name: str, inputs: str) -> ToolResult:
+    """Execute a shared workflow via the native WorkflowExecutor."""
+    from nerv.workflows.registry import WorkflowRegistry
+    from nerv.workflows.executor import WorkflowExecutor
+    
+    # We must fetch the orchestrator from ipc to inject it into the executor
+    # To avoid circular import, we fetch it locally
+    from nerv.ipc import _get_orchestrator
+    
+    registry_obj = WorkflowRegistry(_get_project_root())
+    workflow = registry_obj.find(workflow_name.strip())
+    
+    if not workflow:
+        return ToolResult(
+            content=f"Error: Shared workflow '{workflow_name}' not found. List workflows first.",
+            is_error=True
+        )
+    
+    if not workflow.steps:
+        return ToolResult(content=f"Error: Workflow '{workflow.name}' has no defined steps.", is_error=True)
+
+    orchestrator = _get_orchestrator()
+    executor = WorkflowExecutor(orchestrator)
+    
+    try:
+        final_result = await executor.execute(workflow, inputs)
+        return ToolResult(content=f"Workflow executed successfully.\\nResult context:\\n{final_result}")
+    except Exception as e:
+        return ToolResult(content=f"Workflow execution failed: {e}", is_error=True)
+
+
+@registry.register(
     name="list_skills",
     description="List shared skills relevant to an agent or task domain.",
     requires_confirmation=False,
