@@ -3,6 +3,7 @@
 import datetime as dt
 from html.parser import HTMLParser
 import json
+import logging
 import pathlib
 import platform
 import shutil
@@ -15,6 +16,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 
 from nerv.tools.registry import ToolResult, registry
+
+logger = logging.getLogger(__name__)
 
 TIMEZONE_ALIASES = {
     "utc": "UTC",
