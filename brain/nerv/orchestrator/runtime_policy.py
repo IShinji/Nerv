@@ -51,7 +51,7 @@ def build_tool_policy(agent: AgentDefinition) -> str:
     if "list_workflows" in available_tools or "get_workflow" in available_tools:
         lines.append("- Check shared workflows before inventing a new multi-step execution plan.")
     if "execute_workflow" in available_tools:
-        lines.append("- If a user asks for a task that closely matches a shared workflow in your library, ALWAYS use the execute_workflow tool to run it directly instead of performing the steps manually.")
+        lines.append("- If a user asks for a task that closely matches a shared workflow in your library, use the execute_workflow tool. However, ALWAYS favor fast, lightweight native tools (like web_search) over heavy UI automation workflows unless the user specifically asks to use the workflow or UI tool.")
     if "list_skills" in available_tools or "get_skill" in available_tools:
         lines.append("- Check shared skills when you need reusable operating guidance for a task domain.")
     if "propose_workflow" in available_tools:
