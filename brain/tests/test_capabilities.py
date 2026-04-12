@@ -1,5 +1,7 @@
 """Tests for capability abstraction and resolution."""
 
+from pathlib import Path
+
 from nerv.capabilities import capability_registry
 from nerv.orchestrator.orchestrator import Orchestrator
 from nerv.orchestrator.registry import AgentDefinition
