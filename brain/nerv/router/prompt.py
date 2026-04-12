@@ -40,11 +40,14 @@ Examples: `frontend_developer`, `database_admin`, `financial_analyst`, `legal_ad
 
 RULES:
 1. Return ONLY valid JSON, no explanation
-2. Always include all fields: intent, complexity, model_tier, agent_type, reply
+2. Always include all fields: intent, complexity, model_tier, agent_type, needs_capabilities, preferred_execution_mode, reply
 3. `reply` should usually be an empty string
 4. Only set `reply` for empty input or ultra-trivial greetings/thanks/acknowledgements
 5. For any real question, request, lookup, time/date question, or anything requiring knowledge, set `reply` to an empty string
-6. Be conservative with model_tier — prefer lower tiers\
+6. `needs_capabilities` should be an array of abstract capability names when obvious, otherwise []
+7. Prefer abstract capability names like `browser.read`, `browser.interactive`, `filesystem.read`, `local.exec` over concrete provider names
+8. `preferred_execution_mode` should usually be `auto`; use `mcp_preferred` when a real app/browser integration is clearly required
+9. Be conservative with model_tier — prefer lower tiers\
 """
 
 ROUTER_USER_TEMPLATE = """\
@@ -52,5 +55,5 @@ Classify this message and return JSON:
 
 Message: {message}
 
-Return format: {{"intent": "...", "complexity": "...", "model_tier": N, "agent_type": "...", "reply": "..."}}\
+Return format: {{"intent": "...", "complexity": "...", "model_tier": N, "agent_type": "...", "needs_capabilities": ["..."], "preferred_execution_mode": "...", "reply": "..."}}\
 """

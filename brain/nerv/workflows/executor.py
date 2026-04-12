@@ -1,10 +1,9 @@
 import asyncio
 import inspect
-import json
 import logging
-import re
 from typing import Any
 
+from nerv.capabilities import capability_registry
 from nerv.workflows.models import WorkflowDefinition
 
 logger = logging.getLogger(__name__)
@@ -25,8 +24,6 @@ class WorkflowExecutor:
 
     async def execute(self, workflow: WorkflowDefinition, initial_input: str) -> str:
         """Run the workflow step-by-step."""
-        from nerv.tools.builtins import registry
-
         # 1. Notify the user the workflow started
         self._notify(f"[Workflow] Started: {workflow.name}")
         
@@ -44,11 +41,11 @@ class WorkflowExecutor:
             # ── Parse step format: "tool_name.method -> args" or "tool_name action" ──
             tool_name, method_hint, args_hint = self._parse_step(step_str)
 
-            target_tool = registry.get_tool(tool_name) if tool_name else None
+            resolution = capability_registry.resolve(tool_name) if tool_name else None
 
-            if target_tool:
+            if resolution:
                 step_output = await self._execute_tool_step(
-                    target_tool, method_hint, args_hint,
+                    resolution.tool_def, method_hint, args_hint,
                     step_str, idx, workflow.name, model, history_context,
                 )
             else:
@@ -68,24 +65,26 @@ class WorkflowExecutor:
 
         Supported formats:
         - "chrome_browser.open_url -> https://gemini.google.com"
+        - "browser.interactive.open_url -> https://gemini.google.com"
         - "chrome_browser.wait_for_idle"
         - "web_search query about AI models"
         """
-        # Format: "tool.method -> args"
-        arrow_match = re.match(r"^(\w+)\.(\w+)\s*->\s*(.+)$", step_str.strip())
-        if arrow_match:
-            return arrow_match.group(1), arrow_match.group(2), arrow_match.group(3).strip()
+        stripped = step_str.strip()
+        if not stripped:
+            return None, "", ""
 
-        # Format: "tool.method" (no args)
-        dot_match = re.match(r"^(\w+)\.(\w+)(.*)$", step_str.strip())
-        if dot_match:
-            return dot_match.group(1), dot_match.group(2), dot_match.group(3).strip()
+        if "->" in stripped:
+            left, right = stripped.split("->", maxsplit=1)
+            callable_name = left.strip()
+            resolution, method_hint = capability_registry.resolve_step_target(callable_name)
+            if resolution is not None:
+                return resolution.requested_name, method_hint, right.strip()
 
-        # Format: "tool_name rest of the instruction"
-        first_word = step_str.split()[0]
-        from nerv.tools.builtins import registry
-        if registry.get_tool(first_word):
-            return first_word, "", " ".join(step_str.split()[1:])
+        first_word = stripped.split()[0]
+        resolution, method_hint = capability_registry.resolve_step_target(first_word)
+        if resolution is not None:
+            remainder = stripped[len(first_word):].strip()
+            return resolution.requested_name, method_hint, remainder
 
         return None, "", step_str
 

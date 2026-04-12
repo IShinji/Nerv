@@ -132,8 +132,9 @@ class Orchestrator:
         # Build tools payload if agent has any
         tools_schemas = None
         if agent.tools:
-            from nerv.tools.builtins import registry
-            tools_schemas = registry.get_schemas(agent.tools)
+            from nerv.capabilities import capability_registry
+
+            tools_schemas = capability_registry.get_schemas(agent.tools)
 
         # Call the model
         try:
@@ -416,7 +417,7 @@ class Orchestrator:
             if tool_calls:
                 # LLM wants to use tools - we must intercept and execute
                 logger.info("Model requested %d tool calls", len(tool_calls))
-                from nerv.tools.builtins import registry
+                from nerv.capabilities import capability_registry
 
                 queued_actions: list[PendingAction] = []
                 for tc in tool_calls:
@@ -424,8 +425,8 @@ class Orchestrator:
                     func_name = func_details.get("name")
                     arguments = func_details.get("arguments", {})
 
-                    tool_def = registry.get_tool(func_name)
-                    if not tool_def:
+                    resolution = capability_registry.resolve(func_name)
+                    if not resolution:
                         # Agent hallucinated a tool
                         messages.append({
                             "role": "tool",
@@ -433,9 +434,12 @@ class Orchestrator:
                         })
                         continue
 
+                    tool_def = resolution.tool_def
+                    executable_name = resolution.provider_name
+
                     if tool_def.requires_confirmation:
                         pending_action = self._queue_pending_action(
-                            func_name,
+                            executable_name,
                             arguments,
                             sender=sender,
                             channel=channel,
@@ -447,12 +451,12 @@ class Orchestrator:
                         )
                         self._pending_notifications.append(
                             "⚠️ [SYSTEM BACKGROUND ALERT] "
-                            f"Pending action #{pending_action.id} ({func_name}) is waiting for confirmation."
+                            f"Pending action #{pending_action.id} ({executable_name}) is waiting for confirmation."
                         )
-                        logger.warning("Tool %s suspended for confirmation.", func_name)
+                        logger.warning("Tool %s suspended for confirmation.", executable_name)
                     else:
                         # Execute natively
-                        logger.debug("Executing tool %s with args %s", func_name, arguments)
+                        logger.debug("Executing tool %s with args %s", executable_name, arguments)
                         if inspect.iscoroutinefunction(tool_def.func):
                             result = await tool_def.func(**arguments)
                         else:

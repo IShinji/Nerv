@@ -6,6 +6,7 @@ from pathlib import Path
 from nerv.memory.context import ContextManager
 from nerv.memory.manager import MemoryManager
 from nerv.memory.models import ChatMessage, DailyConversation
+from nerv.orchestrator.runtime_policy import build_system_prompt
 from nerv.orchestrator.registry import AgentDefinition
 
 
@@ -64,13 +65,21 @@ def test_context_manager_build_messages_limits(tmp_path: Path) -> None:
         name="Test",
         description="test",
         system_prompt="SYS",
-        max_context_tokens=675,
     )
-    
-    manager.append_message("user", "huge history message that does not fit at all") # 45 chars
-    manager.append_message("assistant", "short") # 5 chars
-    
-    messages = context.build_messages(agent, "hello")
+    user_msg = "hello"
+    short_history = "short"
+    oversized_history = "huge history message that does not fit at all"
+    base_tokens = len(build_system_prompt(agent))
+    lower_bound = (base_tokens + len(user_msg) + len(short_history)) / 0.9
+    upper_bound = (
+        base_tokens + len(user_msg) + len(short_history) + len(oversized_history)
+    ) / 0.9
+    agent.max_context_tokens = int((lower_bound + upper_bound) / 2)
+
+    manager.append_message("user", oversized_history)
+    manager.append_message("assistant", short_history)
+
+    messages = context.build_messages(agent, user_msg)
     # Should contain System, "short" (because it fits), and "hello". 
     # "huge history message..." should have been dropped.
     assert len(messages) == 3
@@ -114,7 +123,7 @@ def test_context_manager_injects_runtime_policy(tmp_path: Path) -> None:
     assert "Reply in the same language as the user's latest message" in system_prompt
     assert "[Tool Policy]" in system_prompt
     assert "Use current_time for questions about the current time" in system_prompt
-    assert "Use chrome_browser for interactive website tasks" in system_prompt
+    assert "browser.interactive (currently backed by chrome_browser)" in system_prompt
 
 
 def test_context_manager_injects_extra_system_sections(tmp_path: Path) -> None:

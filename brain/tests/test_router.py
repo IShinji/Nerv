@@ -107,6 +107,8 @@ class TestRouteResult:
         assert result.complexity == "low"
         assert result.model_tier == 0
         assert result.agent_type == "general"
+        assert result.needs_capabilities == []
+        assert result.preferred_execution_mode == "auto"
         assert result.reply == ""
 
     def test_serialization(self) -> None:
@@ -115,8 +117,12 @@ class TestRouteResult:
             complexity="high",
             model_tier=2,
             agent_type="coder",
+            needs_capabilities=["filesystem.read", "local.exec"],
+            preferred_execution_mode="auto",
             reply="I can help with that",
         )
         data = result.model_dump()
         assert data["intent"] == "code_generation"
         assert data["model_tier"] == 2
+        assert data["needs_capabilities"] == ["filesystem.read", "local.exec"]
+        assert data["preferred_execution_mode"] == "auto"
