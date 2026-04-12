@@ -49,6 +49,7 @@ class Orchestrator:
     """Dispatch tasks to agents based on routing decisions."""
 
     def __init__(self, project_root: Path) -> None:
+        self._project_root = project_root
         self.registry = AgentRegistry(project_root)
         self.memory = MemoryManager(project_root)
         self.context_manager = ContextManager(self.memory)
