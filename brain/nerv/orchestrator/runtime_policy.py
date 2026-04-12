@@ -28,7 +28,19 @@ def build_system_prompt(agent: AgentDefinition) -> str:
     if tool_policy:
         sections.extend(["", tool_policy])
 
+    storage_policy = build_storage_policy(agent)
+    if storage_policy:
+        sections.extend(["", storage_policy])
+
     return "\n".join(section for section in sections if section)
+
+def build_storage_policy(agent: AgentDefinition) -> str:
+    """Generate the storage routing constraints for the Agent."""
+    return f"""\
+[Storage & Workspace Policy]
+- All final reports, code outputs, and user-facing deliverables MUST be written to the "personal/workspace/" directory relative to the project root.
+- Use the "personal/scratch/{agent.name.lower()}/" directory exclusively for your temporary processing data, messy notes, or intermediate screenshots.
+- Never save unstructured or intermediate files to the root directory or arbitrary paths unless explicitly requested."""
 
 
 def build_tool_policy(agent: AgentDefinition) -> str:
