@@ -25,6 +25,14 @@ def main() -> None:
     """Entry point for the brain process."""
     logger.info("Nerv brain starting...")
     try:
+        from nerv.hardware import check_and_pull_model
+        from nerv.router.router import DEFAULT_MODEL
+        import os
+        
+        # Determine the target initial model, prioritize user override, else Fallback routing model
+        target_model = os.environ.get("NERV_ROUTER_MODEL", DEFAULT_MODEL)
+        check_and_pull_model(target_model)
+        
         asyncio.run(run_jsonrpc_loop())
     except KeyboardInterrupt:
         logger.info("Brain process interrupted")

@@ -85,5 +85,23 @@ def get_hardware_profile() -> HardwareProfile:
         "ollama_options": ollama_options
     }
 
+def check_and_pull_model(model_name: str) -> None:
+    """Check if an Ollama model exists, and auto-pull it if missing using stdout streaming."""
+    try:
+        # Check cleanly
+        output = subprocess.check_output(["ollama", "list"], text=True)
+        if model_name in output:
+            return
+            
+        logger.info("Model '%s' not found locally. Initiating auto-pull (this might take a while)...", model_name)
+        # Use Popen to forward the download progress to stderr so the user can see it! 
+        # (stdout is reserved for JSON-RPC)
+        subprocess.run(["ollama", "pull", model_name], stdout=subprocess.DEVNULL, stderr=None, check=True)
+        logger.info("Successfully pulled model: %s", model_name)
+    except FileNotFoundError:
+        logger.error("Ollama CLI not found! Please install Ollama from https://ollama.com")
+    except subprocess.CalledProcessError as e:
+        logger.error("Failed to auto-pull model %s: %s", model_name, e)
+
 # Compute globally once at startup
 PROFILE = get_hardware_profile()
