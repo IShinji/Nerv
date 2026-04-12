@@ -1,11 +1,13 @@
 use anyhow::{Context, Result};
 use nerv_shared::ipc::{JsonRpcRequest, JsonRpcResponse};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 use tracing::{debug, info, warn};
 
 const BRAIN_READY_TIMEOUT_SECS: u64 = 600;
@@ -14,7 +16,7 @@ const BRAIN_READY_TIMEOUT_SECS: u64 = 600;
 pub struct BrainClient {
     child: Mutex<Option<Child>>,
     stdin: Mutex<Option<tokio::process::ChildStdin>>,
-    stdout: Mutex<Option<BufReader<tokio::process::ChildStdout>>>,
+    pending_requests: Arc<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
     next_id: AtomicU64,
     python_command: String,
     brain_module: String,
@@ -45,7 +47,7 @@ impl BrainClient {
         Self {
             child: Mutex::new(None),
             stdin: Mutex::new(None),
-            stdout: Mutex::new(None),
+            pending_requests: Arc::new(StdMutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             python_command: python_command.to_string(),
             brain_module: brain_module.to_string(),
@@ -104,7 +106,71 @@ impl BrainClient {
 
         *self.child.lock().await = Some(child);
         *self.stdin.lock().await = Some(stdin);
-        *self.stdout.lock().await = Some(BufReader::new(stdout));
+
+        let pending_requests = Arc::clone(&self.pending_requests);
+        let mut reader = BufReader::new(stdout);
+        tokio::spawn(async move {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => {
+                        debug!("Brain process stdout closed");
+                        break;
+                    }
+                    Ok(_) => {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        
+                        // Parse as generic JSON to determine if it's a response or notification
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                            if let Some(method) = value.get("method").and_then(|m| m.as_str()) {
+                                if method == "notify" {
+                                    if let Some(params) = value.get("params") {
+                                        let msg = params.get("message").and_then(|m| m.as_str()).unwrap_or(trimmed);
+                                        info!("⚡[Brain]: {}", msg);
+                                    } else {
+                                        info!("⚡[Brain]: {}", trimmed);
+                                    }
+                                    continue;
+                                }
+                            }
+                            
+                            // Otherwise, treat as a JsonRpcResponse
+                            if let Ok(response) = serde_json::from_value::<JsonRpcResponse>(value.clone()) {
+                                let id = response.id;
+                                let mut map = pending_requests.lock().unwrap();
+                                if let Some(tx) = map.remove(&id) {
+                                    // Parse inner result based on our defined response format
+                                    let res = match response.into_result() {
+                                        Ok(r) => r,
+                                        Err(e) => {
+                                            warn!("Brain returned error for req {}: {}", id, e);
+                                            // Sending default/error value backward so client doesn't freeze forever
+                                            serde_json::json!({"error": e.to_string()})
+                                        }
+                                    };
+                                    let _ = tx.send(res);
+                                } else {
+                                    debug!("Received response for unknown/expired request id: {}", id);
+                                }
+                            } else {
+                                // Fallback info printer
+                                info!("⚡ {}", trimmed);
+                            }
+                        } else {
+                            debug!("← Brain (raw): {}", trimmed);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Error reading from brain stdout: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
 
         // Give the subprocess a moment to fail fast on missing deps/config.
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -140,6 +206,12 @@ impl BrainClient {
         let request = JsonRpcRequest::new(method, params, id);
         let line = request.to_line()?;
 
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut map = self.pending_requests.lock().unwrap();
+            map.insert(id, tx);
+        }
+
         debug!("→ Brain: {}", line.trim());
 
         // Send request
@@ -153,25 +225,15 @@ impl BrainClient {
             stdin.flush().await.context("failed to flush brain stdin")?;
         }
 
-        // Read response
-        let mut response_line = String::new();
-        {
-            let mut stdout_lock = self.stdout.lock().await;
-            let stdout = stdout_lock.as_mut().context("brain process not started")?;
-            stdout
-                .read_line(&mut response_line)
-                .await
-                .context("failed to read from brain stdout")?;
+        // Wait for response via oneshot channel asynchronously
+        let result = rx
+            .await
+            .context(format!("brain process closed before responding to request id {}", id))?;
+            
+        if result.get("error").is_some() {
+            anyhow::bail!("Brain returned error: {}", result);
         }
 
-        if response_line.is_empty() {
-            anyhow::bail!("brain process closed stdout unexpectedly");
-        }
-
-        debug!("← Brain: {}", response_line.trim());
-
-        let response = JsonRpcResponse::from_line(&response_line)?;
-        let result = response.into_result()?;
         Ok(result)
     }
 

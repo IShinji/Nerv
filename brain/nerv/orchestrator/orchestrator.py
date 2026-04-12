@@ -170,13 +170,13 @@ class Orchestrator:
         return self.registry.get_default()
 
     def _select_model(self, tier: int) -> str:
-        """Select an Ollama model based on the tier."""
+        """Select a model based on the tier."""
         from nerv.hardware import PROFILE
         model_map = {
-            0: os.environ.get("NERV_MODEL_TIER0", PROFILE["recommended_router_model"]),
-            1: os.environ.get("NERV_MODEL_TIER1", "qwen2.5:7b"),
-            2: os.environ.get("NERV_MODEL_TIER2", "qwen2.5:14b"),
-            3: os.environ.get("NERV_MODEL_TIER3", "qwen2.5:32b"),
+            0: os.environ.get("NERV_MODEL_TIER0", f"local:{PROFILE['recommended_router_model']}"),
+            1: os.environ.get("NERV_MODEL_TIER1", "gemini/gemini-1.5-flash"),
+            2: os.environ.get("NERV_MODEL_TIER2", "claude-3-5-sonnet-20241022"),
+            3: os.environ.get("NERV_MODEL_TIER3", "claude-3-5-sonnet-20241022"),
         }
         model = model_map.get(tier, model_map[0])
         logger.debug("Selected model for tier %d: %s", tier, model)
@@ -195,39 +195,95 @@ class Orchestrator:
         sender: str = "",
         channel: str = "",
     ) -> str:
-        """Call Ollama with the resolved messages payload and handle function calling loop."""
-        url = f"{self.base_url}/api/chat"
-        
-        # Import the runtime hardware sniff results
+        """Call the model (local Ollama or external API via litellm) and handle function calling loop."""
+        import json
+        import os
+        from dotenv import load_dotenv
+
+        # Try mapping personal environment secrets for external APIs
+        env_path = self._project_root / "personal" / "api_keys.env"
+        if env_path.exists():
+            load_dotenv(env_path)
+
+        is_local = model.startswith("local:")
+        actual_model = model[6:] if is_local else model
+
         from nerv.hardware import PROFILE
         
-        # We loop until the LLM stops calling tools and provides a regular reply
         while True:
-            options = {
-                "num_predict": 1024,
-            }
-            options.update(PROFILE.get("ollama_options", {}))
-            
-            payload = {
-                "model": model,
-                "messages": messages,
-                "stream": False,
-                "options": options,
-            }
-            if tools_schemas:
-                payload["tools"] = tools_schemas
+            tool_calls = []
+            message_obj = {}
 
-            logger.debug("Calling model %s via %s (messages count: %d)", model, url, len(messages))
-            response = await self._client.post(url, json=payload)
-            response.raise_for_status()
+            if is_local:
+                # Use ultra-fast local JSON-RPC native to Ollama API to guarantee $0 heartbeat
+                url = f"{self.base_url}/api/chat"
+                options = {"num_predict": 1024}
+                options.update(PROFILE.get("ollama_options", {}))
+                
+                payload = {
+                    "model": actual_model,
+                    "messages": messages,
+                    "stream": False,
+                    "options": options,
+                }
+                if tools_schemas:
+                    payload["tools"] = tools_schemas
 
-            data = response.json()
-            message_obj = data.get("message", {})
-            content = message_obj.get("content", "")
-            tool_calls = message_obj.get("tool_calls", [])
+                logger.debug("Calling local Ollama model %s", actual_model)
+                response = await self._client.post(url, json=payload, timeout=120)
+                response.raise_for_status()
 
-            # Append the assistant's action to history
-            messages.append(message_obj)
+                data = response.json()
+                message_obj = data.get("message", {})
+                tool_calls = message_obj.get("tool_calls", [])
+                messages.append(message_obj)
+            else:
+                # Use litellm for Cloud / High-Tier API models
+                import litellm
+                logger.debug("Calling external model %s via litellm", actual_model)
+                # litellm requires the tools schema to map roughly to OpenAI's function calling schema
+                mapped_tools = []
+                if tools_schemas:
+                    for schema in tools_schemas:
+                        # Simplify Ollama schema -> litellm OpenAI structure
+                        mapped_tools.append({
+                            "type": "function",
+                            "function": schema["function"]
+                        })
+
+                try:
+                    kwargs = {
+                        "model": actual_model,
+                        "messages": messages,
+                        "temperature": 0.2
+                    }
+                    if mapped_tools:
+                        kwargs["tools"] = mapped_tools
+
+                    resp = await litellm.acompletion(**kwargs)
+                    choice = resp.choices[0].message
+                    content = choice.content or ""
+                    
+                    # litellm returns OpenAI formatted tool calls
+                    if hasattr(choice, "tool_calls") and choice.tool_calls:
+                        for tc in choice.tool_calls:
+                            args_str = tc.function.arguments
+                            args_dict = json.loads(args_str) if isinstance(args_str, str) else args_str
+                            tool_calls.append({
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": args_dict
+                                }
+                            })
+                    
+                    message_obj = {"role": "assistant", "content": content}
+                    if tool_calls:
+                        message_obj["tool_calls"] = tool_calls
+                    messages.append(message_obj)
+                    
+                except Exception as e:
+                    logger.error("LiteLLM failed: %s", str(e))
+                    raise
 
             if tool_calls:
                 # LLM wants to use tools - we must intercept and execute
