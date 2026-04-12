@@ -29,3 +29,26 @@ brain:
   module: "nerv"            # Python module to run (python -m nerv)
   auto_install_ollama: false  # Run the official Ollama installer if local Ollama is missing/down
   restart_max: 3            # Max restart attempts on crash
+
+# Optional MCP integrations.
+# Rust currently ignores this block; the Python brain reads it directly.
+mcp:
+  protocol_version: "2024-11-05"
+  servers:
+    chrome:
+      enabled: false
+      transport: "stdio"
+      command: ""           # Example: "npx" or "uvx"
+      args: []               # Example: ["-y", "your-chrome-mcp-server"]
+      cwd: ""
+      env: {}
+      capabilities: ["browser.interactive"]
+      action_map:
+        open_url: "open_url"
+        get_state: "get_state"
+        get_page_text: "get_page_text"
+        fill_prompt: "fill_prompt"
+        submit_prompt: "submit_prompt"
+        wait_for_text: "wait_for_text"
+        wait_for_idle: "wait_for_idle"
+        run_javascript: "run_javascript"

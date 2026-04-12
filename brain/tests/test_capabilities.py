@@ -14,7 +14,7 @@ def test_capability_registry_resolves_alias_to_native_tool() -> None:
     resolution = capability_registry.resolve("browser.interactive")
     assert resolution is not None
     assert resolution.requested_name == "browser.interactive"
-    assert resolution.provider_name == "chrome_browser"
+    assert resolution.provider_name == "browser_interactive"
     assert resolution.is_capability is True
 
 
@@ -24,7 +24,7 @@ def test_capability_registry_get_schemas_deduplicates_same_provider() -> None:
         ["browser.interactive", "chrome_browser", "browser.read"]
     )
     names = [schema["function"]["name"] for schema in schemas]
-    assert names == ["chrome_browser", "browser"]
+    assert names == ["browser_interactive", "chrome_browser", "browser"]
 
 
 def test_runtime_policy_mentions_capability_aliases() -> None:
@@ -37,7 +37,7 @@ def test_runtime_policy_mentions_capability_aliases() -> None:
     )
 
     system_prompt = build_system_prompt(agent)
-    assert "browser.interactive (via chrome_browser)" in system_prompt
+    assert "browser.interactive for interactive website tasks" in system_prompt
     assert "browser.read / browser" in system_prompt
     assert "local.exec / shell" in system_prompt
 

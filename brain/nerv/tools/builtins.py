@@ -506,6 +506,70 @@ def _chrome_page_text(max_chars: int) -> ToolResult:
     return ToolResult(content=_truncate(result.content.strip(), max_chars))
 
 
+def _build_browser_interactive_arguments(
+    action: str,
+    url: str,
+    text: str,
+    script: str,
+    wait_for: str,
+    timeout_secs: int,
+    poll_interval_secs: float,
+    max_chars: int,
+) -> tuple[dict[str, object] | None, ToolResult | None]:
+    """Validate and normalize browser-interactive action arguments."""
+    normalized_action = action.strip().lower()
+
+    if normalized_action == "open_url":
+        target_url = _ensure_url(url)
+        if not target_url:
+            return None, ToolResult(content="open_url requires `url`.", is_error=True)
+        return {"url": target_url}, None
+
+    if normalized_action == "get_state":
+        return {}, None
+
+    if normalized_action == "get_page_text":
+        return {"max_chars": max_chars}, None
+
+    if normalized_action == "run_javascript":
+        if not script.strip():
+            return None, ToolResult(content="run_javascript requires `script`.", is_error=True)
+        return {"script": script}, None
+
+    if normalized_action == "fill_prompt":
+        if not text:
+            return None, ToolResult(content="fill_prompt requires `text`.", is_error=True)
+        return {"text": text}, None
+
+    if normalized_action == "submit_prompt":
+        return {}, None
+
+    if normalized_action == "wait_for_idle":
+        return {
+            "timeout_secs": max(1, timeout_secs),
+            "poll_interval_secs": max(0.1, poll_interval_secs),
+        }, None
+
+    if normalized_action == "wait_for_text":
+        if not wait_for.strip():
+            return None, ToolResult(content="wait_for_text requires `wait_for`.", is_error=True)
+        return {
+            "wait_for": wait_for,
+            "timeout_secs": max(1, timeout_secs),
+            "poll_interval_secs": max(0.1, poll_interval_secs),
+            "max_chars": max_chars,
+        }, None
+
+    return None, ToolResult(
+        content=(
+            "Unsupported browser_interactive action. Use one of: open_url, get_state, "
+            "get_page_text, fill_prompt, submit_prompt, wait_for_text, "
+            "wait_for_idle, run_javascript."
+        ),
+        is_error=True,
+    )
+
+
 def _normalize_search_result_url(url: str) -> str:
     """Normalize DuckDuckGo redirect URLs into direct targets."""
     if not url:
@@ -1029,6 +1093,74 @@ def list_review_queue(status: str = "pending") -> ToolResult:
 
 
 @registry.register(
+    name="browser_interactive",
+    description=(
+        "Interactive browser capability. Prefers a configured MCP browser provider "
+        "and falls back to local chrome_browser when MCP is unavailable. "
+        "Supported actions: open_url, get_state, get_page_text, fill_prompt, "
+        "submit_prompt, wait_for_text, wait_for_idle, run_javascript."
+    ),
+    requires_confirmation=False,
+)
+async def browser_interactive(
+    action: str,
+    url: str = "",
+    text: str = "",
+    script: str = "",
+    wait_for: str = "",
+    timeout_secs: int = 30,
+    poll_interval_secs: float = 1.0,
+    max_chars: int = 4000,
+) -> ToolResult:
+    """Execute browser automation through MCP first, then native fallback."""
+    arguments, validation_error = _build_browser_interactive_arguments(
+        action,
+        url,
+        text,
+        script,
+        wait_for,
+        timeout_secs,
+        poll_interval_secs,
+        max_chars,
+    )
+    if validation_error is not None:
+        return validation_error
+
+    normalized_action = action.strip().lower()
+
+    try:
+        from nerv.mcp import get_mcp_manager
+
+        manager = await get_mcp_manager(_get_project_root())
+        result = await manager.invoke_capability_action(
+            "browser.interactive",
+            normalized_action,
+            arguments or {},
+        )
+        if result is not None:
+            return result
+    except Exception as exc:
+        logger.warning(
+            "browser_interactive MCP path failed for action %s, falling back to native: %s",
+            normalized_action,
+            exc,
+        )
+
+    return chrome_browser(
+        action=normalized_action,
+        url=str(arguments.get("url", "")) if arguments else "",
+        text=str(arguments.get("text", "")) if arguments else "",
+        script=str(arguments.get("script", "")) if arguments else "",
+        wait_for=str(arguments.get("wait_for", "")) if arguments else "",
+        timeout_secs=int(arguments.get("timeout_secs", timeout_secs)) if arguments else timeout_secs,
+        poll_interval_secs=float(arguments.get("poll_interval_secs", poll_interval_secs))
+        if arguments
+        else poll_interval_secs,
+        max_chars=int(arguments.get("max_chars", max_chars)) if arguments else max_chars,
+    )
+
+
+@registry.register(
     name="chrome_browser",
     description=(
         "Automate Google Chrome for multi-step browser tasks. "
@@ -1048,19 +1180,29 @@ def chrome_browser(
     max_chars: int = 4000,
 ) -> ToolResult:
     """Drive Chrome with a browser-scoped automation interface."""
+    arguments, validation_error = _build_browser_interactive_arguments(
+        action,
+        url,
+        text,
+        script,
+        wait_for,
+        timeout_secs,
+        poll_interval_secs,
+        max_chars,
+    )
+    if validation_error is not None:
+        return validation_error
+
     normalized_action = action.strip().lower()
 
     if normalized_action == "open_url":
-        target_url = _ensure_url(url)
-        if not target_url:
-            return ToolResult(content="open_url requires `url`.", is_error=True)
         return _chrome_run_script(
             [
                 f'tell application "{CHROME_APP_NAME}"',
                 "activate",
                 "if (count of windows) = 0 then make new window",
-                f'set URL of active tab of front window to "{_escape_applescript_text(target_url)}"',
-                f'return "Opened URL: {target_url}"',
+                f'set URL of active tab of front window to "{_escape_applescript_text(str(arguments["url"]))}"',
+                f'return "Opened URL: {arguments["url"]}"',
                 "end tell",
             ]
         )
@@ -1079,19 +1221,15 @@ def chrome_browser(
         )
 
     if normalized_action == "get_page_text":
-        return _chrome_page_text(max_chars)
+        return _chrome_page_text(int(arguments.get("max_chars", max_chars)))
 
     if normalized_action == "run_javascript":
-        if not script.strip():
-            return ToolResult(content="run_javascript requires `script`.", is_error=True)
-        return _chrome_execute_javascript(script)
+        return _chrome_execute_javascript(str(arguments["script"]))
 
     if normalized_action == "fill_prompt":
-        if not text:
-            return ToolResult(content="fill_prompt requires `text`.", is_error=True)
         js = f"""
 (() => {{
-  const value = {json.dumps(text)};
+  const value = {json.dumps(str(arguments["text"]))};
   const selectors = [
     'textarea',
     'div[contenteditable="true"]',
@@ -1185,7 +1323,7 @@ def chrome_browser(
         return ToolResult(content=f"Submitted prompt using {result.content}.")
 
     if normalized_action == "wait_for_idle":
-        deadline = time.time() + max(1, timeout_secs)
+        deadline = time.time() + int(arguments.get("timeout_secs", timeout_secs))
         while time.time() < deadline:
             state = _chrome_get_state()
             if state.is_error:
@@ -1193,23 +1331,23 @@ def chrome_browser(
             payload = json.loads(state.content)
             if not payload.get("loading", False):
                 return ToolResult(content="Chrome tab is idle.")
-            time.sleep(max(0.1, poll_interval_secs))
+            time.sleep(float(arguments.get("poll_interval_secs", poll_interval_secs)))
         return ToolResult(content="Timed out waiting for the Chrome tab to finish loading.", is_error=True)
 
     if normalized_action == "wait_for_text":
-        if not wait_for.strip():
-            return ToolResult(content="wait_for_text requires `wait_for`.", is_error=True)
-        deadline = time.time() + max(1, timeout_secs)
+        deadline = time.time() + int(arguments.get("timeout_secs", timeout_secs))
         while time.time() < deadline:
-            page_text = _chrome_page_text(max_chars=max(12000, max_chars))
+            page_text = _chrome_page_text(
+                max_chars=max(12000, int(arguments.get("max_chars", max_chars)))
+            )
             if page_text.is_error:
                 return page_text
-            if wait_for in page_text.content:
-                excerpt = _truncate(page_text.content, max_chars)
+            if str(arguments["wait_for"]) in page_text.content:
+                excerpt = _truncate(page_text.content, int(arguments.get("max_chars", max_chars)))
                 return ToolResult(content=f"Observed target text in Chrome page:\n{excerpt}")
-            time.sleep(max(0.1, poll_interval_secs))
+            time.sleep(float(arguments.get("poll_interval_secs", poll_interval_secs)))
         return ToolResult(
-            content=f"Timed out waiting for text in Chrome page: {wait_for}",
+            content=f"Timed out waiting for text in Chrome page: {arguments['wait_for']}",
             is_error=True,
         )
 

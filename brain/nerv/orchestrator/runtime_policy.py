@@ -88,8 +88,8 @@ def build_tool_policy(agent: AgentDefinition) -> str:
         lines.append("- Use web_search for current events, public web lookup, and finding candidate pages.")
     if has_name("browser", "browser.read"):
         lines.append("- Use browser.read / browser to inspect a specific page after you already know the URL or found it via web_search.")
-    if has_name("chrome_browser", "browser.interactive"):
-        lines.append("- Use browser.interactive (currently backed by chrome_browser) for interactive website tasks inside a real browser session.")
+    if has_name("browser.interactive", "browser_interactive", "chrome_browser"):
+        lines.append("- Use browser.interactive for interactive website tasks. Nerv should prefer a configured MCP browser provider and fall back to local chrome_browser when MCP is unavailable.")
     if has_name("screenshot"):
         lines.append("- Use screenshot when you need the current screen state. It is privacy-sensitive and may require confirmation.")
     if has_name("desktop_control"):

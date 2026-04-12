@@ -32,7 +32,7 @@ tools:
 
 Available capabilities and built-in tools for them to use (only include if strictly necessary for their role):
 - browser.read (preferred abstract capability for inspecting known webpages; currently backed by browser)
-- browser.interactive (preferred abstract capability for interactive browser tasks; currently backed by chrome_browser and intended to map to MCP/browser providers over time)
+- browser.interactive (preferred abstract capability for interactive browser tasks; routed through MCP when configured and otherwise falls back to local chrome_browser)
 - filesystem.read (preferred abstract capability for directory and file inspection; currently backed by file_io)
 - filesystem.read_exact (preferred abstract capability for exact file reads; currently backed by read_file)
 - local.exec (preferred abstract capability for local command execution; currently backed by shell)

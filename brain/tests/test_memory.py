@@ -123,7 +123,7 @@ def test_context_manager_injects_runtime_policy(tmp_path: Path) -> None:
     assert "Reply in the same language as the user's latest message" in system_prompt
     assert "[Tool Policy]" in system_prompt
     assert "Use current_time for questions about the current time" in system_prompt
-    assert "browser.interactive (currently backed by chrome_browser)" in system_prompt
+    assert "prefer a configured MCP browser provider" in system_prompt
 
 
 def test_context_manager_injects_extra_system_sections(tmp_path: Path) -> None:

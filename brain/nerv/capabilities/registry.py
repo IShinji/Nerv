@@ -16,6 +16,7 @@ class CapabilityDefinition:
     provider_name: str
     provider_kind: str = "native"
     description: str = ""
+    display_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class CapabilityRegistry:
         provider_name: str,
         description: str = "",
         provider_kind: str = "native",
+        display_name: str = "",
     ) -> None:
         """Register a capability alias backed by a concrete provider tool."""
         self._capabilities[name] = CapabilityDefinition(
@@ -54,6 +56,7 @@ class CapabilityRegistry:
             provider_name=provider_name,
             provider_kind=provider_kind,
             description=description,
+            display_name=display_name,
         )
 
     def resolve(self, name: str) -> CapabilityResolution | None:
@@ -120,7 +123,7 @@ class CapabilityRegistry:
             if resolution is None:
                 continue
             if resolution.is_capability:
-                labels.append(f"{name} (via {resolution.provider_name})")
+                labels.append(name)
             else:
                 labels.append(name)
         return labels
@@ -135,7 +138,7 @@ capability_registry.register(
 )
 capability_registry.register(
     name="browser.interactive",
-    provider_name="chrome_browser",
+    provider_name="browser_interactive",
     description="Operate an interactive browser session.",
 )
 capability_registry.register(
