@@ -38,7 +38,9 @@ def build_storage_policy(agent: AgentDefinition) -> str:
     """Generate the storage routing constraints for the Agent."""
     return f"""\
 [Storage & Workspace Policy]
-- **Proactive Artifact Storage**: If the user asks for a report, table, plan, or large piece of code, DO NOT dump huge blocks of text directly into the chat response. You MUST automatically use the file tools to save the deliverable to the "personal/workspace/" directory relative to the project root, and then simply reply with a summary and the file path.
+- **Proactive Artifact Storage**: If the user asks for a report, table, plan, or large piece of code, DO NOT dump huge blocks of text directly into the chat response. You MUST automatically use the file tools to save the deliverable to the "personal/workspace/" directory relative to the project root.
+- **Dynamic File Naming**: Every generated artifact MUST include the current date in the filename for easy retrieval (e.g., "personal/workspace/2026-04-11_Model_Report.md"). Use the current_time tool if you don't know the exact date.
+- **File Delivery**: Whenever you save a final deliverable for the user, you MUST include the exact string `[DOCUMENT: <filepath>]` (e.g., `[DOCUMENT: personal/workspace/2026-04-11_Model_Report.md]`) in your final chat reply to the user. The system gateway will automatically intercept this token and send the actual file directly to the user's messaging client.
 - **Private Scratchpad**: Use the "personal/scratch/{agent.name.lower()}/" directory exclusively for your temporary processing data, messy notes, or intermediate screenshots.
 - Never save unstructured or intermediate files to the root directory or arbitrary paths unless explicitly requested."""
 

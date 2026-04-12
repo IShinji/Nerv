@@ -178,7 +178,7 @@ def _resolve_path(path: str) -> pathlib.Path:
     candidate = pathlib.Path(path).expanduser()
     if candidate.is_absolute():
         return candidate
-    return (pathlib.Path.cwd() / candidate).resolve()
+    return (_get_project_root() / candidate).resolve()
 
 
 def _get_project_root() -> pathlib.Path:

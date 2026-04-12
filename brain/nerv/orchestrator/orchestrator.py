@@ -240,6 +240,21 @@ class Orchestrator:
 
                 logger.debug("Calling local Ollama model %s", actual_model)
                 response = await self._client.post(url, json=payload, timeout=120)
+
+                # Graceful fallback: if model not found (404), degrade to tier 0
+                if response.status_code == 404:
+                    fallback_model = self._select_model(0)
+                    fallback_actual = fallback_model[6:] if fallback_model.startswith("local:") else fallback_model
+                    if fallback_actual != actual_model:
+                        logger.warning(
+                            "Model '%s' not found locally (404). Falling back to tier 0: '%s'",
+                            actual_model,
+                            fallback_actual,
+                        )
+                        actual_model = fallback_actual
+                        payload["model"] = actual_model
+                        response = await self._client.post(url, json=payload, timeout=120)
+                    
                 response.raise_for_status()
 
                 data = response.json()
