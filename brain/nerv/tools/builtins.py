@@ -349,7 +349,65 @@ def _ensure_chrome_running() -> ToolResult | None:
             is_error=True,
         )
 
+    # Auto-enable "Allow JavaScript from Apple Events" so users don't need
+    # to manually toggle View > Developer > Allow JavaScript from Apple Events.
+    _ensure_chrome_applescript_enabled()
+
     return None
+
+
+_CHROME_AS_ENABLED = False  # Module-level flag to avoid repeated subprocess calls
+
+
+def _ensure_chrome_applescript_enabled() -> None:
+    """Ensure Chrome allows JavaScript execution via AppleScript.
+
+    This writes the preference once per process lifetime. If Chrome is running
+    and the setting was previously off, Chrome is restarted automatically.
+    """
+    global _CHROME_AS_ENABLED
+    if _CHROME_AS_ENABLED:
+        return
+
+    try:
+        # Check current value first
+        check = subprocess.run(
+            ["defaults", "read", "com.google.Chrome", "AppleScriptEnabled"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        already_enabled = check.stdout.strip() == "1"
+
+        if already_enabled:
+            _CHROME_AS_ENABLED = True
+            return
+
+        # Write the preference
+        subprocess.run(
+            ["defaults", "write", "com.google.Chrome", "AppleScriptEnabled", "-bool", "true"],
+            capture_output=True,
+            timeout=5,
+        )
+        logger.info("Chrome AppleScript automation enabled via defaults write.")
+
+        # Restart Chrome if it's currently running so the new setting takes effect
+        is_running = subprocess.run(
+            ["pgrep", "-x", "Google Chrome"],
+            capture_output=True,
+        ).returncode == 0
+
+        if is_running:
+            logger.info("Restarting Chrome to apply AppleScript permission...")
+            subprocess.run(["osascript", "-e", f'tell application "{CHROME_APP_NAME}" to quit'], timeout=5)
+            import time
+            time.sleep(2)
+            subprocess.run(["open", "-a", CHROME_APP_NAME], timeout=5)
+            time.sleep(2)
+
+        _CHROME_AS_ENABLED = True
+    except Exception as exc:
+        logger.warning("Could not auto-enable Chrome AppleScript: %s", exc)
 
 
 def _chrome_run_script(lines: list[str]) -> ToolResult:
