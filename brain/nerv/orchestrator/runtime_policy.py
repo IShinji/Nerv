@@ -38,8 +38,8 @@ def build_storage_policy(agent: AgentDefinition) -> str:
     """Generate the storage routing constraints for the Agent."""
     return f"""\
 [Storage & Workspace Policy]
-- All final reports, code outputs, and user-facing deliverables MUST be written to the "personal/workspace/" directory relative to the project root.
-- Use the "personal/scratch/{agent.name.lower()}/" directory exclusively for your temporary processing data, messy notes, or intermediate screenshots.
+- **Proactive Artifact Storage**: If the user asks for a report, table, plan, or large piece of code, DO NOT dump huge blocks of text directly into the chat response. You MUST automatically use the file tools to save the deliverable to the "personal/workspace/" directory relative to the project root, and then simply reply with a summary and the file path.
+- **Private Scratchpad**: Use the "personal/scratch/{agent.name.lower()}/" directory exclusively for your temporary processing data, messy notes, or intermediate screenshots.
 - Never save unstructured or intermediate files to the root directory or arbitrary paths unless explicitly requested."""
 
 
