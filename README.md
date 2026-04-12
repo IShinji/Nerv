@@ -43,12 +43,14 @@ You (Telegram / Slack / Email / CLI / WebChat)
 │         Context Manager (Python)        │
 │   Rolling summary · NOT full history    │
 ├──────────────────┬──────────────────────┤
-│   Memory         │   Tools              │
-│   Markdown+SQLite│   Shell·Browser·API  │
+│   Memory         │ Capability Layer     │
+│   Markdown+SQLite│ Native Tools · MCP   │
 └──────────────────┴──────────────────────┘
 ```
 
 **Key insight:** OpenClaw sends your entire conversation history (~120K tokens) with every single message. Nerv sends a 500-token summary. That's a 99.6% reduction.
+
+**Integration direction:** Nerv should be `MCP-first` for external apps and services. If a stable MCP server already exists for Chrome, GitHub, Notion, or another system, Nerv should use that before adding a bespoke integration. Native tools remain critical for core local capabilities and as fallbacks.
 
 ---
 
@@ -60,11 +62,13 @@ No matching agent for your task? Nerv creates one on the spot, saves it, and reu
 ### 📈 Agents That Evolve
 Agents aren't disposable. They track their domain, update their knowledge when the field changes, and keep a version history you can roll back. Think of them as employees who read industry journals.
 
-### ⚙️ Dual-Track Automation (Skills vs Workflows)
-Nerv separates open-ended thinking from rigid execution:
+### ⚙️ Capability Layer + Dual-Track Automation
+Nerv separates capability access from execution strategy:
+- **Capability Layer**: Core local actions stay as native tools (`shell`, files, memory, notifications). External apps and SaaS integrations should prefer MCP servers when available.
+- **MCP-first Browsering**: For interactive browser work, Nerv should prefer Chrome MCP (or another browser MCP server) over bespoke UI scripting. The current native `chrome_browser` path is an MVP fallback, not the long-term integration model.
 - **Skills**: Markdown guidelines that teach Agents *how* to think and evaluate (e.g., "How to review a resume").
-- **Workflows**: Hardcoded YAML steps executed by a native `WorkflowExecutor`. When an agent needs to perform a 10-step UI automation, it delegates it to the Executor, bypassing LLM hallucination entirely for absolute predictability.
-- **Parsimony Rule**: Agents are instructed to strictly prefer fast, lightweight API tools over heavy UI automation workflows automatically.
+- **Workflows**: Hardcoded YAML steps executed by a native `WorkflowExecutor`. When an agent needs to perform a 10-step operational sequence, it delegates it to the Executor for predictability.
+- **Parsimony Rule**: Agents are instructed to prefer direct APIs and MCP-backed tools over heavy GUI automation. UI workflows are the fallback when lighter providers cannot complete the task.
 
 ### 💰 Brutal Token Efficiency
 A local model (free, runs on your machine) handles routing and heartbeats. Only complex tasks hit paid APIs. Model tiering:
@@ -123,7 +127,8 @@ cargo run
 1. **Token is money** — Every LLM call needs justification. If a lightweight local 3B model can do it, local does it.
 2. **Local first** — Your data (memory, configuration) never leaves your machine.
 3. **If it doesn't exist, create it** — Unknown task type? The Agent Factory will generate a specialist agent automatically.
-4. **Fully decoupled** — Channels, models, tools, agents — all pluggable, nothing hardcoded.
+4. **MCP-first for integrations** — Prefer standard MCP servers for external tools and applications; keep native integrations for core local capabilities and fallback paths.
+5. **Fully decoupled** — Channels, models, capability providers, agents — all pluggable, nothing hardcoded.
 
 ---
 

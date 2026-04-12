@@ -10,9 +10,14 @@ By default, you talk to the system via your chosen channel (e.g., Telegram). The
 - **Complex Tasks**: Will trigger the agent to break down your request and use tools (e.g., writing tests, scanning directories).
 - **Missing Experts**: If no existing agent matches your intent, the **Agent Factory** will automatically create a new expert YAML file for you, which you can keep forever!
 
-## 2. The Automation Engine (Skills vs. Workflows)
+## 2. The Capability Layer and Automation Engine (MCP / Skills / Workflows)
 
 Nerv uses a **Dual-Track** system to make automation reliable while avoiding AI hallucinations.
+
+### MCP Servers (The Preferred App Integration Path)
+- **What they are**: Standardized external capability providers exposed through the Model Context Protocol.
+- **Use case**: When you want Nerv to operate a real application or service that already has a stable MCP server, such as Chrome, GitHub, or Notion.
+- **Rule**: Nerv should prefer an MCP server over building a bespoke integration for the same app. For browser tasks, Chrome MCP is the preferred path when available.
 
 ### Skills (The "How-To")
 - **What they are**: Markdown files with behavioral rules.
@@ -21,7 +26,7 @@ Nerv uses a **Dual-Track** system to make automation reliable while avoiding AI 
 
 ### Workflows (The "推土机 / Bulldozer")
 - **What they are**: Strict step-by-step YAML scripts natively executed by the `WorkflowExecutor`.
-- **Use case**: When you have a massive multi-step operational task (like clicking around a UI, waiting for elements, scraping text). You do NOT want an LLM guessing what to click next or hallucinating an intermediate state.
+- **Use case**: When you have a massive multi-step operational task and you want deterministic execution. Workflows can call native tools or MCP-backed capabilities, and they are the fallback when no lighter provider can complete the task reliably.
 - **How to create**: Create a `.yaml` file in the `workflows/` directory.
 
 Example Workflow step:
@@ -32,13 +37,20 @@ steps:
 ```
 The Native Executor safely runs this without relying on LLM logic loops.
 
+Current implementation note: the codebase still includes a native `chrome_browser` MVP for local browser automation. That should be treated as a compatibility fallback while MCP support is added to the main architecture.
+
 ## 3. Tool Parsimony (Smart Fallback)
 
 You do **not** need to manually instruct agents which tool to use. 
 Nerv naturally follows the **Tool Parsimony Rule**:
-> The AI prefers cheap, blindingly fast API calls (like `web_search`) over heavy, slow GUI automation workflows (like `chrome_browser`).
+> The AI prefers cheap direct tools and MCP-backed integrations over heavy local GUI automation workflows.
 
 If you just ask "what's the weather today", Nerv will use a quick web search. It won't pop open Google Chrome or fire up heavy automation unless you explicitly instruct it to (e.g., "Use my Chrome Gemini Workflow to get the weather").
+
+For interactive browser work, the intended order is:
+1. Use direct APIs or lightweight tools if they can finish the job.
+2. Use Chrome MCP (or another browser MCP server) for real browser state and DOM interaction.
+3. Fall back to native `chrome_browser` or a browser workflow only when MCP is unavailable or the task truly needs a machine-specific local automation path.
 
 ## 4. Reviewing Proposals
 
