@@ -52,7 +52,10 @@ impl super::ChannelAdapter for TelegramAdapter {
                 // Wait for the brain's response and send it back to Telegram
                 if let Some(response) = reply_rx.recv().await {
                     if let Some(response_text) = response.text() {
-                        bot.send_message(chat_id, response_text).await?;
+                        match bot.send_message(chat_id, response_text).await {
+                            Ok(_) => info!("Sent reply to Telegram"),
+                            Err(e) => error!("Failed to send reply to Telegram: {}", e),
+                        }
                     }
                 }
 

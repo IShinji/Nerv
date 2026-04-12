@@ -15,7 +15,7 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-teloxide = { version = "0.13", features = ["macros"], optional = true }
+teloxide = { version = "0.17", features = ["macros"], optional = true }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
