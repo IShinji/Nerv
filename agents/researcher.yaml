@@ -11,8 +11,15 @@ system_prompt: |
   - Organize findings with clear headings and bullet points
   Be comprehensive but concise. Prioritize accuracy over speed.
 tools:
+  - list_workflows
+  - get_workflow
+  - propose_workflow
+  - list_skills
+  - get_skill
+  - list_review_queue
   - web_search
   - browser
+  - chrome_browser
 max_context_tokens: 4000
 summary_strategy: "rolling"
 created_by: "preset"

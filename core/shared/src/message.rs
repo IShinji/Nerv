@@ -17,7 +17,11 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn new_text(channel: ChannelType, sender: impl Into<String>, text: impl Into<String>) -> Self {
+    pub fn new_text(
+        channel: ChannelType,
+        sender: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             channel,
@@ -66,9 +70,18 @@ impl std::fmt::Display for ChannelType {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum MessageContent {
     Text(String),
-    Image { url: String, caption: Option<String> },
-    File { url: String, filename: String },
-    Voice { url: String, duration_secs: Option<f64> },
+    Image {
+        url: String,
+        caption: Option<String>,
+    },
+    File {
+        url: String,
+        filename: String,
+    },
+    Voice {
+        url: String,
+        duration_secs: Option<f64>,
+    },
 }
 
 #[cfg(test)]

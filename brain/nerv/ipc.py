@@ -53,12 +53,19 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
         if params is None:
             raise ValueError("route method requires params")
         message = params.get("message", "")
+        channel = params.get("channel", "")
+        sender = params.get("sender", "")
         router = _get_router()
         route_result = await router.classify(message)
 
         # Dispatch to orchestrator for actual agent response
         orchestrator = _get_orchestrator()
-        reply = await orchestrator.dispatch(message, route_result)
+        reply = await orchestrator.dispatch(
+            message,
+            route_result,
+            channel=channel,
+            sender=sender,
+        )
 
         result = route_result.model_dump()
         result["reply"] = reply

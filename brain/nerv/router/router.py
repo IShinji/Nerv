@@ -8,6 +8,7 @@ stage of the message pipeline — designed to be fast and cheap (~200 tokens).
 import json
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -23,6 +24,85 @@ from nerv.hardware import PROFILE
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_MODEL = PROFILE["recommended_router_model"]
 OLLAMA_TIMEOUT = 30.0
+
+CANONICAL_AGENT_BY_INTENT = {
+    "general": "general",
+    "code_generation": "coder",
+    "research": "researcher",
+    "writing": "writer",
+    "sysadmin": "sysadmin",
+}
+
+AGENT_ALIASES = {
+    "general": "general",
+    "assistant": "general",
+    "personal_ai_assistant": "general",
+    "chat": "general",
+    "code_generation": "coder",
+    "coder": "coder",
+    "developer": "coder",
+    "programmer": "coder",
+    "software_developer": "coder",
+    "research": "researcher",
+    "researcher": "researcher",
+    "search": "researcher",
+    "analyst": "researcher",
+    "writing": "writer",
+    "writer": "writer",
+    "translator": "writer",
+    "summarizer": "writer",
+    "sysadmin": "sysadmin",
+    "system_admin": "sysadmin",
+    "system_administrator": "sysadmin",
+    "devops": "sysadmin",
+}
+
+DIRECT_REPLY_EXACT_MESSAGES = {
+    "hi",
+    "hello",
+    "hey",
+    "thanks",
+    "thank you",
+    "ok",
+    "okay",
+    "got it",
+    "bye",
+    "你好",
+    "您好",
+    "嗨",
+    "哈喽",
+    "谢谢",
+    "好的",
+    "收到",
+    "再见",
+    "对的",
+    "嗯",
+    "嗯嗯",
+}
+
+QUESTION_MARKERS = (
+    "?",
+    "？",
+    "what",
+    "when",
+    "where",
+    "why",
+    "how",
+    "who",
+    "which",
+    "time",
+    "date",
+    "几点",
+    "几号",
+    "几月",
+    "多少",
+    "什么",
+    "怎么",
+    "谁",
+    "哪",
+    "何时",
+    "为什么",
+)
 
 
 class Router:
@@ -60,10 +140,10 @@ class Router:
 
         try:
             result = await self._call_ollama(user_prompt)
-            return result
+            return self._sanitize_route_result(message, result)
         except Exception as e:
             logger.error("Ollama call failed, using fallback: %s", e)
-            return self._fallback_classify(message)
+            return self._sanitize_route_result(message, self._fallback_classify(message))
 
     async def _call_ollama(self, user_prompt: str) -> RouteResult:
         """Call Ollama HTTP API for chat completion."""
@@ -126,6 +206,43 @@ class Router:
             agent_type="general",
             reply="I understood your message but had trouble classifying it. Could you rephrase?",
         )
+
+    def _sanitize_route_result(self, message: str, result: RouteResult) -> RouteResult:
+        """Normalize noisy classifier output into stable routing fields."""
+        result.agent_type = self._normalize_agent_type(result.intent, result.agent_type)
+        if not self._should_use_direct_reply(message, result.reply):
+            result.reply = ""
+        return result
+
+    def _normalize_agent_type(self, intent: str, agent_type: str) -> str:
+        """Map fuzzy agent names into stable built-in roles when possible."""
+        normalized = re.sub(r"[^a-z0-9_]+", "_", agent_type.strip().lower())
+        normalized = re.sub(r"_+", "_", normalized).strip("_")
+
+        if intent == "general":
+            return "general"
+
+        if normalized in AGENT_ALIASES:
+            return AGENT_ALIASES[normalized]
+
+        if not normalized:
+            return CANONICAL_AGENT_BY_INTENT.get(intent, "general")
+
+        return normalized
+
+    def _should_use_direct_reply(self, message: str, reply: str) -> bool:
+        """Only allow direct router replies for trivial social messages."""
+        if not reply.strip():
+            return False
+
+        normalized = " ".join(message.strip().lower().split())
+        if not normalized:
+            return True
+
+        if any(marker in normalized for marker in QUESTION_MARKERS):
+            return False
+
+        return normalized in DIRECT_REPLY_EXACT_MESSAGES
 
     def _fallback_classify(self, message: str) -> RouteResult:
         """Simple keyword-based fallback when Ollama is unavailable."""

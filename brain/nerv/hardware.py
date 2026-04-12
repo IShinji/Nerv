@@ -5,13 +5,20 @@ suggested model tiers, concurrency limits, and Ollama context sizes
 based on available RAM and CPU/GPU architectures.
 """
 
+import json
 import logging
+import os
 import platform
-import subprocess
 import shutil
+import subprocess
 from typing import TypedDict
 
+import httpx
+
 logger = logging.getLogger(__name__)
+
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
+OLLAMA_DISCOVERY_TIMEOUT = 5.0
 
 class HardwareProfile(TypedDict):
     os_name: str
@@ -57,11 +64,9 @@ def get_hardware_profile() -> HardwareProfile:
     
     # 1. Determine recommended router model based on RAM
     if ram_gb >= 32:
-        recommended_model = "qwen2.5:7b"
-    elif ram_gb >= 16:
         recommended_model = "qwen2.5:3b"
     else:
-        recommended_model = "llama3.2:1b"
+        recommended_model = "qwen2.5:1.5b"
         
     # 2. Determine Ollama runner options
     ollama_options = {}
@@ -85,23 +90,130 @@ def get_hardware_profile() -> HardwareProfile:
         "ollama_options": ollama_options
     }
 
-def check_and_pull_model(model_name: str) -> None:
-    """Check if an Ollama model exists, and auto-pull it if missing using stdout streaming."""
+def _get_ollama_base_url(base_url: str | None = None) -> str:
+    """Resolve the Ollama base URL from args or environment."""
+    return (base_url or os.environ.get("NERV_OLLAMA_URL", DEFAULT_OLLAMA_URL)).rstrip("/")
+
+
+def _check_model_via_http(model_name: str, base_url: str) -> bool | None:
+    """Return model presence via Ollama HTTP API, or None if the server is unreachable."""
     try:
-        # Check cleanly
+        with httpx.Client(timeout=OLLAMA_DISCOVERY_TIMEOUT) as client:
+            response = client.get(f"{base_url}/api/tags")
+            response.raise_for_status()
+    except httpx.HTTPError as e:
+        logger.warning("Ollama API not reachable at %s: %s", base_url, e)
+        return None
+
+    models = response.json().get("models", [])
+    for model in models:
+        model_id = model.get("model") or model.get("name")
+        if model_id == model_name:
+            return True
+
+    return False
+
+
+def _pull_model_via_http(model_name: str, base_url: str) -> bool:
+    """Pull a model via Ollama HTTP API."""
+    try:
+        with httpx.Client(timeout=None) as client, client.stream(
+            "POST",
+            f"{base_url}/api/pull",
+            json={"model": model_name},
+        ) as response:
+            response.raise_for_status()
+
+            last_status = ""
+            last_progress = -1
+            for line in response.iter_lines():
+                if not line:
+                    continue
+
+                payload = json.loads(line)
+                status = payload.get("status", "").strip()
+                completed = payload.get("completed")
+                total = payload.get("total")
+
+                if (
+                    isinstance(completed, int)
+                    and isinstance(total, int)
+                    and total > 0
+                ):
+                    progress = int(completed * 100 / total)
+                    if status != last_status or progress >= last_progress + 10:
+                        logger.info(
+                            "Pulling %s via Ollama API: %s (%d%%)",
+                            model_name,
+                            status or "downloading",
+                            progress,
+                        )
+                        last_status = status
+                        last_progress = progress
+                elif status and status != last_status:
+                    logger.info("Pulling %s via Ollama API: %s", model_name, status)
+                    last_status = status
+    except httpx.HTTPError as e:
+        logger.error("Failed to auto-pull model %s via Ollama API: %s", model_name, e)
+        return False
+    except json.JSONDecodeError as e:
+        logger.error("Invalid Ollama pull progress for model %s: %s", model_name, e)
+        return False
+
+    logger.info("Successfully pulled model via Ollama API: %s", model_name)
+    return True
+
+
+def _check_and_pull_model_via_cli(model_name: str) -> bool:
+    """Check if a model exists via CLI and pull it if missing."""
+    try:
         output = subprocess.check_output(["ollama", "list"], text=True)
         if model_name in output:
-            return
-            
-        logger.info("Model '%s' not found locally. Initiating auto-pull (this might take a while)...", model_name)
-        # Use Popen to forward the download progress to stderr so the user can see it! 
-        # (stdout is reserved for JSON-RPC)
-        subprocess.run(["ollama", "pull", model_name], stdout=subprocess.DEVNULL, stderr=None, check=True)
-        logger.info("Successfully pulled model: %s", model_name)
-    except FileNotFoundError:
-        logger.error("Ollama CLI not found! Please install Ollama from https://ollama.com")
+            return True
+
+        logger.info(
+            "Model '%s' not found locally. Initiating auto-pull via Ollama CLI...",
+            model_name,
+        )
+        subprocess.run(
+            ["ollama", "pull", model_name],
+            stdout=subprocess.DEVNULL,
+            stderr=None,
+            check=True,
+        )
+        logger.info("Successfully pulled model via Ollama CLI: %s", model_name)
+        return True
     except subprocess.CalledProcessError as e:
-        logger.error("Failed to auto-pull model %s: %s", model_name, e)
+        logger.error("Failed to auto-pull model %s via Ollama CLI: %s", model_name, e)
+        return False
+
+
+def check_and_pull_model(model_name: str, base_url: str | None = None) -> None:
+    """Check if an Ollama model exists and auto-pull it when the server is available."""
+    resolved_base_url = _get_ollama_base_url(base_url)
+    http_status = _check_model_via_http(model_name, resolved_base_url)
+
+    if http_status is True:
+        return
+
+    if http_status is False:
+        logger.info(
+            "Model '%s' not found on Ollama server %s. Initiating auto-pull...",
+            model_name,
+            resolved_base_url,
+        )
+        if _pull_model_via_http(model_name, resolved_base_url):
+            return
+
+    if shutil.which("ollama") is None:
+        logger.error(
+            "Ollama is not installed or not running. Nerv can auto-pull missing models, "
+            "but it cannot install Ollama itself. Install/start Ollama first: "
+            "https://ollama.com"
+        )
+        return
+
+    _check_and_pull_model_via_cli(model_name)
 
 # Compute globally once at startup
 PROFILE = get_hardware_profile()

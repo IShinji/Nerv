@@ -27,15 +27,24 @@ Model tiers (higher = more capable but more expensive):
 - 3: critical/frontier tasks
 
 Agent types:
-DO NOT restrict yourself to basic names. Provide the MOST SPECIFIC professional \
-role title required for the user's task in lowercase snake_case. 
-Examples: `frontend_developer`, `database_admin`, `financial_analyst`, `legal_advisor`, `system_architect`, `writer`, `general`.
+Prefer the built-in agents when they are a reasonable fit:
+- `general`
+- `coder`
+- `researcher`
+- `writer`
+- `sysadmin`
+
+Only invent a more specific lowercase snake_case role when the built-in agents are \
+clearly insufficient.
+Examples: `frontend_developer`, `database_admin`, `financial_analyst`, `legal_advisor`, `system_architect`.
 
 RULES:
 1. Return ONLY valid JSON, no explanation
 2. Always include all fields: intent, complexity, model_tier, agent_type, reply
-3. For simple greetings/questions, set reply to a brief answer and model_tier to 0
-4. Be conservative with model_tier — prefer lower tiers\
+3. `reply` should usually be an empty string
+4. Only set `reply` for empty input or ultra-trivial greetings/thanks/acknowledgements
+5. For any real question, request, lookup, time/date question, or anything requiring knowledge, set `reply` to an empty string
+6. Be conservative with model_tier — prefer lower tiers\
 """
 
 ROUTER_USER_TEMPLATE = """\

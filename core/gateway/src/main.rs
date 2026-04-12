@@ -1,5 +1,6 @@
 mod adapter;
 mod brain_client;
+mod ollama;
 
 use adapter::cli::CliAdapter;
 use adapter::{ChannelAdapter, IncomingMessage};
@@ -67,6 +68,7 @@ async fn main() -> Result<()> {
 
     let config = NervConfig::load(&project_root)?;
     info!("Configuration loaded");
+    ollama::ensure_ollama_ready(&config).await?;
 
     // Start the Python brain process
     let brain_dir = find_brain_dir(&project_root);
@@ -74,6 +76,12 @@ async fn main() -> Result<()> {
         &config.brain.python_command,
         &config.brain.module,
         &brain_dir,
+        &config.models.router.model,
+        &config.models.router.base_url,
+        &config.models.tiers.tier0,
+        &config.models.tiers.tier1,
+        &config.models.tiers.tier2,
+        &config.models.tiers.tier3,
         config.brain.restart_max,
     ));
     brain.start().await?;
@@ -108,11 +116,7 @@ async fn main() -> Result<()> {
                 }
             };
 
-            let response = Message::new_text(
-                channel,
-                "nerv",
-                &response_text,
-            );
+            let response = Message::new_text(channel, "nerv", &response_text);
 
             if incoming.reply_tx.send(response).await.is_err() {
                 error!("Failed to send reply back to adapter");
@@ -126,7 +130,10 @@ async fn main() -> Result<()> {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
         loop {
             interval.tick().await;
-            if let Ok(result) = brain_heartbeat.call("heartbeat", serde_json::json!({})).await {
+            if let Ok(result) = brain_heartbeat
+                .call("heartbeat", serde_json::json!({}))
+                .await
+            {
                 if let Some(reply) = result.get("reply").and_then(|v| v.as_str()) {
                     if !reply.is_empty() {
                         // Print the proactive background hook message to the screen!

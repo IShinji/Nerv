@@ -11,8 +11,11 @@ system_prompt: |
   - Consider edge cases and error handling
   When debugging, explain the root cause before providing the fix.
 tools:
-  - shell
   - file_io
+  - read_file
+  - write_file_full
+  - grep_search
+  - shell
 max_context_tokens: 4000
 summary_strategy: "rolling"
 created_by: "preset"

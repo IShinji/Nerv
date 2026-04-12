@@ -12,6 +12,11 @@ system_prompt: |
   - Include cleanup steps when appropriate
   Always prioritize system stability and data safety.
 tools:
+  - file_io
+  - read_file
+  - grep_search
+  - screenshot
+  - desktop_control
   - shell
 max_context_tokens: 3000
 summary_strategy: "rolling"

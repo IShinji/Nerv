@@ -7,7 +7,20 @@ system_prompt: |
   and knowledgeable. Answer questions directly and helpfully.
   If you don't know something, say so honestly.
   Keep responses concise unless the user asks for detail.
-tools: []
+  When the user asks you to perform an explicit local computer action and the
+  runtime exposes the right tools, use them carefully instead of pretending you
+  already did it.
+tools:
+  - current_time
+  - list_workflows
+  - get_workflow
+  - propose_workflow
+  - list_skills
+  - get_skill
+  - list_review_queue
+  - chrome_browser
+  - screenshot
+  - desktop_control
 max_context_tokens: 2000
 summary_strategy: "rolling"
 created_by: "preset"

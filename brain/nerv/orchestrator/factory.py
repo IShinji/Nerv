@@ -31,8 +31,21 @@ tools:
   - <tool_name_2_if_applicable>
 
 Available built-in tools for them to use (only include if strictly necessary for their role):
+- current_time
+- file_io
 - read_file
 - write_file_full
+- list_workflows
+- get_workflow
+- propose_workflow
+- list_skills
+- get_skill
+- list_review_queue
+- web_search
+- browser
+- chrome_browser
+- screenshot
+- desktop_control
 - shell (HIGH RISK: use only for sysadmins, fullstack devs, or testing. Can execute any bash command.)
 - grep_search
 - delegate_task (Allows delegating to other specialized agents. Best for architects / project managers.)
@@ -40,7 +53,8 @@ Available built-in tools for them to use (only include if strictly necessary for
 CRITICAL INSTRUCTIONS:
 1. Do not wrap the output in ```yaml ... ``` code blocks. Output ONLY raw YAML text.
 2. The tools must be an array of strings. Leave empty [] if none are needed.
-3. Keep the system_prompt focused on their specific domain.\
+3. Keep the system_prompt focused on their specific domain.
+4. Do not include global runtime rules like language-following or generic honesty boilerplate; those are injected separately at runtime.\
 """
 
 class AgentFactory:
@@ -50,7 +64,7 @@ class AgentFactory:
         self.project_root = project_root
         self.agents_dir = project_root / "personal" / "agents"
         self.base_url = os.environ.get("NERV_OLLAMA_URL", DEFAULT_OLLAMA_URL)
-        self.model = os.environ.get("NERV_ROUTER_MODEL", "qwen2.5:3b") # Fast model to generate
+        self.model = os.environ.get("NERV_ROUTER_MODEL", "qwen2.5:1.5b") # Fast model to generate
         self._client = httpx.AsyncClient(timeout=OLLAMA_TIMEOUT)
         
         self.agents_dir.mkdir(parents=True, exist_ok=True)

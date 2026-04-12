@@ -64,6 +64,40 @@ class TestRouterParsing:
         result = self.router._parse_response(content)
         assert result.intent == "general"
 
+    def test_general_intent_agent_type_is_normalized(self) -> None:
+        result = RouteResult(
+            intent="general",
+            complexity="low",
+            model_tier=0,
+            agent_type="personal AI assistant",
+            reply="Hello!",
+        )
+        sanitized = self.router._sanitize_route_result("hello", result)
+        assert sanitized.agent_type == "general"
+
+    def test_question_reply_is_suppressed(self) -> None:
+        result = RouteResult(
+            intent="general",
+            complexity="low",
+            model_tier=0,
+            agent_type="search",
+            reply="现在几点？",
+        )
+        sanitized = self.router._sanitize_route_result("现在几点", result)
+        assert sanitized.reply == ""
+        assert sanitized.agent_type == "general"
+
+    def test_trivial_greeting_can_keep_direct_reply(self) -> None:
+        result = RouteResult(
+            intent="general",
+            complexity="low",
+            model_tier=0,
+            agent_type="general",
+            reply="你好，有什么可以帮你？",
+        )
+        sanitized = self.router._sanitize_route_result("你好", result)
+        assert sanitized.reply == "你好，有什么可以帮你？"
+
 
 class TestRouteResult:
     """Test the RouteResult model."""

@@ -85,11 +85,7 @@ mod tests {
 
     #[test]
     fn test_request_serialization() {
-        let req = JsonRpcRequest::new(
-            "route",
-            serde_json::json!({"message": "hello"}),
-            1,
-        );
+        let req = JsonRpcRequest::new("route", serde_json::json!({"message": "hello"}), 1);
         let line = req.to_line().unwrap();
         assert!(line.ends_with('\n'));
         assert!(line.contains("\"jsonrpc\":\"2.0\""));
@@ -106,7 +102,8 @@ mod tests {
 
     #[test]
     fn test_response_error_parsing() {
-        let json = r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"Model unavailable"},"id":1}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"Model unavailable"},"id":1}"#;
         let resp = JsonRpcResponse::from_line(json).unwrap();
         let err = resp.into_result().unwrap_err();
         assert!(err.to_string().contains("Model unavailable"));

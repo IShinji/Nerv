@@ -12,8 +12,13 @@ channels:
 models:
   router:
     provider: "ollama"     # ollama | anthropic | openai | google
-    model: "qwen2.5:3b"   # Local model for intent classification (~200 tokens)
+    model: "qwen2.5:1.5b"   # Balanced local base model for routing and light chat
     base_url: "http://localhost:11434"
+  tiers:
+    tier0: "qwen2.5:1.5b"   # Default local base model for daily tasks
+    tier1: "qwen2.5:7b"   # Better reasoning for normal tasks
+    tier2: "qwen2.5:14b"  # Heavy local tasks
+    tier3: "qwen2.5:32b"  # Frontier / expensive local tasks
 
 logging:
   level: "info"            # trace | debug | info | warn | error
@@ -22,4 +27,5 @@ logging:
 brain:
   python_command: "uv run python"  # Uses uv-managed venv in brain/
   module: "nerv"            # Python module to run (python -m nerv)
+  auto_install_ollama: false  # Run the official Ollama installer if local Ollama is missing/down
   restart_max: 3            # Max restart attempts on crash

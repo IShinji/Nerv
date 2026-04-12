@@ -3,9 +3,14 @@
 import tempfile
 from pathlib import Path
 
+import pytest
 import yaml
 
+from nerv.models import RouteResult
+from nerv.orchestrator.orchestrator import Orchestrator
 from nerv.orchestrator.registry import AgentDefinition, AgentRegistry
+from nerv.tools.registry import ToolResult, registry
+from nerv.workflows.models import WorkflowDefinition
 
 
 class TestAgentRegistry:
@@ -96,6 +101,7 @@ class TestAgentRegistry:
             registry = AgentRegistry(root)
             default = registry.get_default()
             assert default.name == "General"
+            assert default.system_prompt == "You are a helpful assistant. Answer concisely."
 
     def test_loads_preset_agents_from_project(self) -> None:
         """Test loading the actual preset agents from the project."""
@@ -116,3 +122,82 @@ class TestAgentRegistry:
         assert "Researcher" in names
         assert "Writer" in names
         assert "SysAdmin" in names
+
+
+@pytest.mark.asyncio
+async def test_confirm_pending_action_executes_tool(tmp_path: Path) -> None:
+    """Test confirming a pending action executes the queued tool."""
+    orchestrator = Orchestrator(tmp_path)
+    tool_def = registry.get_tool("desktop_control")
+    assert tool_def is not None
+
+    original_func = tool_def.func
+    tool_def.func = lambda **kwargs: ToolResult(content="Desktop action executed")
+    try:
+        queued = orchestrator._queue_pending_action(
+            "desktop_control",
+            {"action": "open_application", "application": "Safari"},
+            sender="user-1",
+            channel="telegram",
+        )
+
+        response = await orchestrator.dispatch(
+            f"confirm {queued.id}",
+            RouteResult(intent="general"),
+            channel="telegram",
+            sender="user-1",
+        )
+    finally:
+        tool_def.func = original_func
+
+    assert "Executed pending action" in response
+    assert "Desktop action executed" in response
+    assert orchestrator._pending_actions == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_pending_action_discards_it(tmp_path: Path) -> None:
+    """Test cancelling a pending action removes it without execution."""
+    orchestrator = Orchestrator(tmp_path)
+    queued = orchestrator._queue_pending_action(
+        "screenshot",
+        {"output_path": "/tmp/capture.png"},
+        sender="user-1",
+        channel="telegram",
+    )
+
+    response = await orchestrator.dispatch(
+        f"cancel {queued.id}",
+        RouteResult(intent="general"),
+        channel="telegram",
+        sender="user-1",
+    )
+
+    assert f"Cancelled pending action #{queued.id}" in response
+    assert orchestrator._pending_actions == []
+
+
+@pytest.mark.asyncio
+async def test_approve_workflow_review_publishes_shared_workflow(tmp_path: Path) -> None:
+    """Direct approval commands should publish pending workflow proposals."""
+    orchestrator = Orchestrator(tmp_path)
+    item = orchestrator.review_queue.submit_workflow(
+        WorkflowDefinition(
+            name="DraftFlow",
+            description="Temporary workflow",
+            owner_agents=["general"],
+            tools=["chrome_browser"],
+            steps=["open page", "extract result"],
+            created_by="agent",
+            review_status="pending",
+        ),
+        proposed_by="general",
+    )
+
+    response = await orchestrator.dispatch(
+        f"approve workflow {item.review_id}",
+        RouteResult(intent="general"),
+    )
+
+    assert "Approved workflow review" in response
+    assert orchestrator.workflow_registry.find("DraftFlow") is not None

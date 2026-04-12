@@ -5,6 +5,7 @@ from typing import Any
 
 from nerv.memory.manager import MemoryManager
 from nerv.memory.models import ChatMessage
+from nerv.orchestrator.runtime_policy import build_system_prompt
 from nerv.orchestrator.registry import AgentDefinition
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,11 @@ class ContextManager:
         self.memory = memory
 
     def build_messages(
-        self, agent: AgentDefinition, user_msg: str, max_history_msg: int = 10
+        self,
+        agent: AgentDefinition,
+        user_msg: str,
+        max_history_msg: int = 10,
+        extra_system_sections: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Construct the list of messages for the LLM invocation.
 
@@ -41,7 +46,11 @@ class ContextManager:
         """
         # Load facts
         facts = self.memory.read_facts()
-        system_content = agent.system_prompt
+        system_content = build_system_prompt(agent)
+        if extra_system_sections:
+            for section in extra_system_sections:
+                if section.strip():
+                    system_content += f"\n\n{section.strip()}"
         if facts.strip():
             system_content += f"\n\n[Long-term Facts]\n{facts.strip()}"
 

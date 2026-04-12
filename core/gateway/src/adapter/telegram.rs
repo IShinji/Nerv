@@ -45,9 +45,11 @@ impl super::ChannelAdapter for TelegramAdapter {
                     error!("Gateway channel closed");
                     return Ok(());
                 }
-                
+
                 // Show thinking indicator
-                let _ = bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing).await;
+                let _ = bot
+                    .send_chat_action(chat_id, teloxide::types::ChatAction::Typing)
+                    .await;
 
                 // Wait for the brain's response and send it back to Telegram
                 if let Some(response) = reply_rx.recv().await {

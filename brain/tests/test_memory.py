@@ -58,16 +58,14 @@ def test_context_manager_build_messages_limits(tmp_path: Path) -> None:
     manager._ensure_directories()
     context = ContextManager(manager)
     
-    # Create an agent with very small max context (just enough for sys + user + 1 history)
+    # Keep the context small enough to force truncation while still fitting
+    # the shared runtime policy, current user message, and one short history entry.
     agent = AgentDefinition(
         name="Test",
         description="test",
         system_prompt="SYS",
-        max_context_tokens=30  # Very small
+        max_context_tokens=675,
     )
-    # Tokens used: SYS(3).
-    # Current msg: "hello"(5).
-    # Available for history: 30 - 3 - 5 - 3(buffer) = 19
     
     manager.append_message("user", "huge history message that does not fit at all") # 45 chars
     manager.append_message("assistant", "short") # 5 chars
@@ -77,7 +75,7 @@ def test_context_manager_build_messages_limits(tmp_path: Path) -> None:
     # "huge history message..." should have been dropped.
     assert len(messages) == 3
     assert messages[0]["role"] == "system"
-    assert messages[0]["content"] == "SYS"
+    assert "SYS" in messages[0]["content"]
     assert messages[1]["role"] == "assistant"
     assert messages[1]["content"] == "short"
     assert messages[2]["role"] == "user"
@@ -95,3 +93,47 @@ def test_context_manager_facts_injected(tmp_path: Path) -> None:
     messages = context.build_messages(agent, "hello")
     assert "User is a developer." in messages[0]["content"]
     assert "You are an AI." in messages[0]["content"]
+
+
+def test_context_manager_injects_runtime_policy(tmp_path: Path) -> None:
+    """Test that shared runtime rules are injected automatically."""
+    manager = MemoryManager(tmp_path)
+    manager._ensure_directories()
+    context = ContextManager(manager)
+    agent = AgentDefinition(
+        name="General",
+        description="test",
+        system_prompt="You are an AI.",
+        tools=["current_time", "chrome_browser"],
+    )
+
+    messages = context.build_messages(agent, "西雅图时间现在几点")
+    system_prompt = messages[0]["content"]
+
+    assert "[Runtime Policy]" in system_prompt
+    assert "Reply in the same language as the user's latest message" in system_prompt
+    assert "[Tool Policy]" in system_prompt
+    assert "Use current_time for questions about the current time" in system_prompt
+    assert "Use chrome_browser for interactive website tasks" in system_prompt
+
+
+def test_context_manager_injects_extra_system_sections(tmp_path: Path) -> None:
+    """Extra workflow/skill sections should be appended to the system prompt."""
+    manager = MemoryManager(tmp_path)
+    manager._ensure_directories()
+    context = ContextManager(manager)
+    agent = AgentDefinition(
+        name="General",
+        description="test",
+        system_prompt="You are an AI.",
+    )
+
+    messages = context.build_messages(
+        agent,
+        "hello",
+        extra_system_sections=["[Workflow Library]\n- Demo", "[Skill Library]\n- Skill"],
+    )
+
+    system_prompt = messages[0]["content"]
+    assert "[Workflow Library]" in system_prompt
+    assert "[Skill Library]" in system_prompt

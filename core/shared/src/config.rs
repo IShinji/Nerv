@@ -55,6 +55,8 @@ pub struct TelegramChannelConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsConfig {
     pub router: RouterModelConfig,
+    #[serde(default)]
+    pub tiers: TierModelsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +67,29 @@ pub struct RouterModelConfig {
     pub model: String,
     #[serde(default = "default_ollama_url")]
     pub base_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TierModelsConfig {
+    #[serde(default = "default_tier0_model")]
+    pub tier0: String,
+    #[serde(default = "default_tier1_model")]
+    pub tier1: String,
+    #[serde(default = "default_tier2_model")]
+    pub tier2: String,
+    #[serde(default = "default_tier3_model")]
+    pub tier3: String,
+}
+
+impl Default for TierModelsConfig {
+    fn default() -> Self {
+        Self {
+            tier0: default_tier0_model(),
+            tier1: default_tier1_model(),
+            tier2: default_tier2_model(),
+            tier3: default_tier3_model(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +112,8 @@ pub struct BrainConfig {
     pub python_command: String,
     #[serde(default = "default_brain_module")]
     pub module: String,
+    #[serde(default)]
+    pub auto_install_ollama: bool,
     #[serde(default = "default_restart_max")]
     pub restart_max: u32,
 }
@@ -96,6 +123,7 @@ impl Default for BrainConfig {
         Self {
             python_command: "uv run python".to_string(),
             module: "nerv".to_string(),
+            auto_install_ollama: false,
             restart_max: 3,
         }
     }
@@ -108,7 +136,19 @@ fn default_ollama() -> String {
     "ollama".to_string()
 }
 fn default_router_model() -> String {
-    "qwen2.5:3b".to_string()
+    "qwen2.5:1.5b".to_string()
+}
+fn default_tier0_model() -> String {
+    "qwen2.5:1.5b".to_string()
+}
+fn default_tier1_model() -> String {
+    "qwen2.5:7b".to_string()
+}
+fn default_tier2_model() -> String {
+    "qwen2.5:14b".to_string()
+}
+fn default_tier3_model() -> String {
+    "qwen2.5:32b".to_string()
 }
 fn default_ollama_url() -> String {
     "http://localhost:11434".to_string()
@@ -130,26 +170,45 @@ impl NervConfig {
     /// Load config by merging default config with user overrides.
     ///
     /// Looks for config.yaml next to config.default.yaml (project root).
-    /// If config.yaml exists, it takes precedence; otherwise falls back to default.
+    /// When present, user config overrides only the keys it defines.
     pub fn load(project_root: &Path) -> Result<Self, ConfigError> {
         let default_path = project_root.join("core").join("config.default.yaml");
         let user_path = project_root.join("config.yaml");
 
-        // Prefer user config, fall back to default
-        let config_path = if user_path.exists() {
-            &user_path
-        } else {
-            &default_path
-        };
-
-        let content =
-            std::fs::read_to_string(config_path).map_err(|e| ConfigError::ReadFile {
-                path: config_path.to_path_buf(),
+        let default_content =
+            std::fs::read_to_string(&default_path).map_err(|e| ConfigError::ReadFile {
+                path: default_path.clone(),
                 source: e,
             })?;
+        let mut merged: serde_yaml::Value = serde_yaml::from_str(&default_content)?;
 
-        let config: NervConfig = serde_yaml::from_str(&content)?;
+        if user_path.exists() {
+            let user_content =
+                std::fs::read_to_string(&user_path).map_err(|e| ConfigError::ReadFile {
+                    path: user_path.clone(),
+                    source: e,
+                })?;
+            let user_value: serde_yaml::Value = serde_yaml::from_str(&user_content)?;
+            merge_yaml(&mut merged, user_value);
+        }
+
+        let config: NervConfig = serde_yaml::from_value(merged)?;
         Ok(config)
+    }
+}
+
+fn merge_yaml(base: &mut serde_yaml::Value, override_value: serde_yaml::Value) {
+    match (base, override_value) {
+        (serde_yaml::Value::Mapping(base_map), serde_yaml::Value::Mapping(override_map)) => {
+            for (key, value) in override_map {
+                if let Some(base_value) = base_map.get_mut(&key) {
+                    merge_yaml(base_value, value);
+                } else {
+                    base_map.insert(key, value);
+                }
+            }
+        }
+        (base_slot, value) => *base_slot = value,
     }
 }
 
@@ -187,7 +246,7 @@ channels:
 models:
   router:
     provider: "ollama"
-    model: "qwen2.5:3b"
+    model: "qwen2.5:1.5b"
     base_url: "http://localhost:11434"
 "#,
         );
@@ -195,7 +254,8 @@ models:
         let config = NervConfig::load(dir.path()).unwrap();
         assert!(config.channels.cli.enabled);
         assert!(!config.channels.telegram.enabled);
-        assert_eq!(config.models.router.model, "qwen2.5:3b");
+        assert_eq!(config.models.router.model, "qwen2.5:1.5b");
+        assert_eq!(config.models.tiers.tier0, "qwen2.5:1.5b");
     }
 
     #[test]
@@ -214,7 +274,7 @@ channels:
 models:
   router:
     provider: "ollama"
-    model: "qwen2.5:3b"
+    model: "qwen2.5:1.5b"
     base_url: "http://localhost:11434"
 "#,
         );
@@ -241,5 +301,52 @@ models:
         assert!(config.channels.telegram.enabled);
         assert_eq!(config.channels.telegram.bot_token, "my-secret-token");
         assert_eq!(config.models.router.model, "qwen2.5:7b");
+        assert_eq!(config.models.tiers.tier0, "qwen2.5:1.5b");
+    }
+
+    #[test]
+    fn test_partial_user_config_merges_with_default() {
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            "config.default.yaml",
+            r#"
+channels:
+  cli:
+    enabled: true
+  telegram:
+    enabled: false
+    bot_token: ""
+models:
+  router:
+    provider: "ollama"
+    model: "qwen2.5:1.5b"
+    base_url: "http://localhost:11434"
+logging:
+  level: "info"
+brain:
+  python_command: "uv run python"
+  module: "nerv"
+  restart_max: 3
+"#,
+        );
+        write_config(
+            dir.path(),
+            "config.yaml",
+            r#"
+models:
+  router:
+    model: "qwen2.5:1.5b"
+"#,
+        );
+
+        let config = NervConfig::load(dir.path()).unwrap();
+        assert!(config.channels.cli.enabled);
+        assert!(!config.channels.telegram.enabled);
+        assert_eq!(config.models.router.provider, "ollama");
+        assert_eq!(config.models.router.model, "qwen2.5:1.5b");
+        assert_eq!(config.models.router.base_url, "http://localhost:11434");
+        assert_eq!(config.models.tiers.tier0, "qwen2.5:1.5b");
+        assert_eq!(config.brain.module, "nerv");
     }
 }
