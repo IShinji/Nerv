@@ -1093,6 +1093,58 @@ def list_review_queue(status: str = "pending") -> ToolResult:
 
 
 @registry.register(
+    name="mcp_status",
+    description=(
+        "Inspect configured MCP servers, their health, bound capabilities, and "
+        "available remote tools. Optionally pass a specific server name."
+    ),
+    requires_confirmation=False,
+)
+async def mcp_status(server_name: str = "") -> ToolResult:
+    """Report MCP server configuration and health."""
+    from nerv.mcp import get_mcp_manager
+    from nerv.mcp.client import McpTransportError
+
+    manager = await get_mcp_manager(_get_project_root())
+    try:
+        statuses = await manager.get_status(server_name)
+    except McpTransportError as exc:
+        return ToolResult(content=str(exc), is_error=True)
+
+    if not statuses:
+        return ToolResult(content="No MCP servers are configured.")
+
+    lines = ["MCP server status:"]
+    for status in statuses:
+        health = "healthy" if status["healthy"] else "unhealthy"
+        if not status["enabled"]:
+            health = "disabled"
+
+        lines.append(f"- {status['name']}: {health}")
+        lines.append(f"  Transport: {status['transport']}")
+        command = status["command"] or "(unset)"
+        args = " ".join(status["args"]) if status["args"] else "(none)"
+        lines.append(f"  Command: {command}")
+        lines.append(f"  Args: {args}")
+        capabilities = ", ".join(status["capabilities"]) if status["capabilities"] else "none"
+        lines.append(f"  Capabilities: {capabilities}")
+        if status["action_map"]:
+            lines.append(
+                "  Action map: "
+                + ", ".join(
+                    f"{action}->{tool_name}"
+                    for action, tool_name in sorted(status["action_map"].items())
+                )
+            )
+        if status["available_tools"]:
+            lines.append("  Remote tools: " + ", ".join(status["available_tools"]))
+        if status["error"]:
+            lines.append(f"  Error: {status['error']}")
+
+    return ToolResult(content="\n".join(lines))
+
+
+@registry.register(
     name="browser_interactive",
     description=(
         "Interactive browser capability. Prefers a configured MCP browser provider "

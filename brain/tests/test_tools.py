@@ -57,12 +57,14 @@ def test_registry_schemas_generation() -> None:
             "list_review_queue",
             "web_search",
             "browser",
+            "browser_interactive",
+            "mcp_status",
             "chrome_browser",
             "screenshot",
             "desktop_control",
         ]
     )
-    assert len(schemas) == 12
+    assert len(schemas) == 14
 
     names = [schema["function"]["name"] for schema in schemas]
     assert names == [
@@ -75,6 +77,8 @@ def test_registry_schemas_generation() -> None:
         "list_review_queue",
         "web_search",
         "browser",
+        "browser_interactive",
+        "mcp_status",
         "chrome_browser",
         "screenshot",
         "desktop_control",
@@ -89,8 +93,10 @@ def test_registry_schemas_generation() -> None:
     assert "query" in schemas[7]["function"]["parameters"]["properties"]
     assert "url" in schemas[8]["function"]["parameters"]["properties"]
     assert "action" in schemas[9]["function"]["parameters"]["properties"]
-    assert "ocr" in schemas[10]["function"]["parameters"]["properties"]
+    assert "server_name" in schemas[10]["function"]["parameters"]["properties"]
     assert "action" in schemas[11]["function"]["parameters"]["properties"]
+    assert "ocr" in schemas[12]["function"]["parameters"]["properties"]
+    assert "action" in schemas[13]["function"]["parameters"]["properties"]
 
 
 def test_greedy_tools() -> None:
@@ -120,6 +126,14 @@ def test_greedy_tools() -> None:
     assert tool.requires_confirmation is False
 
     tool = registry.get_tool("browser")
+    assert tool is not None
+    assert tool.requires_confirmation is False
+
+    tool = registry.get_tool("browser_interactive")
+    assert tool is not None
+    assert tool.requires_confirmation is False
+
+    tool = registry.get_tool("mcp_status")
     assert tool is not None
     assert tool.requires_confirmation is False
 

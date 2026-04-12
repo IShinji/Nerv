@@ -36,6 +36,20 @@ class McpServerManager:
         """Return whether any enabled MCP server is bound to the capability."""
         return self._find_server_for_capability(capability_name) is not None
 
+    async def get_status(self, server_name: str = "") -> list[dict[str, Any]]:
+        """Collect status information for one or all configured MCP servers."""
+        normalized = server_name.strip()
+        if normalized:
+            config = self._server_configs.get(normalized)
+            if config is None:
+                raise McpTransportError(f"Unknown MCP server: {server_name}")
+            return [await self._build_status_entry(config)]
+
+        return [
+            await self._build_status_entry(config)
+            for config in self._server_configs.values()
+        ]
+
     async def invoke_capability_action(
         self,
         capability_name: str,
@@ -76,6 +90,40 @@ class McpServerManager:
             await client.close()
         self._clients.clear()
         self._tool_cache.clear()
+
+    async def _build_status_entry(self, config: McpServerConfig) -> dict[str, Any]:
+        """Build a structured status snapshot for one configured server."""
+        entry: dict[str, Any] = {
+            "name": config.name,
+            "enabled": config.enabled,
+            "transport": config.transport,
+            "command": config.command,
+            "args": list(config.args),
+            "cwd": config.cwd,
+            "capabilities": list(config.capabilities),
+            "action_map": dict(config.action_map),
+            "healthy": False,
+            "available_tools": [],
+            "error": "",
+        }
+
+        if not config.enabled:
+            entry["error"] = "Server is disabled."
+            return entry
+
+        if not config.command:
+            entry["error"] = "Server is enabled but command is empty."
+            return entry
+
+        try:
+            client = await self._get_client(config)
+            tool_names = sorted(await self._get_tool_names(config.name, client))
+            entry["healthy"] = True
+            entry["available_tools"] = tool_names
+            return entry
+        except (McpTransportError, McpProtocolError) as exc:
+            entry["error"] = str(exc)
+            return entry
 
     def _load_config(self) -> None:
         """Load and normalize MCP config from merged project config."""

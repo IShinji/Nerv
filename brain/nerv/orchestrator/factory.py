@@ -48,6 +48,7 @@ Available capabilities and built-in tools for them to use (only include if stric
 - list_review_queue
 - web_search
 - browser
+- mcp_status
 - chrome_browser
 - screenshot
 - desktop_control

@@ -86,6 +86,8 @@ def build_tool_policy(agent: AgentDefinition) -> str:
         lines.append("- Use list_review_queue when you need to inspect pending workflow proposals.")
     if has_name("web_search"):
         lines.append("- Use web_search for current events, public web lookup, and finding candidate pages.")
+    if has_name("mcp_status"):
+        lines.append("- Use mcp_status when you need to inspect MCP configuration, health, or available remote tools.")
     if has_name("browser", "browser.read"):
         lines.append("- Use browser.read / browser to inspect a specific page after you already know the URL or found it via web_search.")
     if has_name("browser.interactive", "browser_interactive", "chrome_browser"):

@@ -78,6 +78,32 @@ mcp:
 
 
 @pytest.mark.asyncio
+async def test_mcp_manager_status_reports_disabled_server(tmp_path: Path) -> None:
+    """Status output should include disabled server config without launching it."""
+    _write_project_config(
+        tmp_path,
+        """
+mcp:
+  servers:
+    chrome:
+      enabled: false
+      transport: "stdio"
+      command: "python"
+      args: ["server.py"]
+      capabilities: ["browser.interactive"]
+""",
+    )
+
+    manager = McpServerManager(tmp_path)
+    statuses = await manager.get_status()
+    assert len(statuses) == 1
+    assert statuses[0]["name"] == "chrome"
+    assert statuses[0]["enabled"] is False
+    assert statuses[0]["healthy"] is False
+    assert "disabled" in statuses[0]["error"].lower()
+
+
+@pytest.mark.asyncio
 async def test_browser_interactive_prefers_mcp_server(tmp_path: Path, monkeypatch) -> None:
     """browser_interactive should route through MCP when configured and available."""
     server_script = tmp_path / "fake_mcp_server.py"
@@ -173,6 +199,78 @@ mcp:
 
     assert result.is_error is False
     assert "MCP opened https://example.com" in result.content
+
+
+@pytest.mark.asyncio
+async def test_mcp_status_tool_reports_remote_tools(tmp_path: Path, monkeypatch) -> None:
+    """The mcp_status tool should surface remote tools for a healthy server."""
+    server_script = tmp_path / "fake_mcp_status_server.py"
+    server_script.write_text(
+        """
+import json
+import sys
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        response = {
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "protocolVersion": message["params"]["protocolVersion"],
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "fake-chrome", "version": "0.1.0"},
+            },
+        }
+    elif method == "notifications/initialized":
+        continue
+    elif method == "tools/list":
+        response = {
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "tools": [
+                    {"name": "open_url", "description": "Open URL", "inputSchema": {"type": "object"}},
+                    {"name": "fill_prompt", "description": "Fill prompt", "inputSchema": {"type": "object"}},
+                ]
+            },
+        }
+    else:
+        response = {"jsonrpc": "2.0", "id": message["id"], "result": {"content": []}}
+    sys.stdout.write(json.dumps(response) + "\\n")
+    sys.stdout.flush()
+""".strip(),
+        encoding="utf-8",
+    )
+
+    _write_project_config(
+        tmp_path,
+        f"""
+mcp:
+  servers:
+    chrome:
+      enabled: true
+      transport: "stdio"
+      command: "{sys.executable}"
+      args: ["{server_script}"]
+      capabilities: ["browser.interactive"]
+      action_map:
+        open_url: "open_url"
+""",
+    )
+
+    monkeypatch.setattr(builtins, "_get_project_root", lambda: tmp_path)
+
+    await reset_mcp_managers()
+    try:
+        result = await builtins.mcp_status()
+    finally:
+        await reset_mcp_managers()
+
+    assert result.is_error is False
+    assert "chrome: healthy" in result.content
+    assert "Remote tools: fill_prompt, open_url" in result.content
 
 
 @pytest.mark.asyncio
