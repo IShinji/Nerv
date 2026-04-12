@@ -244,6 +244,7 @@ class Orchestrator:
 
                 data = response.json()
                 message_obj = data.get("message", {})
+                content = message_obj.get("content", "")
                 tool_calls = message_obj.get("tool_calls", [])
                 messages.append(message_obj)
             else:
