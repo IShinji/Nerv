@@ -365,49 +365,69 @@ _CHROME_AS_ENABLED = False  # Module-level flag to avoid repeated subprocess cal
 def _ensure_chrome_applescript_enabled() -> None:
     """Ensure Chrome allows JavaScript execution via AppleScript.
 
-    Instead of trusting the plist value, we probe Chrome by running a trivial
-    JS snippet. If it fails, we force-write the preference and restart Chrome.
+    The 'Allow JavaScript from Apple Events' toggle in Chrome can only be
+    changed via the Chrome UI menu (View > Developer). We first probe whether
+    JS works; if not, we attempt to toggle the menu via macOS UI scripting.
+    If that fails (no Accessibility permission), we show a clear notification.
     """
     global _CHROME_AS_ENABLED
     if _CHROME_AS_ENABLED:
         return
 
-    # First, ensure the preference is written (idempotent)
-    subprocess.run(
-        ["defaults", "write", "com.google.Chrome", "AppleScriptEnabled", "-bool", "true"],
-        capture_output=True,
-        timeout=5,
-    )
-
     # Probe: try to execute a trivial JS snippet in the current Chrome instance
     probe = _run_applescript([
         f'tell application "{CHROME_APP_NAME}"',
-        'if (count of windows) = 0 then return "OK_NO_WINDOW"',
-        'return execute active tab of front window javascript "1+1"',
+        'if (count of windows) = 0 then',
+        '  make new window',
+        '  delay 1',
+        'end if',
+        'try',
+        '  return execute active tab of front window javascript "1+1"',
+        'on error',
+        '  return "BLOCKED"',
+        'end try',
         'end tell',
     ])
 
-    if probe.returncode == 0:
-        # JS works — Chrome already has the setting active
+    if probe.returncode == 0 and probe.stdout.strip() != "BLOCKED":
         _CHROME_AS_ENABLED = True
         return
 
-    # JS probe failed → Chrome needs a restart to pick up the new plist value
-    logger.info("Chrome AppleScript JS permission not active. Restarting Chrome...")
+    # JS blocked → try to toggle the menu item via UI scripting (requires Accessibility permission)
+    logger.info("Chrome AppleScript JS is blocked. Attempting to enable via menu toggle...")
 
-    try:
-        subprocess.run(
-            ["osascript", "-e", f'tell application "{CHROME_APP_NAME}" to quit'],
-            capture_output=True,
-            timeout=10,
-        )
-        time.sleep(2)
-        subprocess.run(["open", "-a", CHROME_APP_NAME], capture_output=True, timeout=10)
-        time.sleep(3)
+    toggle_result = _run_applescript([
+        f'tell application "{CHROME_APP_NAME}" to activate',
+        'delay 0.5',
+        'tell application "System Events"',
+        f'  tell process "{CHROME_APP_NAME}"',
+        '    click menu item "Allow JavaScript from Apple Events" of menu "Developer" of menu item "Developer" of menu "View" of menu bar 1',
+        '  end tell',
+        'end tell',
+        'delay 1',
+    ])
+
+    if toggle_result.returncode == 0:
+        logger.info("Successfully toggled Chrome JS permission via menu.")
         _CHROME_AS_ENABLED = True
-        logger.info("Chrome restarted with AppleScript JS enabled.")
-    except Exception as exc:
-        logger.warning("Could not restart Chrome: %s", exc)
+        return
+
+    # UI scripting also failed (no Accessibility permission) → show clear error
+    logger.warning(
+        "Could not auto-enable Chrome JS permission. "
+        "Please enable it manually: Chrome menu → View → Developer → Allow JavaScript from Apple Events"
+    )
+    # Open Chrome and show a macOS notification to guide the user
+    subprocess.run(
+        [
+            "osascript", "-e",
+            'display notification '
+            '"Please enable: Chrome → View → Developer → Allow JavaScript from Apple Events" '
+            'with title "Nerv Setup Required"',
+        ],
+        capture_output=True,
+        timeout=5,
+    )
 
 
 def _chrome_run_script(lines: list[str]) -> ToolResult:
