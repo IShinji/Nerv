@@ -11,6 +11,7 @@ import nerv.tools.builtins as builtins
 from nerv.config import load_project_config
 from nerv.mcp import reset_mcp_managers
 from nerv.mcp.manager import McpServerManager
+from nerv.mcp.presets import get_builtin_mcp_preset, render_mcp_preset_snippet
 from nerv.tools.registry import ToolResult
 
 
@@ -75,6 +76,17 @@ mcp:
     manager = McpServerManager(tmp_path)
     assert manager.has_capability_binding("browser.interactive") is True
     assert manager.has_capability_binding("browser.read") is False
+
+
+def test_builtin_mcp_preset_renders_config_snippet() -> None:
+    """Builtin presets should produce a copy-pasteable YAML config snippet."""
+    preset = get_builtin_mcp_preset("chrome_devtools_official")
+    assert preset is not None
+
+    snippet = render_mcp_preset_snippet(preset)
+    assert 'preset: chrome_devtools_official' in snippet
+    assert 'command: npx' in snippet
+    assert '- chrome-devtools-mcp@latest' in snippet
 
 
 @pytest.mark.asyncio
@@ -202,6 +214,102 @@ mcp:
 
 
 @pytest.mark.asyncio
+async def test_mcp_manager_uses_preset_action_binding(tmp_path: Path, monkeypatch) -> None:
+    """Preset-backed browser_interactive should translate Nerv actions to MCP tools."""
+    server_script = tmp_path / "fake_preset_mcp_server.py"
+    server_script.write_text(
+        """
+import json
+import sys
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        response = {
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "protocolVersion": message["params"]["protocolVersion"],
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "fake-chrome-devtools", "version": "0.1.0"},
+            },
+        }
+    elif method == "notifications/initialized":
+        continue
+    elif method == "tools/list":
+        response = {
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "tools": [
+                    {
+                        "name": "new_page",
+                        "description": "Open a new page",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"url": {"type": "string"}},
+                            "required": ["url"],
+                        },
+                    }
+                ]
+            },
+        }
+    elif method == "tools/call":
+        response = {
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "new_page " + message["params"]["arguments"]["url"],
+                    }
+                ]
+            },
+        }
+    else:
+        response = {"jsonrpc": "2.0", "id": message["id"], "result": {"content": []}}
+    sys.stdout.write(json.dumps(response) + "\\n")
+    sys.stdout.flush()
+""".strip(),
+        encoding="utf-8",
+    )
+
+    _write_project_config(
+        tmp_path,
+        f"""
+mcp:
+  servers:
+    chrome:
+      enabled: true
+      preset: "chrome_devtools_official"
+      command: "{sys.executable}"
+      args: ["{server_script}"]
+""",
+    )
+
+    monkeypatch.setattr(builtins, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        builtins,
+        "chrome_browser",
+        lambda **kwargs: ToolResult(content="native fallback should not run", is_error=True),
+    )
+
+    await reset_mcp_managers()
+    try:
+        result = await builtins.browser_interactive(
+            action="open_url",
+            url="https://preset.example",
+        )
+    finally:
+        await reset_mcp_managers()
+
+    assert result.is_error is False
+    assert "new_page https://preset.example" in result.content
+
+
+@pytest.mark.asyncio
 async def test_mcp_status_tool_reports_remote_tools(tmp_path: Path, monkeypatch) -> None:
     """The mcp_status tool should surface remote tools for a healthy server."""
     server_script = tmp_path / "fake_mcp_status_server.py"
@@ -310,3 +418,11 @@ mcp:
 
     assert result.is_error is False
     assert "native fallback https://fallback.example" in result.content
+
+
+def test_mcp_presets_tool_renders_builtin_preset() -> None:
+    """The mcp_presets tool should expose builtin preset snippets."""
+    result = builtins.mcp_presets("chrome_devtools_official")
+    assert result.is_error is False
+    assert "Official Chrome DevTools MCP server" in result.content
+    assert 'preset: chrome_devtools_official' in result.content

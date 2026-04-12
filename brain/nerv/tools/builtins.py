@@ -1093,6 +1093,62 @@ def list_review_queue(status: str = "pending") -> ToolResult:
 
 
 @registry.register(
+    name="mcp_presets",
+    description=(
+        "List builtin MCP presets or render a config snippet for one preset. "
+        "Use this to configure a known MCP server such as the official Chrome "
+        "DevTools MCP integration."
+    ),
+    requires_confirmation=False,
+)
+def mcp_presets(preset_name: str = "") -> ToolResult:
+    """List builtin MCP presets or render one preset snippet."""
+    from nerv.mcp.presets import (
+        get_builtin_mcp_preset,
+        list_builtin_mcp_presets,
+        render_mcp_preset_snippet,
+    )
+
+    normalized = preset_name.strip()
+    if not normalized:
+        presets = list_builtin_mcp_presets()
+        if not presets:
+            return ToolResult(content="No builtin MCP presets are available.")
+
+        lines = ["Builtin MCP presets:"]
+        for preset in presets:
+            capabilities = ", ".join(preset.capabilities) if preset.capabilities else "none"
+            lines.append(f"- {preset.name}: {preset.description}")
+            lines.append(f"  Capabilities: {capabilities}")
+            lines.append(f"  Source: {preset.source_url}")
+        return ToolResult(content="\n".join(lines))
+
+    preset = get_builtin_mcp_preset(normalized)
+    if preset is None:
+        return ToolResult(content=f"Unknown MCP preset: {preset_name}", is_error=True)
+
+    lines = [
+        f"Preset: {preset.name}",
+        preset.description,
+        f"Source: {preset.source_url}",
+    ]
+    if preset.default_action_map:
+        lines.append(
+            "Mapped actions: "
+            + ", ".join(
+                f"{action}->{tool_name}"
+                for action, tool_name in sorted(preset.default_action_map.items())
+            )
+        )
+    if preset.notes:
+        lines.append("Notes:")
+        lines.extend(f"- {note}" for note in preset.notes)
+    lines.append("Config snippet:")
+    lines.append(render_mcp_preset_snippet(preset))
+    return ToolResult(content="\n".join(lines))
+
+
+@registry.register(
     name="mcp_status",
     description=(
         "Inspect configured MCP servers, their health, bound capabilities, and "
@@ -1126,6 +1182,8 @@ async def mcp_status(server_name: str = "") -> ToolResult:
         args = " ".join(status["args"]) if status["args"] else "(none)"
         lines.append(f"  Command: {command}")
         lines.append(f"  Args: {args}")
+        if status["preset"]:
+            lines.append(f"  Preset: {status['preset']}")
         capabilities = ", ".join(status["capabilities"]) if status["capabilities"] else "none"
         lines.append(f"  Capabilities: {capabilities}")
         if status["action_map"]:

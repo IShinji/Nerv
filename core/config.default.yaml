@@ -37,18 +37,11 @@ mcp:
   servers:
     chrome:
       enabled: false
+      preset: ""            # Example: "chrome_devtools_official"
       transport: "stdio"
-      command: ""           # Example: "npx" or "uvx"
-      args: []               # Example: ["-y", "your-chrome-mcp-server"]
+      command: ""           # Leave empty to use preset defaults, or set explicitly.
+      args: []               # Leave empty to use preset defaults, or set explicitly.
       cwd: ""
       env: {}
       capabilities: ["browser.interactive"]
-      action_map:
-        open_url: "open_url"
-        get_state: "get_state"
-        get_page_text: "get_page_text"
-        fill_prompt: "fill_prompt"
-        submit_prompt: "submit_prompt"
-        wait_for_text: "wait_for_text"
-        wait_for_idle: "wait_for_idle"
-        run_javascript: "run_javascript"
+      action_map: {}         # Optional custom overrides for non-preset servers.

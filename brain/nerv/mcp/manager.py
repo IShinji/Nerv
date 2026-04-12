@@ -16,6 +16,10 @@ from nerv.mcp.client import (
     McpTransportError,
     StdioMcpClient,
 )
+from nerv.mcp.presets import (
+    get_builtin_mcp_preset,
+    merge_preset_into_server_config,
+)
 from nerv.tools.registry import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -71,6 +75,12 @@ class McpServerManager:
             )
             return None
 
+        preset = get_builtin_mcp_preset(config.preset) if config.preset else None
+        binding = preset.action_bindings.get(action) if preset is not None else None
+        request_arguments = arguments
+        if binding is not None and tool_name == binding.tool_name:
+            request_arguments = binding.build_arguments(arguments)
+
         client = await self._get_client(config)
         tool_names = await self._get_tool_names(config.name, client)
         if tool_name not in tool_names:
@@ -81,7 +91,7 @@ class McpServerManager:
             )
             return None
 
-        result = await client.call_tool(tool_name, arguments)
+        result = await client.call_tool(tool_name, request_arguments)
         return self._format_tool_result(config.name, tool_name, result)
 
     async def close_all(self) -> None:
@@ -95,6 +105,7 @@ class McpServerManager:
         """Build a structured status snapshot for one configured server."""
         entry: dict[str, Any] = {
             "name": config.name,
+            "preset": config.preset,
             "enabled": config.enabled,
             "transport": config.transport,
             "command": config.command,
@@ -144,25 +155,9 @@ class McpServerManager:
             if not isinstance(raw_value, dict):
                 continue
 
-            self._server_configs[name] = McpServerConfig(
-                name=name,
-                enabled=bool(raw_value.get("enabled", False)),
-                transport=str(raw_value.get("transport", "stdio")).strip() or "stdio",
-                command=str(raw_value.get("command", "")).strip(),
-                args=[str(arg) for arg in raw_value.get("args", []) or []],
-                env={
-                    str(key): str(value)
-                    for key, value in (raw_value.get("env", {}) or {}).items()
-                },
-                cwd=str(raw_value.get("cwd", "")).strip(),
-                capabilities=[
-                    str(capability)
-                    for capability in raw_value.get("capabilities", []) or []
-                ],
-                action_map={
-                    str(action): str(tool_name)
-                    for action, tool_name in (raw_value.get("action_map", {}) or {}).items()
-                },
+            self._server_configs[name] = merge_preset_into_server_config(
+                name,
+                raw_value,
             )
 
     def _find_server_for_capability(self, capability_name: str) -> McpServerConfig | None:

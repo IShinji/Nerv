@@ -33,6 +33,7 @@ class McpServerConfig:
     """Runtime configuration for an MCP server process."""
 
     name: str
+    preset: str = ""
     enabled: bool = False
     transport: str = "stdio"
     command: str = ""
