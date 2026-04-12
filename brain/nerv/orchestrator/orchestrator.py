@@ -173,11 +173,19 @@ class Orchestrator:
     def _select_model(self, tier: int) -> str:
         """Select a model based on the tier."""
         from nerv.hardware import PROFILE
+        
+        def _normalize(val: str) -> str:
+            if "/" in val or val.startswith("local:"):
+                return val
+            if val.startswith(("gpt-", "claude-", "gemini-", "o1-", "deepseek-")):
+                return val
+            return f"local:{val}"
+
         model_map = {
-            0: os.environ.get("NERV_MODEL_TIER0", f"local:{PROFILE['recommended_router_model']}"),
-            1: os.environ.get("NERV_MODEL_TIER1", "gemini/gemini-1.5-flash"),
-            2: os.environ.get("NERV_MODEL_TIER2", "claude-3-5-sonnet-20241022"),
-            3: os.environ.get("NERV_MODEL_TIER3", "claude-3-5-sonnet-20241022"),
+            0: _normalize(os.environ.get("NERV_MODEL_TIER0", PROFILE["recommended_router_model"])),
+            1: _normalize(os.environ.get("NERV_MODEL_TIER1", "gemini/gemini-1.5-flash")),
+            2: _normalize(os.environ.get("NERV_MODEL_TIER2", "claude-3-5-sonnet-20241022")),
+            3: _normalize(os.environ.get("NERV_MODEL_TIER3", "claude-3-5-sonnet-20241022")),
         }
         model = model_map.get(tier, model_map[0])
         logger.debug("Selected model for tier %d: %s", tier, model)
