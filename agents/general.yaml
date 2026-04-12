@@ -14,6 +14,7 @@ tools:
   - current_time
   - list_workflows
   - get_workflow
+  - execute_workflow
   - propose_workflow
   - list_skills
   - get_skill

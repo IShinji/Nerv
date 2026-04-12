@@ -50,6 +50,8 @@ def build_tool_policy(agent: AgentDefinition) -> str:
         lines.append("- Use file_io/read_file/grep_search for file inspection instead of guessing file contents.")
     if "list_workflows" in available_tools or "get_workflow" in available_tools:
         lines.append("- Check shared workflows before inventing a new multi-step execution plan.")
+    if "execute_workflow" in available_tools:
+        lines.append("- If a user asks for a task that closely matches a shared workflow in your library, ALWAYS use the execute_workflow tool to run it directly instead of performing the steps manually.")
     if "list_skills" in available_tools or "get_skill" in available_tools:
         lines.append("- Check shared skills when you need reusable operating guidance for a task domain.")
     if "propose_workflow" in available_tools:
