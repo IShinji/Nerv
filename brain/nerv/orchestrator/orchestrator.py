@@ -105,6 +105,17 @@ class Orchestrator:
         # Select model based on tier
         model = self._select_model(route_result.model_tier)
 
+        # ── Fallback Workflow Gate ──
+        # For tier >= 1: if the selected model is unavailable, attempt to
+        # fulfil the request via a user-configured fallback workflow.
+        if route_result.model_tier >= 1:
+            fallback_response = await self._try_workflow_fallback(
+                agent, message, route_result.model_tier, model
+            )
+            if fallback_response is not None:
+                self.memory.append_message("assistant", fallback_response)
+                return fallback_response
+
         # 2. Build contextual messages (System + Facts + History + Current msg)
         # Note: the current user_msg is passed in separately for context bounds
         extra_sections = [
@@ -195,6 +206,98 @@ class Orchestrator:
         """Persist a direct user/assistant turn without invoking the model."""
         self.memory.append_message("user", user_message)
         self.memory.append_message("assistant", assistant_message)
+
+    async def _try_workflow_fallback(
+        self,
+        agent: "AgentDefinition",
+        user_message: str,
+        tier: int,
+        selected_model: str,
+    ) -> str | None:
+        """Attempt to fulfil a request via a user-configured fallback workflow.
+
+        When the selected model is unavailable (not installed locally or
+        missing API credentials), this method searches for a matching
+        workflow in the user's workflow library and executes it instead.
+        Returns None if no fallback is needed or available.
+        """
+        is_local = selected_model.startswith("local:")
+        actual_model = selected_model[6:] if is_local else selected_model
+
+        model_available = False
+
+        if is_local:
+            # Probe Ollama to confirm the model actually exists
+            try:
+                resp = await self._client.post(
+                    f"{self.base_url}/api/show",
+                    json={"name": actual_model},
+                    timeout=5,
+                )
+                model_available = resp.status_code == 200
+            except Exception:
+                model_available = False
+        else:
+            # For cloud models, check if relevant API key exists
+            import os
+            key_checks = {
+                "gemini": "GEMINI_API_KEY",
+                "claude": "ANTHROPIC_API_KEY",
+                "gpt": "OPENAI_API_KEY",
+                "o1": "OPENAI_API_KEY",
+                "deepseek": "DEEPSEEK_API_KEY",
+            }
+            for prefix, env_var in key_checks.items():
+                if actual_model.startswith(prefix) or selected_model.startswith(prefix):
+                    model_available = bool(os.environ.get(env_var))
+                    break
+            else:
+                model_available = False
+
+        if model_available:
+            logger.debug("Model '%s' is available, skipping workflow fallback.", selected_model)
+            return None
+
+        # Model is NOT available → search for a fallback workflow
+        logger.info(
+            "Model '%s' not available for tier %d. Searching for fallback workflow...",
+            selected_model,
+            tier,
+        )
+
+        fallback_wf = None
+
+        # Search workflows relevant to this agent
+        candidates = self.workflow_registry.find_for_agent(agent)
+        for wf in candidates:
+            tags = set(getattr(wf, "tags", []))
+            if "browser" in tags:
+                fallback_wf = wf
+                break
+
+        # Broader search: any workflow tagged with 'browser'
+        if not fallback_wf:
+            for wf in self.workflow_registry.list_workflows():
+                tags = set(getattr(wf, "tags", []))
+                if "browser" in tags:
+                    fallback_wf = wf
+                    break
+
+        if not fallback_wf:
+            logger.warning("No fallback workflow found. Falling back to tier 0 model.")
+            return None
+
+        logger.info("Workflow fallback → '%s' for user request.", fallback_wf.name)
+
+        from nerv.workflows.executor import WorkflowExecutor
+        executor = WorkflowExecutor(self)
+        try:
+            result = await executor.execute(fallback_wf, user_message)
+            return result
+        except Exception as e:
+            logger.error("Fallback workflow '%s' failed: %s", fallback_wf.name, e)
+            logger.info("Falling back to tier 0 model after workflow failure.")
+            return None
 
     async def _call_model(
         self,

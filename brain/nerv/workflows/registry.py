@@ -49,10 +49,17 @@ class WorkflowRegistry:
     def reload(self) -> None:
         """Reload workflows from disk."""
         self._workflows = {}
-        if not self.workflows_dir.exists():
-            return
+        # Load from shared (public) workflows directory
+        self._load_dir(self.workflows_dir)
+        # Load from personal (user-configured) workflows directory
+        personal_dir = self.project_root / "personal" / "workflows"
+        self._load_dir(personal_dir)
 
-        for path in sorted(self.workflows_dir.rglob("*.yaml")):
+    def _load_dir(self, directory: Path) -> None:
+        """Load all approved workflows from a directory."""
+        if not directory.exists():
+            return
+        for path in sorted(directory.rglob("*.yaml")):
             workflow = self._parse_workflow_file(path)
             if workflow.review_status != "approved":
                 continue
