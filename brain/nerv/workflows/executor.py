@@ -102,13 +102,13 @@ class WorkflowExecutor:
     ) -> str:
         """Execute a workflow step that targets a specific tool."""
         # Try direct argument injection first (for simple cases like open_url -> URL)
-        if method_hint and args_hint:
+        if method_hint:
             direct_result = await self._try_direct_call(tool_def, method_hint, args_hint, history_context)
             if direct_result is not None:
                 return direct_result
 
         # Fall back to LLM-assisted parameter extraction
-        tool_schema = tool_def.schema()
+        tool_schema = tool_def.schema
         messages = [
             {
                 "role": "system",
@@ -184,7 +184,7 @@ class WorkflowExecutor:
             "wait": {"seconds": int(resolved_args) if resolved_args.isdigit() else 5},
             "extract_text": {"selector": resolved_args},
             "get_page_text": {},
-            "wait_for_idle": {},
+            "wait_for_idle": {"timeout_secs": 60},
             "submit_prompt": {},
         }
 
