@@ -60,6 +60,12 @@ No matching agent for your task? Nerv creates one on the spot, saves it, and reu
 ### 📈 Agents That Evolve
 Agents aren't disposable. They track their domain, update their knowledge when the field changes, and keep a version history you can roll back. Think of them as employees who read industry journals.
 
+### ⚙️ Dual-Track Automation (Skills vs Workflows)
+Nerv separates open-ended thinking from rigid execution:
+- **Skills**: Markdown guidelines that teach Agents *how* to think and evaluate (e.g., "How to review a resume").
+- **Workflows**: Hardcoded YAML steps executed by a native `WorkflowExecutor`. When an agent needs to perform a 10-step UI automation, it delegates it to the Executor, bypassing LLM hallucination entirely for absolute predictability.
+- **Parsimony Rule**: Agents are instructed to strictly prefer fast, lightweight API tools over heavy UI automation workflows automatically.
+
 ### 💰 Brutal Token Efficiency
 A local model (free, runs on your machine) handles routing and heartbeats. Only complex tasks hit paid APIs. Model tiering:
 
