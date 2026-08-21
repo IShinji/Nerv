@@ -1,6 +1,14 @@
 # Rust
 /core/target/
+gui/src-tauri/target/
 **/*.rs.bk
+
+# Node / GUI build output
+node_modules/
+gui/dist/
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
 
 # Internal docs (never commit)
 NERV-PRD.md
