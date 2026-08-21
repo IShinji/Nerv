@@ -54,6 +54,31 @@ You (Telegram / Slack / Email / CLI / WebChat)
 
 ---
 
+## Implementation Status
+
+Nerv is a working system, not a design doc. What exists today, and where to read it:
+
+| Subsystem | Status | Where |
+|---|---|---|
+| **Router** — intent classification + model tier selection in ~200 tokens, with an offline eval harness | ✅ Built | `brain/nerv/router/`, `brain/nerv/eval.py` |
+| **Orchestrator + Agent Factory** — task dispatch, runtime policy injection, on-demand specialist agent creation | ✅ Built | `brain/nerv/orchestrator/` |
+| **Tool / function calling** — decorator-based registry that derives JSON schemas from Python signatures; **31 registered tools** | ✅ Built | `brain/nerv/tools/` |
+| **MCP client** — connect to external MCP servers, with builtin presets (e.g. Chrome DevTools) and a diagnostics tool | ✅ Built | `brain/nerv/mcp/` |
+| **MCP server** — exposes Nerv's own tools over MCP, so a host like the Claude Code CLI can drive Nerv | ✅ Built | `brain/nerv/mcp_server/` |
+| **Guardrails** — workspace sandbox policy; outward-acting tools (`shell`, `desktop_control`, `send_email`) and any path escaping the sandbox are suspended into a cross-process, file-locked approval queue and only run on explicit `confirm <id>` | ✅ Built | `brain/nerv/security/` |
+| **Agent memory** — date-partitioned conversation persistence plus a long-term `facts.md`, and a rolling-summary context manager instead of full-history replay | ✅ Built | `brain/nerv/memory/` |
+| **Pluggable model backends** — provider-prefix scheme (`claude-cli:` / `local:` / `litellm:`) so swapping providers is a config edit, not a code change | ✅ Built | `brain/nerv/llm/` |
+| **Skills / Workflows** — markdown skill guidelines and YAML workflows run by a native executor | ✅ Built | `brain/nerv/skills/`, `brain/nerv/workflows/` |
+| **Gateway** — Rust daemon, channel adapters, IPC to the brain | ✅ Built | `core/` |
+| **GUI** — Tauri desktop shell | 🚧 Early | `gui/` |
+| **Agent evolution** — self-updating agent knowledge with version history and rollback | 🚧 Partial | `brain/nerv/evolution.py` |
+| **Agent Store** | 📋 Roadmap | — |
+| **Vector retrieval / RAG** | ❌ Not built — memory is file-backed and summary-based by design | — |
+
+**Size:** 7.2k lines of Python in `brain/nerv/`, 1.4k lines of Rust in `core/`, and 2.4k lines of tests — **115 tests, all passing** (`cd brain && uv run pytest`).
+
+---
+
 ## ✨ Core Features
 
 ### 🧩 Multi-Agent with Auto-Creation
@@ -80,6 +105,13 @@ A local model (free, runs on your machine) handles routing and heartbeats. Only 
 | 2 | Haiku / Gemini Pro | Low | Complex code, research |
 | 3 | Sonnet / Opus | Market | Architecture, critical reasoning |
 
+The backend is a config switch via a provider-prefix scheme on the model string
+(`claude-cli:<alias>` | `local:<ollama-model>` | `litellm:<model>`). **During the
+current validation phase every tier runs on `claude-cli:opus`** (your Claude Code
+subscription — no API key, no per-token bill). The tiered local/cloud routing above
+is the reserved target design: swap it back any time by editing `models.tiers` in
+config — no code changes.
+
 ### 🔌 Channel-Agnostic
 Telegram is just one adapter. The Gateway speaks a universal `Message` format. Adding a new channel = one new file, zero changes to the brain.
 
@@ -101,10 +133,10 @@ Share your best agents with the community. Install a battle-tested "Legal Adviso
 > ⚠️ **Nerv is currently in early active development.** The core architecture is functional and we are building out additional integrations. Star the repo to follow along.
 
 ### Prerequisites
-- macOS (Apple Silicon) or Linux (NVIDIA GPU)
+- macOS (Apple Silicon) or Linux
 - Rust (latest stable)
-- Python 3.11+
-- [Ollama](https://ollama.ai) installed
+- Python 3.11+ and [uv](https://docs.astral.sh/uv/)
+- A model backend — the default config uses the local [Claude Code](https://claude.com/claude-code) CLI (no API key). [Ollama](https://ollama.ai) is only needed if you switch a tier to a `local:` model.
 
 ### Install & Run
 ```bash
@@ -114,6 +146,9 @@ cd Nerv
 # Setup python environment
 cd brain
 uv sync
+
+# Run the test suite (115 tests, ~1s)
+uv run pytest
 
 # Run the gateway
 cd ../core/gateway
