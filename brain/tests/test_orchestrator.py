@@ -152,7 +152,7 @@ async def test_confirm_pending_action_executes_tool(tmp_path: Path) -> None:
 
     assert "Executed pending action" in response
     assert "Desktop action executed" in response
-    assert orchestrator._pending_actions == []
+    assert orchestrator._pending_store.list() == []
 
 
 @pytest.mark.asyncio
@@ -174,7 +174,7 @@ async def test_cancel_pending_action_discards_it(tmp_path: Path) -> None:
     )
 
     assert f"Cancelled pending action #{queued.id}" in response
-    assert orchestrator._pending_actions == []
+    assert orchestrator._pending_store.list() == []
 
 
 @pytest.mark.asyncio

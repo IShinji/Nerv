@@ -12,16 +12,19 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from nerv.config import get_workspace_root
 from nerv.memory.context import ContextManager
 from nerv.memory.manager import MemoryManager
 from nerv.models import RouteResult
+from nerv.observability import new_trace_id, timed
 from nerv.orchestrator.registry import AgentDefinition, AgentRegistry
+from nerv.proactive import ProactiveMonitor
+from nerv.security import PendingActionStore, PendingRecord, confirmation_reason
 from nerv.skills.registry import SkillRegistry
 from nerv.workflows.registry import ReviewQueue, WorkflowRegistry
 
@@ -32,17 +35,6 @@ OLLAMA_TIMEOUT = 60.0
 
 CONFIRM_COMMANDS = {"confirm", "approve", "run", "yes", "y", "ok"}
 CANCEL_COMMANDS = {"cancel", "deny", "reject", "no", "n", "stop"}
-
-
-@dataclass
-class PendingAction:
-    """A suspended high-risk tool invocation awaiting user approval."""
-
-    id: int
-    tool_name: str
-    arguments: dict[str, Any]
-    sender: str = ""
-    channel: str = ""
 
 
 class Orchestrator:
@@ -59,8 +51,11 @@ class Orchestrator:
         self.base_url = os.environ.get("NERV_OLLAMA_URL", DEFAULT_OLLAMA_URL)
         self._client = httpx.AsyncClient(timeout=OLLAMA_TIMEOUT)
         self._pending_notifications: list[str] = []
-        self._pending_actions: list[PendingAction] = []
-        self._next_pending_action_id = 1
+        # File-backed so actions queued by the MCP server (a separate process)
+        # are visible to this orchestrator's confirm/cancel flow.
+        self._pending_store = PendingActionStore(project_root)
+        self._workspace_root = get_workspace_root(project_root)
+        self._proactive = ProactiveMonitor(project_root)
         logger.info("Orchestrator initialized with %d agents", len(self.registry.list_agents()))
 
     async def dispatch(
@@ -136,23 +131,38 @@ class Orchestrator:
 
             tools_schemas = capability_registry.get_schemas(agent.tools)
 
-        # Call the model
+        # Call the model (traced for observability + reliability debugging)
         try:
-            response = await self._call_model(
-                model,
-                messages,
-                tools_schemas,
-                sender=sender,
+            with timed(
+                "turn",
+                trace_id=new_trace_id(),
                 channel=channel,
-            )
-            
+                intent=route_result.intent,
+                agent=agent.name,
+                tier=route_result.model_tier,
+                model=model,
+            ):
+                response = await self._call_model(
+                    model,
+                    messages,
+                    tools_schemas,
+                    agent_tools=agent.tools,
+                    sender=sender,
+                    channel=channel,
+                )
+
             # 3. Save assistant's reply to memory
             self.memory.append_message("assistant", response)
 
             return response
         except Exception as e:
             logger.error("Model call failed: %s", e)
-            return f"I encountered an error while processing your request: {e}"
+            # Graceful degradation: surface a clean, user-facing message rather
+            # than a stack trace, and record the failure for observability.
+            return (
+                "I hit a problem reaching the model and couldn't complete that "
+                "just now. Please try again in a moment."
+            )
 
     async def _find_agent(self, route_result: RouteResult, message_hint: str) -> AgentDefinition:
         """Find the best matching agent for the routing result, or create one if missing."""
@@ -161,15 +171,14 @@ class Orchestrator:
             return agent
 
         logger.info("Agent '%s' not found. Manufacturing via AgentFactory...", route_result.agent_type)
-        
+
         # Avoid circular import at top level
         from nerv.orchestrator.factory import AgentFactory
-        import pathlib
-        
-        factory = AgentFactory(pathlib.Path.cwd())
+
+        factory = AgentFactory(self._project_root)
         # The user's original message is a hint for persona creation
         new_agent = await factory.create_agent(route_result.agent_type, message_hint)
-        
+
         if new_agent:
             # Hot-reload the new agent into memory
             self.registry.agents[new_agent.name] = new_agent
@@ -183,23 +192,11 @@ class Orchestrator:
         return self.registry.get_default()
 
     def _select_model(self, tier: int) -> str:
-        """Select a model based on the tier."""
-        from nerv.hardware import PROFILE
-        
-        def _normalize(val: str) -> str:
-            if "/" in val or val.startswith("local:"):
-                return val
-            if val.startswith(("gpt-", "claude-", "gemini-", "o1-", "deepseek-")):
-                return val
-            return f"local:{val}"
+        """Select a provider-prefixed model string for a tier (from config)."""
+        from nerv.config import get_tier_models
 
-        model_map = {
-            0: _normalize(os.environ.get("NERV_MODEL_TIER0", PROFILE["recommended_router_model"])),
-            1: _normalize(os.environ.get("NERV_MODEL_TIER1", "gemini/gemini-1.5-flash")),
-            2: _normalize(os.environ.get("NERV_MODEL_TIER2", "claude-3-5-sonnet-20241022")),
-            3: _normalize(os.environ.get("NERV_MODEL_TIER3", "claude-3-5-sonnet-20241022")),
-        }
-        model = model_map.get(tier, model_map[0])
+        tier_models = get_tier_models(self._project_root)
+        model = tier_models.get(tier, tier_models[0])
         logger.debug("Selected model for tier %d: %s", tier, model)
         return model
 
@@ -227,7 +224,15 @@ class Orchestrator:
 
         model_available = False
 
-        if is_local:
+        if selected_model.startswith("claude-cli:"):
+            # The Claude Code backend is available whenever the CLI is on PATH;
+            # it uses the logged-in subscription, not an API key.
+            import shutil
+
+            from nerv.llm.claude_cli import CLAUDE_BIN
+
+            model_available = shutil.which(CLAUDE_BIN) is not None
+        elif is_local:
             # Probe Ollama to confirm the model actually exists
             try:
                 resp = await self._client.post(
@@ -304,123 +309,51 @@ class Orchestrator:
         self,
         model: str,
         messages: list[dict[str, Any]],
-        tools_schemas: list[dict[str, Any]] = None,
+        tools_schemas: list[dict[str, Any]] | None = None,
+        agent_tools: list[str] | None = None,
         sender: str = "",
         channel: str = "",
     ) -> str:
-        """Call the model (local Ollama or external API via litellm) and handle function calling loop."""
-        import json
-        import os
-        from dotenv import load_dotenv
+        """Run the model turn loop, executing native tool calls along the way.
 
-        # Try mapping personal environment secrets for external APIs
+        For the claude-cli backend, Claude Code drives its own tool loop (Nerv
+        tools exposed via MCP), so one call returns the final answer. For the
+        ollama / litellm backends, Nerv drives the function-calling loop here.
+        """
+        from nerv.llm import complete
+
+        # Map personal secrets for any API-backed (litellm) provider.
         env_path = self._project_root / "personal" / "api_keys.env"
         if env_path.exists():
+            from dotenv import load_dotenv
+
             load_dotenv(env_path)
 
-        is_local = model.startswith("local:")
-        actual_model = model[6:] if is_local else model
-
-        from nerv.hardware import PROFILE
-        
         while True:
-            tool_calls = []
-            message_obj = {}
+            result = await complete(
+                messages,
+                model=model,
+                tools=tools_schemas,
+                tool_names=agent_tools,
+                project_root=self._project_root,
+            )
+            content = result.content
 
-            if is_local:
-                # Use ultra-fast local JSON-RPC native to Ollama API to guarantee $0 heartbeat
-                url = f"{self.base_url}/api/chat"
-                options = {"num_predict": 1024}
-                options.update(PROFILE.get("ollama_options", {}))
-                
-                payload = {
-                    "model": actual_model,
-                    "messages": messages,
-                    "stream": False,
-                    "options": options,
-                }
-                if tools_schemas:
-                    payload["tools"] = tools_schemas
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": content}
+            if result.tool_calls:
+                assistant_msg["tool_calls"] = result.tool_calls
+            messages.append(assistant_msg)
 
-                logger.debug("Calling local Ollama model %s", actual_model)
-                response = await self._client.post(url, json=payload, timeout=120)
+            # claude-cli already executed any tools internally via MCP.
+            if result.runs_own_tool_loop:
+                return content or "I received an empty response from the model."
 
-                # Graceful fallback: if model not found (404), degrade to tier 0
-                if response.status_code == 404:
-                    fallback_model = self._select_model(0)
-                    fallback_actual = fallback_model[6:] if fallback_model.startswith("local:") else fallback_model
-                    if fallback_actual != actual_model:
-                        logger.warning(
-                            "Model '%s' not found locally (404). Falling back to tier 0: '%s'",
-                            actual_model,
-                            fallback_actual,
-                        )
-                        actual_model = fallback_actual
-                        payload["model"] = actual_model
-                        response = await self._client.post(url, json=payload, timeout=120)
-                    
-                response.raise_for_status()
-
-                data = response.json()
-                message_obj = data.get("message", {})
-                content = message_obj.get("content", "")
-                tool_calls = message_obj.get("tool_calls", [])
-                messages.append(message_obj)
-            else:
-                # Use litellm for Cloud / High-Tier API models
-                import litellm
-                logger.debug("Calling external model %s via litellm", actual_model)
-                # litellm requires the tools schema to map roughly to OpenAI's function calling schema
-                mapped_tools = []
-                if tools_schemas:
-                    for schema in tools_schemas:
-                        # Simplify Ollama schema -> litellm OpenAI structure
-                        mapped_tools.append({
-                            "type": "function",
-                            "function": schema["function"]
-                        })
-
-                try:
-                    kwargs = {
-                        "model": actual_model,
-                        "messages": messages,
-                        "temperature": 0.2
-                    }
-                    if mapped_tools:
-                        kwargs["tools"] = mapped_tools
-
-                    resp = await litellm.acompletion(**kwargs)
-                    choice = resp.choices[0].message
-                    content = choice.content or ""
-                    
-                    # litellm returns OpenAI formatted tool calls
-                    if hasattr(choice, "tool_calls") and choice.tool_calls:
-                        for tc in choice.tool_calls:
-                            args_str = tc.function.arguments
-                            args_dict = json.loads(args_str) if isinstance(args_str, str) else args_str
-                            tool_calls.append({
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": args_dict
-                                }
-                            })
-                    
-                    message_obj = {"role": "assistant", "content": content}
-                    if tool_calls:
-                        message_obj["tool_calls"] = tool_calls
-                    messages.append(message_obj)
-                    
-                except Exception as e:
-                    logger.error("LiteLLM failed: %s", str(e))
-                    raise
-
-            if tool_calls:
-                # LLM wants to use tools - we must intercept and execute
-                logger.info("Model requested %d tool calls", len(tool_calls))
+            if result.tool_calls:
+                logger.info("Model requested %d tool calls", len(result.tool_calls))
                 from nerv.capabilities import capability_registry
 
-                queued_actions: list[PendingAction] = []
-                for tc in tool_calls:
+                queued_actions: list[PendingRecord] = []
+                for tc in result.tool_calls:
                     func_details = tc.get("function", {})
                     func_name = func_details.get("name")
                     arguments = func_details.get("arguments", {})
@@ -428,19 +361,20 @@ class Orchestrator:
                     resolution = capability_registry.resolve(func_name)
                     if not resolution:
                         # Agent hallucinated a tool
-                        messages.append({
-                            "role": "tool",
-                            "content": f"Unknown tool: {func_name}",
-                        })
+                        messages.append({"role": "tool", "content": f"Unknown tool: {func_name}"})
                         continue
 
                     tool_def = resolution.tool_def
                     executable_name = resolution.provider_name
 
-                    if tool_def.requires_confirmation:
+                    reason = confirmation_reason(
+                        executable_name, arguments, self._workspace_root
+                    )
+                    if reason:
                         pending_action = self._queue_pending_action(
                             executable_name,
                             arguments,
+                            reason=reason,
                             sender=sender,
                             channel=channel,
                         )
@@ -453,54 +387,45 @@ class Orchestrator:
                             "⚠️ [SYSTEM BACKGROUND ALERT] "
                             f"Pending action #{pending_action.id} ({executable_name}) is waiting for confirmation."
                         )
-                        logger.warning("Tool %s suspended for confirmation.", executable_name)
+                        logger.warning("Tool %s suspended for confirmation: %s", executable_name, reason)
                     else:
-                        # Execute natively
                         logger.debug("Executing tool %s with args %s", executable_name, arguments)
                         if inspect.iscoroutinefunction(tool_def.func):
-                            result = await tool_def.func(**arguments)
+                            tool_result = await tool_def.func(**arguments)
                         else:
-                            result = tool_def.func(**arguments)
-                        tool_result_content = result.content
+                            tool_result = tool_def.func(**arguments)
+                        tool_result_content = tool_result.content
 
-                    # Send the result back to the model
-                    messages.append({
-                        "role": "tool",
-                        "content": tool_result_content,
-                    })
+                    messages.append({"role": "tool", "content": tool_result_content})
 
                 if queued_actions:
                     return self._build_pending_action_reply(queued_actions)
 
-                # Loop continues, querying the LLM with the new context
+                # Loop continues, querying the model with the new tool context.
                 continue
-                
-            # If no tool calls, it's a solid final answer.
+
             if not content:
                 return "I received an empty response from the model."
-
             return content
 
     def _queue_pending_action(
         self,
         tool_name: str,
         arguments: dict[str, Any],
-        sender: str,
-        channel: str,
-    ) -> PendingAction:
+        reason: str = "",
+        sender: str = "",
+        channel: str = "",
+    ) -> PendingRecord:
         """Store a suspended action for later confirmation."""
-        pending_action = PendingAction(
-            id=self._next_pending_action_id,
-            tool_name=tool_name,
-            arguments=dict(arguments),
+        return self._pending_store.add(
+            tool_name,
+            arguments,
+            reason=reason,
             sender=sender,
             channel=channel,
         )
-        self._next_pending_action_id += 1
-        self._pending_actions.append(pending_action)
-        return pending_action
 
-    def _format_pending_action(self, action: PendingAction) -> str:
+    def _format_pending_action(self, action: PendingRecord) -> str:
         """Render a user-facing summary of a pending action."""
         if action.tool_name == "desktop_control":
             verb = action.arguments.get("action", "desktop action")
@@ -521,23 +446,28 @@ class Orchestrator:
             )
         return summary
 
-    def _build_pending_action_reply(self, actions: list[PendingAction]) -> str:
+    def _build_pending_action_reply(self, actions: list[PendingRecord]) -> str:
         """Create a deterministic user reply for queued high-risk actions."""
         lines = ["I queued the following high-risk action(s) for confirmation:"]
         lines.extend(f"- {self._format_pending_action(action)}" for action in actions)
         lines.append('Reply with "confirm <id>" to run one, or "cancel <id>" to discard it.')
         return "\n".join(lines)
 
-    def _visible_pending_actions(self, sender: str, channel: str) -> list[PendingAction]:
-        """Return pending actions scoped to the current sender/channel."""
+    def _visible_pending_actions(self, sender: str, channel: str) -> list[PendingRecord]:
+        """Return pending actions scoped to the current sender/channel.
+
+        Actions queued without a sender/channel (e.g. by the MCP server) are
+        unscoped and therefore visible to everyone.
+        """
+        actions = self._pending_store.list()
         if sender or channel:
             return [
                 action
-                for action in self._pending_actions
-                if (not sender or action.sender == sender)
-                and (not channel or action.channel == channel)
+                for action in actions
+                if (not sender or not action.sender or action.sender == sender)
+                and (not channel or not action.channel or action.channel == channel)
             ]
-        return list(self._pending_actions)
+        return actions
 
     async def _handle_pending_action_command(
         self,
@@ -575,7 +505,7 @@ class Orchestrator:
             return f"Multiple pending actions are waiting: {ids}. Reply with confirm <id> or cancel <id>."
 
         if command in CANCEL_COMMANDS:
-            self._pending_actions = [action for action in self._pending_actions if action.id != target.id]
+            self._pending_store.remove(target.id)
             return f"Cancelled pending action #{target.id}: {self._format_pending_action(target)}"
 
         if command in CONFIRM_COMMANDS:
@@ -583,16 +513,12 @@ class Orchestrator:
 
         return None
 
-    async def _execute_pending_action(self, action: PendingAction) -> str:
+    async def _execute_pending_action(self, action: PendingRecord) -> str:
         """Run a previously approved pending action."""
         from nerv.tools.builtins import registry
 
         tool_def = registry.get_tool(action.tool_name)
-        self._pending_actions = [
-            pending_action
-            for pending_action in self._pending_actions
-            if pending_action.id != action.id
-        ]
+        self._pending_store.remove(action.id)
 
         if not tool_def:
             return (
@@ -656,13 +582,18 @@ class Orchestrator:
         return None
 
     async def check_background_tasks(self) -> str | None:
-        """Called periodically by the Gateway heartbeat to check for pending actions.
-        
-        For the MVP, we scan for any suspended actions in the pending_actions queue
-        and remind the user. In real scenarios, this could trigger background LLM sub-tasks.
+        """Heartbeat hook: surface one pending notification or proactive reminder.
+
+        The proactive monitor scans local state (calendar, unfinished workflows)
+        without calling any model, so heartbeats stay free. New reminders are
+        enqueued and drained one per heartbeat, alongside pending-action alerts.
         """
-        # A simple hook to notify users if they forgot to approve something.
-        if hasattr(self, "_pending_notifications") and self._pending_notifications:
-            notification = self._pending_notifications.pop(0)
-            return notification
+        try:
+            reminders = self._proactive.check()
+            self._pending_notifications.extend(reminders)
+        except Exception:
+            logger.debug("Proactive monitor check failed", exc_info=True)
+
+        if self._pending_notifications:
+            return self._pending_notifications.pop(0)
         return None

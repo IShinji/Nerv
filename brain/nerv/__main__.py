@@ -25,14 +25,30 @@ def main() -> None:
     """Entry point for the brain process."""
     logger.info("Nerv brain starting...")
     try:
-        from nerv.hardware import check_and_pull_model
-        from nerv.router.router import DEFAULT_MODEL
-        import os
-        
-        # Determine the target initial model, prioritize user override, else Fallback routing model
-        target_model = os.environ.get("NERV_ROUTER_MODEL", DEFAULT_MODEL)
-        check_and_pull_model(target_model)
-        
+        from nerv.config import get_router_model, get_tier_models
+        from nerv.ipc import _get_project_root
+        from nerv.llm import parse_model
+
+        project_root = _get_project_root()
+
+        # Only warm up a local Ollama model when a `local:` provider is actually
+        # configured. With the claude-cli / litellm backends this is a no-op, so
+        # startup never blocks pulling models we won't use.
+        configured = [
+            get_router_model(project_root),
+            *get_tier_models(project_root).values(),
+        ]
+        local_models = {
+            name
+            for provider, name in map(parse_model, configured)
+            if provider == "local"
+        }
+        if local_models:
+            from nerv.hardware import check_and_pull_model
+
+            for model_name in local_models:
+                check_and_pull_model(model_name)
+
         asyncio.run(run_jsonrpc_loop())
     except KeyboardInterrupt:
         logger.info("Brain process interrupted")

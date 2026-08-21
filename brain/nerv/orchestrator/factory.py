@@ -1,19 +1,14 @@
 """Agent Factory module for dynamically creating missing agents."""
 
 import logging
-import os
-import re
 from pathlib import Path
-from typing import Any
 
-import httpx
-
+from nerv.config import get_tier_models
 from nerv.orchestrator.registry import AgentDefinition
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_OLLAMA_URL = "http://localhost:11434"
-OLLAMA_TIMEOUT = 60.0
+FACTORY_TIMEOUT = 120.0
 
 FACTORY_SYSTEM_PROMPT = """\
 You are an expert AI persona designer and software architect.
@@ -37,6 +32,12 @@ Available capabilities and built-in tools for them to use (only include if stric
 - filesystem.read_exact (preferred abstract capability for exact file reads; currently backed by read_file)
 - local.exec (preferred abstract capability for local command execution; currently backed by shell)
 - current_time
+- calendar_add (add an event to the local calendar)
+- calendar_list (list upcoming local calendar events)
+- note_write (save a Markdown note)
+- note_read (read a saved note)
+- note_list (list saved notes)
+- send_email (send email; requires a configured email MCP server)
 - file_io
 - read_file
 - write_file_full
@@ -70,16 +71,15 @@ class AgentFactory:
     def __init__(self, project_root: Path) -> None:
         self.project_root = project_root
         self.agents_dir = project_root / "personal" / "agents"
-        self.base_url = os.environ.get("NERV_OLLAMA_URL", DEFAULT_OLLAMA_URL)
-        self.model = os.environ.get("NERV_ROUTER_MODEL", "qwen2.5:1.5b") # Fast model to generate
-        self._client = httpx.AsyncClient(timeout=OLLAMA_TIMEOUT)
-        
+        # Persona design benefits from a capable model — use the tier-2 model.
+        self.model = get_tier_models(project_root)[2]
+
         self.agents_dir.mkdir(parents=True, exist_ok=True)
 
     async def create_agent(self, role_name: str, user_intent_hint: str) -> AgentDefinition | None:
         """Ask LLM to design an agent for `role_name` based on hint, validate, and save it."""
         logger.info("Factory is creating a new agent for role: '%s'", role_name)
-        
+
         user_prompt = (
             f"Please generate the agent YAML for the role: '{role_name}'.\n"
             f"The user's original request that triggered this was: '{user_intent_hint}'.\n"
@@ -87,20 +87,20 @@ class AgentFactory:
         )
 
         try:
-            yaml_content = await self._call_ollama(user_prompt)
+            yaml_content = await self._generate_yaml(user_prompt)
             # Clean up markdown if the LLM hallucinated it despite instructions
             yaml_content = self._clean_yaml(yaml_content)
-            
+
             # Save it
             file_path = self.agents_dir / f"{role_name}.yaml"
             file_path.write_text(yaml_content, encoding="utf-8")
-            
+
             # Use the registry parser to validate and return
             import yaml
             data = yaml.safe_load(yaml_content)
-            
+
             return AgentDefinition(**data)
-            
+
         except Exception as e:
             logger.error("Factory failed to create agent '%s': %s", role_name, e)
             return None
@@ -112,30 +112,25 @@ class AgentFactory:
             text = text[7:]
         elif text.startswith("```"):
             text = text[3:]
-        
+
         if text.endswith("```"):
             text = text[:-3]
-            
+
         return text.strip()
 
-    async def _call_ollama(self, user_prompt: str) -> str:
-        """Call Ollama HTTP API for chat completion."""
-        url = f"{self.base_url}/api/chat"
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": FACTORY_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "stream": False,
-            "options": {
-                "temperature": 0.4, # Slightly creative for persona design
-            },
-        }
+    async def _generate_yaml(self, user_prompt: str) -> str:
+        """Generate the agent YAML via the configured model backend."""
+        from nerv.llm import complete
 
-        response = await self._client.post(url, json=payload)
-        response.raise_for_status()
-
-        data = response.json()
-        content = data.get("message", {}).get("content", "")
-        return content
+        messages = [
+            {"role": "system", "content": FACTORY_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+        result = await complete(
+            messages,
+            model=self.model,
+            temperature=0.4,  # Slightly creative for persona design
+            project_root=self.project_root,
+            timeout=FACTORY_TIMEOUT,
+        )
+        return result.content

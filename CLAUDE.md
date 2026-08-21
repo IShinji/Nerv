@@ -14,7 +14,15 @@ Nerv is a personal AI operating system. Rust core (Gateway, hardware detection) 
 - Rust spawns Python as a sidecar process and manages its lifecycle
 - Gateway uses a `ChannelAdapter` trait — Telegram is just one implementation
 - All messages are converted to a unified `Message` struct before reaching the brain
-- Router runs on a LOCAL model (Ollama) to minimize token cost — this is critical
+- The model backend is a config switch via a provider-prefix scheme on the model string
+  (`claude-cli:<alias>` | `local:<ollama-model>` | `litellm:<model>`), resolved by the
+  unified LLM client in `brain/nerv/llm/`. Currently every tier runs on `claude-cli:opus`
+  (Claude Code subscription) for validation; local Ollama is reserved and dormant — switch
+  back by editing `models.tiers` in config. Never hardcode model names; read them from config.
+- Under the `claude-cli` backend, Claude Code runs its own tool loop; Nerv native tools are
+  exposed to it through the MCP server in `brain/nerv/mcp_server/`. Tool calls that touch
+  paths outside `security.workspace_root` (or `shell`/`desktop_control`) are suspended into
+  the shared pending-action queue and require user `confirm <id>`.
 - Agent definitions are YAML files, not code
 - Config uses YAML with snake_case keys
 
@@ -28,9 +36,14 @@ Nerv is a personal AI operating system. Rust core (Gateway, hardware detection) 
 - All public Python functions must have type hints
 - Keep dependencies minimal — justify any new addition
 
+## GUI
+
+- The Tauri + React desktop app lives in `gui/`. Its Rust backend (`gui/src-tauri`)
+  spawns the Python brain as a sidecar and exposes Tauri commands (`send_message`,
+  `list_agents`) to the React frontend. Keep GUI logic thin — the brain owns behavior.
+
 ## What NOT To Do
 
-- Do not add GUI/Tauri code yet (Phase 2)
 - Do not use `.env` files for config — use `~/.nerv/config.yaml`
 - Do not hardcode model names — read from config
 - Do not send full conversation history to LLMs — use rolling summaries

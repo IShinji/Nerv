@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import nerv.tools.evolution_tools  # noqa: F401  (registers agent-evolution tools)
+import nerv.tools.productivity  # noqa: F401  (registers calendar/notes/email tools)
 from nerv.tools.builtins import registry as tool_registry
 from nerv.tools.registry import ToolDefinition, ToolRegistry
 
@@ -155,4 +157,44 @@ capability_registry.register(
     name="local.exec",
     provider_name="shell",
     description="Execute a local shell command.",
+)
+capability_registry.register(
+    name="calendar.add",
+    provider_name="calendar_add",
+    description="Add an event to the local calendar.",
+)
+capability_registry.register(
+    name="calendar.read",
+    provider_name="calendar_list",
+    description="List upcoming local calendar events.",
+)
+capability_registry.register(
+    name="notes.write",
+    provider_name="note_write",
+    description="Save a Markdown note.",
+)
+capability_registry.register(
+    name="notes.read",
+    provider_name="note_read",
+    description="Read a saved Markdown note.",
+)
+capability_registry.register(
+    name="email.send",
+    provider_name="send_email",
+    description="Send an email (requires a configured email MCP server).",
+)
+capability_registry.register(
+    name="agent.evolve",
+    provider_name="evolve_agent",
+    description="Update an agent's knowledge/behavior with version history.",
+)
+capability_registry.register(
+    name="agent.versions",
+    provider_name="list_agent_versions",
+    description="List an agent's saved version history.",
+)
+capability_registry.register(
+    name="agent.rollback",
+    provider_name="rollback_agent",
+    description="Roll an agent back to a saved version.",
 )

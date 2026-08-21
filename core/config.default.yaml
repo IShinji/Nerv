@@ -9,16 +9,37 @@ channels:
     enabled: false         # Set to true and add bot_token in config.yaml
     bot_token: ""          # Telegram Bot API token
 
+# Model strings use a provider-prefix scheme — the active backend is a pure
+# config switch (no code change needed to swap providers):
+#   "claude-cli:<alias>"   → local Claude Code CLI (uses your Claude subscription)
+#   "local:<ollama-model>" → local Ollama HTTP (reserved; dormant)
+#   "litellm:<model>"      → cloud API via litellm (reserved)  e.g. litellm:claude-opus-4-8
 models:
   router:
-    provider: "ollama"     # ollama | anthropic | openai | google
-    model: "qwen2.5:1.5b"   # Balanced local base model for routing and light chat
-    base_url: "http://localhost:11434"
+    model: "claude-cli:opus"   # Intent classifier — currently Opus for validation
   tiers:
-    tier0: "qwen2.5:1.5b"   # Default local base model for daily tasks
-    tier1: "qwen2.5:7b"   # Better reasoning for normal tasks
-    tier2: "qwen2.5:14b"  # Heavy local tasks
-    tier3: "qwen2.5:32b"  # Frontier / expensive local tasks
+    tier0: "claude-cli:opus"   # simple tasks / chat
+    tier1: "claude-cli:opus"   # medium tasks
+    tier2: "claude-cli:opus"   # complex tasks
+    tier3: "claude-cli:opus"   # critical / frontier tasks
+  # === Reserved: switch back to local/tiered models by editing the above. ===
+  # router: {provider: ollama, model: "qwen2.5:1.5b", base_url: "http://localhost:11434"}
+  # tiers:
+  #   tier0: "local:qwen2.5:1.5b"
+  #   tier1: "claude-cli:sonnet"
+  #   tier2: "claude-cli:sonnet"
+  #   tier3: "claude-cli:opus"
+
+# Tool sandbox: tools may freely modify paths inside workspace_root; operations
+# touching paths outside it (or shell / desktop control) are routed through the
+# user-confirmation queue. Empty = the Nerv project root.
+security:
+  workspace_root: ""
+
+# Proactive monitoring runs on the heartbeat (deterministic, no model calls).
+proactive:
+  enabled: true
+  calendar_reminder_minutes: 60   # remind about events starting within this window
 
 logging:
   level: "info"            # trace | debug | info | warn | error
@@ -27,7 +48,7 @@ logging:
 brain:
   python_command: "uv run python"  # Uses uv-managed venv in brain/
   module: "nerv"            # Python module to run (python -m nerv)
-  auto_install_ollama: false  # Run the official Ollama installer if local Ollama is missing/down
+  auto_install_ollama: false  # Only used when a local: model is configured
   restart_max: 3            # Max restart attempts on crash
 
 # Optional MCP integrations.

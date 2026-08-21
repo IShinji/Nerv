@@ -23,7 +23,7 @@ tools:
   - shell
 """
     
-    with patch.object(factory, '_call_ollama', new_callable=AsyncMock) as mock_call:
+    with patch.object(factory, '_generate_yaml', new_callable=AsyncMock) as mock_call:
         mock_call.return_value = mock_yaml
         
         agent = await factory.create_agent("database_admin", "I want to optimize my postgres queries")
@@ -49,7 +49,7 @@ system_prompt: Provides legal advice.
 tools: []
 ```"""
     
-    with patch.object(factory, '_call_ollama', new_callable=AsyncMock) as mock_call:
+    with patch.object(factory, '_generate_yaml', new_callable=AsyncMock) as mock_call:
         mock_call.return_value = mock_yaml
         
         agent = await factory.create_agent("legal_advisor", "I need to review a contract")

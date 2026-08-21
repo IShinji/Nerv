@@ -1,29 +1,23 @@
-"""Router — intent classification using local Ollama model.
+"""Router — intent classification via the configured model backend.
 
-Calls Ollama HTTP API to classify user messages into intents,
-complexity levels, and suggested model tiers. This is the first
-stage of the message pipeline — designed to be fast and cheap (~200 tokens).
+Classifies user messages into intents, complexity levels, and suggested model
+tiers. This is the first stage of the message pipeline. The backend model is a
+pure config switch (claude-cli / local Ollama / litellm) resolved through the
+unified LLM client; a keyword fallback keeps routing working fully offline.
 """
 
 import json
 import logging
-import os
 import re
-from typing import Any
+from pathlib import Path
 
-import httpx
-
+from nerv.config import get_router_model
 from nerv.models import RouteResult
 from nerv.router.prompt import ROUTER_SYSTEM_PROMPT, ROUTER_USER_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
-from nerv.hardware import PROFILE
-
-# Defaults — can be overridden by environment variables for flexibility
-DEFAULT_OLLAMA_URL = "http://localhost:11434"
-DEFAULT_MODEL = PROFILE["recommended_router_model"]
-OLLAMA_TIMEOUT = 30.0
+ROUTER_TIMEOUT = 60.0
 
 CANONICAL_AGENT_BY_INTENT = {
     "general": "general",
@@ -106,17 +100,16 @@ QUESTION_MARKERS = (
 
 
 class Router:
-    """Classify user messages using a local Ollama model."""
+    """Classify user messages using the configured model backend."""
 
     def __init__(
         self,
-        base_url: str | None = None,
+        project_root: Path | None = None,
         model: str | None = None,
     ) -> None:
-        self.base_url = base_url or os.environ.get("NERV_OLLAMA_URL", DEFAULT_OLLAMA_URL)
-        self.model = model or os.environ.get("NERV_ROUTER_MODEL", DEFAULT_MODEL)
-        self._client = httpx.AsyncClient(timeout=OLLAMA_TIMEOUT)
-        logger.info("Router initialized: model=%s, url=%s", self.model, self.base_url)
+        self._project_root = project_root or Path.cwd()
+        self.model = model or get_router_model(self._project_root)
+        logger.info("Router initialized: model=%s", self.model)
 
     async def classify(self, message: str) -> RouteResult:
         """Classify a user message into an intent + routing decision.
@@ -139,42 +132,30 @@ class Router:
         user_prompt = ROUTER_USER_TEMPLATE.format(message=message)
 
         try:
-            result = await self._call_ollama(user_prompt)
+            result = await self._classify_via_model(user_prompt)
             return self._sanitize_route_result(message, result)
         except Exception as e:
-            logger.error("Ollama call failed, using fallback: %s", e)
+            logger.error("Router model call failed, using fallback: %s", e)
             return self._sanitize_route_result(message, self._fallback_classify(message))
 
-    async def _call_ollama(self, user_prompt: str) -> RouteResult:
-        """Call Ollama HTTP API for chat completion."""
-        url = f"{self.base_url}/api/chat"
-        options = {
-            "temperature": 0.1,  # Low temp for consistent classification
-            "num_predict": 256,  # Cap output tokens
-        }
-        # Merge in hardware optimizations (like num_thread, num_ctx)
-        options.update(PROFILE.get("ollama_options", {}))
-        
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "stream": False,
-            "format": "json",
-            "options": options,
-        }
+    async def _classify_via_model(self, user_prompt: str) -> RouteResult:
+        """Classify via the unified LLM client (provider chosen by config)."""
+        from nerv.llm import complete
 
-        logger.debug("Calling Ollama: %s", url)
-        response = await self._client.post(url, json=payload)
-        response.raise_for_status()
-
-        data = response.json()
-        content = data.get("message", {}).get("content", "")
-        logger.debug("Ollama raw response: %s", content)
-
-        return self._parse_response(content)
+        messages = [
+            {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+        result = await complete(
+            messages,
+            model=self.model,
+            temperature=0.1,
+            json_mode=True,
+            project_root=self._project_root,
+            timeout=ROUTER_TIMEOUT,
+        )
+        logger.debug("Router raw response: %s", result.content)
+        return self._parse_response(result.content)
 
     def _parse_response(self, content: str) -> RouteResult:
         """Parse the JSON response from the LLM."""

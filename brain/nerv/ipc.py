@@ -35,7 +35,7 @@ def _get_project_root() -> Path:
 def _get_router() -> Router:
     global _router
     if _router is None:
-        _router = Router()
+        _router = Router(project_root=_get_project_root())
     return _router
 
 

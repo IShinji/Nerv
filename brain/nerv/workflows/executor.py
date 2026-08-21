@@ -1,67 +1,173 @@
+"""Deterministic multi-step workflow executor.
+
+Steps run structurally (one tool / reasoning step at a time). LLM help — argument
+extraction and reasoning — flows through the unified client, so the executor is
+backend-agnostic (claude-cli / ollama / litellm). Runs are persisted per-step to
+a TaskRun, so an interrupted workflow can be resumed instead of restarting.
+
+Note: workflow tool steps execute directly. Workflows are pre-approved sequences
+(authored or passed through the review queue), unlike an agent's ad-hoc tool use
+which is sandbox-gated in the orchestrator.
+"""
+
 import asyncio
 import inspect
+import json
 import logging
-from typing import Any
+import os
+import re
+from typing import TYPE_CHECKING, Any
 
 from nerv.capabilities import capability_registry
+from nerv.llm import complete
+from nerv.observability import log_event, timed
+from nerv.tasks import TaskRunStore
+from nerv.tasks.store import DONE, FAILED, RUNNING
 from nerv.workflows.models import WorkflowDefinition
+
+if TYPE_CHECKING:
+    from nerv.orchestrator.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
+STEP_RETRY_CAP_SECONDS = 8
+
 
 class WorkflowExecutor:
-    """Executes a workflow by stepping through it structurally, using a fast LLM to parse arguments."""
+    """Execute a workflow step-by-step with persistence and per-step retries."""
 
     def __init__(self, orchestrator: "Orchestrator") -> None:
         self.orchestrator = orchestrator
+        self._store = TaskRunStore(orchestrator._project_root)
 
-    def _get_raw_model(self) -> str:
-        """Get the tier-0 model name stripped of the local: prefix for direct Ollama calls."""
-        model = self.orchestrator._select_model(0)
-        if model.startswith("local:"):
-            return model[6:]
-        return model
+    def _model(self) -> str:
+        """Model string for executor LLM help (tier 0 — cheap, provider-prefixed)."""
+        return self.orchestrator._select_model(0)
 
-    async def execute(self, workflow: WorkflowDefinition, initial_input: str) -> str:
-        """Run the workflow step-by-step."""
-        # 1. Notify the user the workflow started
-        self._notify(f"[Workflow] Started: {workflow.name}")
-        
-        model = self._get_raw_model()
-        history_context: list[str] = [f"Initial Input: {initial_input}"]
-        
-        for idx, step_desc in enumerate(workflow.steps, start=1):
-            if isinstance(step_desc, dict):
-                step_str = step_desc.get("description", str(step_desc))
-            else:
-                step_str = str(step_desc)
+    @staticmethod
+    def _step_text(step_desc: Any) -> str:
+        if isinstance(step_desc, dict):
+            return step_desc.get("description", str(step_desc))
+        return str(getattr(step_desc, "description", step_desc) or step_desc)
 
-            self._notify(f"[Workflow] Step {idx}/{len(workflow.steps)}: {step_str[:80]}...")
-            
-            # ── Parse step format: "tool_name.method -> args" or "tool_name action" ──
-            tool_name, method_hint, args_hint = self._parse_step(step_str)
+    async def execute(
+        self,
+        workflow: WorkflowDefinition,
+        initial_input: str,
+        run_id: str | None = None,
+    ) -> str:
+        """Run (or resume) the workflow, persisting progress after every step."""
+        run = self._store.get(run_id) if run_id else None
+        if run is None:
+            descriptions = [self._step_text(s) for s in workflow.steps]
+            run = self._store.create(workflow.name, initial_input, descriptions)
+            self._notify(f"[Workflow] Started: {workflow.name} (run {run.id})")
+        else:
+            self._notify(f"[Workflow] Resuming: {workflow.name} (run {run.id})")
 
-            resolution = capability_registry.resolve(tool_name) if tool_name else None
+        run.status = RUNNING
+        model = self._model()
 
-            if resolution:
-                step_output = await self._execute_tool_step(
-                    resolution.tool_def, method_hint, args_hint,
-                    step_str, idx, workflow.name, model, history_context,
+        # Rebuild context from any already-completed steps (resume support).
+        history_context = [f"Initial Input: {run.initial_input}"]
+        for step in run.steps:
+            if step.status == DONE:
+                history_context.append(f"Step {step.idx} Result: {step.result[:2000]}")
+
+        total = len(run.steps)
+        for step in run.steps:
+            if step.status == DONE:
+                continue
+
+            step.status = RUNNING
+            self._store.save(run)
+            self._notify(
+                f"[Workflow] Step {step.idx}/{total}: {step.description[:80]}..."
+            )
+
+            try:
+                output = await self._run_step_with_retries(
+                    step, workflow.name, model, history_context
                 )
-            else:
-                step_output = await self._execute_reasoning_step(
-                    step_str, idx, workflow.name, model, history_context,
+            except Exception as exc:
+                step.status = FAILED
+                run.status = FAILED
+                self._store.save(run)
+                logger.error(
+                    "Workflow '%s' failed at step %d: %s", workflow.name, step.idx, exc
+                )
+                self._notify(f"[Workflow] Failed at step {step.idx}: {exc}")
+                return (
+                    f"Workflow '{workflow.name}' failed at step {step.idx} "
+                    f"({step.description[:60]}): {exc}. Progress saved as run {run.id}."
                 )
 
-            history_context.append(f"Step {idx} Result: {step_output[:2000]}")
+            step.result = output
+            step.status = DONE
+            self._store.save(run)
+            history_context.append(f"Step {step.idx} Result: {output[:2000]}")
 
+        run.status = DONE
+        self._store.save(run)
         self._notify(f"[Workflow] Finished {workflow.name}")
-        
-        # Return last few context fragments for brevity
         return "\n".join(history_context[-3:])
 
+    async def _run_step_with_retries(
+        self,
+        step: Any,
+        workflow_name: str,
+        model: str,
+        history_context: list[str],
+    ) -> str:
+        """Execute one step, retrying transient failures with backoff."""
+        attempts = max(1, int(os.environ.get("NERV_WORKFLOW_STEP_ATTEMPTS", "2")))
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            step.attempts = attempt
+            try:
+                with timed(
+                    "workflow_step",
+                    workflow=workflow_name,
+                    step=step.idx,
+                    attempt=attempt,
+                ):
+                    return await self._execute_step(
+                        step.description, step.idx, workflow_name,
+                        model, history_context,
+                    )
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "Workflow step %d attempt %d/%d failed: %s",
+                    step.idx, attempt, attempts, exc,
+                )
+                if attempt < attempts:
+                    await asyncio.sleep(min(2 ** (attempt - 1), STEP_RETRY_CAP_SECONDS))
+        raise last_error if last_error else RuntimeError("step failed")
+
+    async def _execute_step(
+        self,
+        step_str: str,
+        step_idx: int,
+        workflow_name: str,
+        model: str,
+        history_context: list[str],
+    ) -> str:
+        """Dispatch one step to a tool call or a reasoning step."""
+        tool_name, method_hint, args_hint = self._parse_step(step_str)
+        resolution = capability_registry.resolve(tool_name) if tool_name else None
+
+        if resolution:
+            return await self._execute_tool_step(
+                resolution.tool_def, method_hint, args_hint,
+                step_str, step_idx, workflow_name, model, history_context,
+            )
+        return await self._execute_reasoning_step(
+            step_str, step_idx, workflow_name, model, history_context
+        )
+
     def _parse_step(self, step_str: str) -> tuple[str | None, str, str]:
-        """Parse a workflow step description into (tool_name, method_hint, args_hint).
+        """Parse a step into (tool_name, method_hint, args_hint).
 
         Supported formats:
         - "chrome_browser.open_url -> https://gemini.google.com"
@@ -75,8 +181,8 @@ class WorkflowExecutor:
 
         if "->" in stripped:
             left, right = stripped.split("->", maxsplit=1)
-            callable_name = left.strip()
-            resolution, method_hint = capability_registry.resolve_step_target(callable_name)
+            target = left.strip()
+            resolution, method_hint = capability_registry.resolve_step_target(target)
             if resolution is not None:
                 return resolution.requested_name, method_hint, right.strip()
 
@@ -99,62 +205,71 @@ class WorkflowExecutor:
         model: str,
         history_context: list[str],
     ) -> str:
-        """Execute a workflow step that targets a specific tool."""
-        # Try direct argument injection first (for simple cases like open_url -> URL)
+        """Execute a step that targets a specific tool."""
+        # Fast path: deterministic direct calls (no LLM) for known browser verbs.
         if method_hint:
-            direct_result = await self._try_direct_call(tool_def, method_hint, args_hint, history_context)
+            direct_result = await self._try_direct_call(
+                tool_def, method_hint, args_hint, history_context
+            )
             if direct_result is not None:
                 return direct_result
 
-        # Fall back to LLM-assisted parameter extraction
-        tool_schema = tool_def.schema
+        # Otherwise ask the model for the tool's arguments as JSON, then invoke
+        # the tool natively. This works across all backends (claude-cli does not
+        # hand back structured tool calls, so we extract args explicitly).
+        schema = tool_def.schema.get("function", {})
+        parameters = schema.get("parameters", {})
         messages = [
             {
                 "role": "system",
                 "content": (
-                    f"You are executing step {step_idx} of workflow '{workflow_name}'.\n"
+                    f"You are executing step {step_idx} of "
+                    f"workflow '{workflow_name}'.\n"
                     f"Step instructions: {step_str}\n"
-                    "You must invoke the provided tool to accomplish this step using the context provided."
+                    f"Produce the arguments for the tool '{schema.get('name')}' as a "
+                    f"JSON object matching this parameter schema:\n"
+                    f"{json.dumps(parameters, ensure_ascii=False)}\n"
+                    "Fill values using the provided context. Output JSON only."
                 ),
             },
             {
                 "role": "user",
-                "content": "Context history:\n" + "\n".join(history_context[-5:])
-            }
+                "content": "Context history:\n" + "\n".join(history_context[-5:]),
+            },
         ]
 
-        logger.info("Executing workflow step %d via LLM-assisted tool call: %s", step_idx, tool_def.name)
+        logger.info("Workflow step %d: extracting args for %s", step_idx, tool_def.name)
+        result = await complete(
+            messages,
+            model=model,
+            json_mode=True,
+            project_root=self.orchestrator._project_root,
+        )
+        args = self._parse_json_args(result.content)
 
-        url = f"{self.orchestrator.base_url}/api/chat"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            "tools": [tool_schema]
-        }
-
-        response = await self.orchestrator._client.post(url, json=payload, timeout=120)
-        response.raise_for_status()
-        data = response.json()
-        message_obj = data.get("message", {})
-        
-        tool_calls = message_obj.get("tool_calls", [])
-        
-        if tool_calls:
-            tc = tool_calls[0]
-            func_details = tc.get("function", {})
-            args = func_details.get("arguments", {})
-            
-            self._notify(f"[Workflow] Calling {tool_def.name}...")
-            
-            if inspect.iscoroutinefunction(tool_def.func):
-                result = await tool_def.func(**args)
-            else:
-                result = tool_def.func(**args)
-                
-            return result.content
+        self._notify(f"[Workflow] Calling {tool_def.name}...")
+        if inspect.iscoroutinefunction(tool_def.func):
+            tool_result = await tool_def.func(**args)
         else:
-            return message_obj.get("content", "")
+            tool_result = tool_def.func(**args)
+        return tool_result.content
+
+    @staticmethod
+    def _parse_json_args(content: str) -> dict[str, Any]:
+        """Extract a JSON argument object from model output (tolerant)."""
+        content = content.strip()
+        try:
+            parsed = json.loads(content)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            if match:
+                try:
+                    parsed = json.loads(match.group())
+                    return parsed if isinstance(parsed, dict) else {}
+                except json.JSONDecodeError:
+                    return {}
+            return {}
 
     async def _try_direct_call(
         self,
@@ -163,8 +278,7 @@ class WorkflowExecutor:
         args_hint: str,
         history_context: list[str],
     ) -> str | None:
-        """Try to directly call a tool without LLM assistance for simple, deterministic steps."""
-        # Replace %inputs% placeholder with the initial user input
+        """Directly call a tool for simple deterministic browser-style verbs."""
         initial_input = ""
         for ctx in history_context:
             if ctx.startswith("Initial Input:"):
@@ -173,7 +287,6 @@ class WorkflowExecutor:
 
         resolved_args = args_hint.replace("%inputs%", initial_input)
 
-        # Map common method hints to tool parameter names
         param_mappings = {
             "open_url": {"url": resolved_args},
             "fill_prompt": {"text": resolved_args},
@@ -191,8 +304,6 @@ class WorkflowExecutor:
             return None
 
         kwargs = param_mappings[method_hint]
-
-        # For methods that map to a single tool call, try direct invocation
         try:
             self._notify(f"[Workflow] Direct call: {tool_def.name}.{method_hint}")
             if inspect.iscoroutinefunction(tool_def.func):
@@ -201,8 +312,10 @@ class WorkflowExecutor:
                 result = tool_def.func(action=method_hint, **kwargs)
             return result.content
         except TypeError:
-            # Parameter mismatch — fall back to LLM-assisted call
-            logger.debug("Direct call failed for %s.%s, falling back to LLM", tool_def.name, method_hint)
+            logger.debug(
+                "Direct call failed for %s.%s, falling back to LLM",
+                tool_def.name, method_hint,
+            )
             return None
 
     async def _execute_reasoning_step(
@@ -218,30 +331,25 @@ class WorkflowExecutor:
             {
                 "role": "system",
                 "content": (
-                    f"You are evaluating step {step_idx} of workflow '{workflow_name}'.\n"
+                    f"You are evaluating step {step_idx} of "
+                    f"workflow '{workflow_name}'.\n"
                     f"Step instructions: {step_str}\n"
                     "Process the prior outputs and generate the step result."
                 ),
             },
             {
                 "role": "user",
-                "content": "Context history:\n" + "\n".join(history_context[-5:])
-            }
+                "content": "Context history:\n" + "\n".join(history_context[-5:]),
+            },
         ]
-        
-        url = f"{self.orchestrator.base_url}/api/chat"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "stream": False,
-        }
-        response = await self.orchestrator._client.post(url, json=payload, timeout=120)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("message", {}).get("content", "")
+        result = await complete(
+            messages, model=model, project_root=self.orchestrator._project_root
+        )
+        return result.content
 
     def _notify(self, message: str) -> None:
-        """Push a background notification up to the UI."""
+        """Push a background notification up to the UI and trace it."""
         logger.info(message)
+        log_event("workflow_notice", message=message)
         if hasattr(self.orchestrator, "_pending_notifications"):
             self.orchestrator._pending_notifications.append(message)
