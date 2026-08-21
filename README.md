@@ -41,14 +41,14 @@ You (Telegram / Slack / Email / CLI / WebChat)
 │ Haiku  │Sonnet  │ Gemini │ (on demand)  │
 ├────────┴────────┴────────┴──────────────┤
 │         Context Manager (Python)        │
-│   Rolling summary · NOT full history    │
+│   Budgeted window · NOT full history    │
 ├──────────────────┬──────────────────────┤
 │   Memory         │ Capability Layer     │
-│   Markdown+SQLite│ Native Tools · MCP   │
+│   Markdown files │ Native Tools · MCP   │
 └──────────────────┴──────────────────────┘
 ```
 
-**Key insight:** OpenClaw sends your entire conversation history (~120K tokens) with every single message. Nerv sends a 500-token summary. That's a 99.6% reduction.
+**Key insight:** OpenClaw sends your entire conversation history (~120K tokens) with every single message. Nerv sends a bounded window instead: the agent's system prompt, a long-term facts file, and only as many recent messages as fit the agent's token budget — oldest first to be dropped. Summarizing that window rather than truncating it is a planned improvement, not what ships today.
 
 **Integration direction:** Nerv should be `MCP-first` for external apps and services. If a stable MCP server already exists for Chrome, GitHub, Notion, or another system, Nerv should use that before adding a bespoke integration. Native tools remain critical for core local capabilities and as fallbacks.
 
@@ -60,13 +60,14 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 
 | Subsystem | Status | Where |
 |---|---|---|
-| **Router** — intent classification + model tier selection in ~200 tokens, with an offline eval harness | ✅ Built | `brain/nerv/router/`, `brain/nerv/eval.py` |
+| **Router** — intent classification + model tier selection from a small dedicated prompt, with an offline eval harness | ✅ Built | `brain/nerv/router/`, `brain/nerv/eval.py` |
 | **Orchestrator + Agent Factory** — task dispatch, runtime policy injection, on-demand specialist agent creation | ✅ Built | `brain/nerv/orchestrator/` |
 | **Tool / function calling** — decorator-based registry that derives JSON schemas from Python signatures; **31 registered tools** | ✅ Built | `brain/nerv/tools/` |
 | **MCP client** — connect to external MCP servers, with builtin presets (e.g. Chrome DevTools) and a diagnostics tool | ✅ Built | `brain/nerv/mcp/` |
 | **MCP server** — exposes Nerv's own tools over MCP, so a host like the Claude Code CLI can drive Nerv | ✅ Built | `brain/nerv/mcp_server/` |
 | **Guardrails** — workspace sandbox policy; outward-acting tools (`shell`, `desktop_control`, `send_email`) and any path escaping the sandbox are suspended into a cross-process, file-locked approval queue and only run on explicit `confirm <id>` | ✅ Built | `brain/nerv/security/` |
-| **Agent memory** — date-partitioned conversation persistence plus a long-term `facts.md`, and a rolling-summary context manager instead of full-history replay | ✅ Built | `brain/nerv/memory/` |
+| **Agent memory** — date-partitioned conversation persistence plus a long-term `facts.md`, and a context manager that assembles a token-budgeted window (system prompt + facts + newest-first history, truncated to fit) rather than replaying full history | ✅ Built | `brain/nerv/memory/` |
+| **Context summarization** — summarizing the dropped history instead of truncating it | 📋 Roadmap | — |
 | **Pluggable model backends** — provider-prefix scheme (`claude-cli:` / `local:` / `litellm:`) so swapping providers is a config edit, not a code change | ✅ Built | `brain/nerv/llm/` |
 | **Skills / Workflows** — markdown skill guidelines and YAML workflows run by a native executor | ✅ Built | `brain/nerv/skills/`, `brain/nerv/workflows/` |
 | **Gateway** — Rust daemon, channel adapters, IPC to the brain | ✅ Built | `core/` |
