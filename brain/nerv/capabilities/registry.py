@@ -88,7 +88,9 @@ class CapabilityRegistry:
             capability_name=capability.name,
         )
 
-    def resolve_step_target(self, identifier: str) -> tuple[CapabilityResolution | None, str]:
+    def resolve_step_target(
+        self, identifier: str
+    ) -> tuple[CapabilityResolution | None, str]:
         """Resolve the callable target within a workflow step identifier."""
         if resolution := self.resolve(identifier):
             return resolution, ""

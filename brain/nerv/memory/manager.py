@@ -9,8 +9,6 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from pydantic import TypeAdapter
-
 from nerv.memory.models import ChatMessage, DailyConversation
 
 logger = logging.getLogger(__name__)
@@ -49,7 +47,7 @@ class MemoryManager:
             return DailyConversation(date=today, messages=[])
 
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 data = json.load(f)
                 return DailyConversation.model_validate(data)
         except Exception as e:
@@ -77,7 +75,7 @@ class MemoryManager:
         # Walk backwards starting from the newest file
         for file_path in reversed(files):
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
+                with open(file_path, encoding="utf-8") as f:
                     data = json.load(f)
                     conv = DailyConversation.model_validate(data)
                     # Add messages from this file (newest first for now, we'll reverse later)
@@ -88,7 +86,9 @@ class MemoryManager:
                 if len(messages) >= limit:
                     break
             except Exception as e:
-                logger.error("Failed to load historical conversation %s: %s", file_path, e)
+                logger.error(
+                    "Failed to load historical conversation %s: %s", file_path, e
+                )
 
         # Reverse back so the oldest is first, newest is last
         return list(reversed(messages))

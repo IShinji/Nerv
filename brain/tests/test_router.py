@@ -1,7 +1,5 @@
 """Tests for the Router."""
 
-import pytest
-
 from nerv.models import RouteResult
 from nerv.router.router import Router
 

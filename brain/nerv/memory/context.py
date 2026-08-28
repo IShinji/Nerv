@@ -4,9 +4,8 @@ import logging
 from typing import Any
 
 from nerv.memory.manager import MemoryManager
-from nerv.memory.models import ChatMessage
-from nerv.orchestrator.runtime_policy import build_system_prompt
 from nerv.orchestrator.registry import AgentDefinition
+from nerv.orchestrator.runtime_policy import build_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +54,7 @@ class ContextManager:
             system_content += f"\n\n[Long-term Facts]\n{facts.strip()}"
 
         # 1. System message is always included
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_content}
-        ]
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
         tokens_used = estimate_tokens(system_content)
 
         # 2. Add current user message (we MUST fit this)
@@ -73,13 +70,22 @@ class ContextManager:
         for msg in reversed(history):
             msg_tokens = estimate_tokens(msg.content)
             # Safe boundary check: we reserve space for current message + 10% buffer
-            available_tokens = agent.max_context_tokens - tokens_used - current_msg_tokens - (agent.max_context_tokens * 0.1)
+            available_tokens = (
+                agent.max_context_tokens
+                - tokens_used
+                - current_msg_tokens
+                - (agent.max_context_tokens * 0.1)
+            )
             if available_tokens > msg_tokens:
-                history_msgs_to_add.insert(0, {"role": msg.role, "content": msg.content})
+                history_msgs_to_add.insert(
+                    0, {"role": msg.role, "content": msg.content}
+                )
                 tokens_used += msg_tokens
             else:
                 # Out of space for older history
-                logger.debug("Truncating history at message length %d", len(msg.content))
+                logger.debug(
+                    "Truncating history at message length %d", len(msg.content)
+                )
                 break
 
         messages.extend(history_msgs_to_add)

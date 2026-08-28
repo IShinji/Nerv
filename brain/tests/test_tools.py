@@ -193,7 +193,9 @@ def test_web_search_parses_results(monkeypatch) -> None:
     </body></html>
     """
     response = _DummyResponse(html, "https://html.duckduckgo.com/html/?q=test")
-    monkeypatch.setattr(builtins.httpx, "Client", lambda **kwargs: _DummyClient(response))
+    monkeypatch.setattr(
+        builtins.httpx, "Client", lambda **kwargs: _DummyClient(response)
+    )
 
     tool = registry.get_tool("web_search")
     assert tool is not None
@@ -216,7 +218,9 @@ def test_browser_extracts_page_content(monkeypatch) -> None:
     </html>
     """
     response = _DummyResponse(html, "https://example.com/page")
-    monkeypatch.setattr(builtins.httpx, "Client", lambda **kwargs: _DummyClient(response))
+    monkeypatch.setattr(
+        builtins.httpx, "Client", lambda **kwargs: _DummyClient(response)
+    )
 
     tool = registry.get_tool("browser")
     assert tool is not None
@@ -275,7 +279,9 @@ def test_chrome_browser_wait_for_text(monkeypatch) -> None:
         ]
     )
 
-    monkeypatch.setattr(builtins, "_chrome_page_text", lambda max_chars: next(responses))
+    monkeypatch.setattr(
+        builtins, "_chrome_page_text", lambda max_chars: next(responses)
+    )
     monkeypatch.setattr(builtins.time, "sleep", lambda _: None)
 
     tool = registry.get_tool("chrome_browser")

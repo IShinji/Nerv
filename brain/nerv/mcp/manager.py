@@ -160,7 +160,9 @@ class McpServerManager:
                 raw_value,
             )
 
-    def _find_server_for_capability(self, capability_name: str) -> McpServerConfig | None:
+    def _find_server_for_capability(
+        self, capability_name: str
+    ) -> McpServerConfig | None:
         """Find the first enabled MCP server bound to the capability."""
         for config in self._server_configs.values():
             if not config.enabled:
@@ -182,14 +184,18 @@ class McpServerManager:
         await client.connect()
         return client
 
-    async def _get_tool_names(self, server_name: str, client: StdioMcpClient) -> set[str]:
+    async def _get_tool_names(
+        self, server_name: str, client: StdioMcpClient
+    ) -> set[str]:
         """Fetch and cache tool names for a server."""
         cached = self._tool_cache.get(server_name)
         if cached is not None:
             return cached
 
         tools = await client.list_tools()
-        tool_names = {str(tool.get("name", "")).strip() for tool in tools if tool.get("name")}
+        tool_names = {
+            str(tool.get("name", "")).strip() for tool in tools if tool.get("name")
+        }
         self._tool_cache[server_name] = tool_names
         return tool_names
 
@@ -219,7 +225,9 @@ class McpServerManager:
         if not lines:
             lines.append(f"MCP tool {tool_name} on {server_name} returned no content.")
 
-        return ToolResult(content="\n".join(line for line in lines if line), is_error=is_error)
+        return ToolResult(
+            content="\n".join(line for line in lines if line), is_error=is_error
+        )
 
 
 _mcp_managers: dict[Path, McpServerManager] = {}

@@ -32,6 +32,10 @@ pub struct BrainClient {
 }
 
 impl BrainClient {
+    // This file is superseded by the shared client extracted in the phase 1
+    // work, which takes a single config struct. Silence the lint here rather
+    // than refactor code that is on its way out.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         python_command: &str,
         brain_module: &str,

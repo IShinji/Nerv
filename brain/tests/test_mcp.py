@@ -84,9 +84,9 @@ def test_builtin_mcp_preset_renders_config_snippet() -> None:
     assert preset is not None
 
     snippet = render_mcp_preset_snippet(preset)
-    assert 'preset: chrome_devtools_official' in snippet
-    assert 'command: npx' in snippet
-    assert '- chrome-devtools-mcp@latest' in snippet
+    assert "preset: chrome_devtools_official" in snippet
+    assert "command: npx" in snippet
+    assert "- chrome-devtools-mcp@latest" in snippet
 
 
 @pytest.mark.asyncio
@@ -116,7 +116,9 @@ mcp:
 
 
 @pytest.mark.asyncio
-async def test_browser_interactive_prefers_mcp_server(tmp_path: Path, monkeypatch) -> None:
+async def test_browser_interactive_prefers_mcp_server(
+    tmp_path: Path, monkeypatch
+) -> None:
     """browser_interactive should route through MCP when configured and available."""
     server_script = tmp_path / "fake_mcp_server.py"
     server_script.write_text(
@@ -197,7 +199,9 @@ mcp:
     monkeypatch.setattr(
         builtins,
         "chrome_browser",
-        lambda **kwargs: ToolResult(content="native fallback should not run", is_error=True),
+        lambda **kwargs: ToolResult(
+            content="native fallback should not run", is_error=True
+        ),
     )
 
     await reset_mcp_managers()
@@ -214,7 +218,9 @@ mcp:
 
 
 @pytest.mark.asyncio
-async def test_mcp_manager_uses_preset_action_binding(tmp_path: Path, monkeypatch) -> None:
+async def test_mcp_manager_uses_preset_action_binding(
+    tmp_path: Path, monkeypatch
+) -> None:
     """Preset-backed browser_interactive should translate Nerv actions to MCP tools."""
     server_script = tmp_path / "fake_preset_mcp_server.py"
     server_script.write_text(
@@ -293,7 +299,9 @@ mcp:
     monkeypatch.setattr(
         builtins,
         "chrome_browser",
-        lambda **kwargs: ToolResult(content="native fallback should not run", is_error=True),
+        lambda **kwargs: ToolResult(
+            content="native fallback should not run", is_error=True
+        ),
     )
 
     await reset_mcp_managers()
@@ -310,7 +318,9 @@ mcp:
 
 
 @pytest.mark.asyncio
-async def test_mcp_status_tool_reports_remote_tools(tmp_path: Path, monkeypatch) -> None:
+async def test_mcp_status_tool_reports_remote_tools(
+    tmp_path: Path, monkeypatch
+) -> None:
     """The mcp_status tool should surface remote tools for a healthy server."""
     server_script = tmp_path / "fake_mcp_status_server.py"
     server_script.write_text(
@@ -382,7 +392,9 @@ mcp:
 
 
 @pytest.mark.asyncio
-async def test_browser_interactive_falls_back_to_native(tmp_path: Path, monkeypatch) -> None:
+async def test_browser_interactive_falls_back_to_native(
+    tmp_path: Path, monkeypatch
+) -> None:
     """browser_interactive should use the native fallback when MCP is unavailable."""
     _write_project_config(
         tmp_path,
@@ -425,4 +437,4 @@ def test_mcp_presets_tool_renders_builtin_preset() -> None:
     result = builtins.mcp_presets("chrome_devtools_official")
     assert result.is_error is False
     assert "Official Chrome DevTools MCP server" in result.content
-    assert 'preset: chrome_devtools_official' in result.content
+    assert "preset: chrome_devtools_official" in result.content

@@ -6,12 +6,10 @@ stderr is used for logging — never write non-JSON to stdout.
 
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Any
 
-from nerv.models import RouteResult
 from nerv.orchestrator.orchestrator import Orchestrator
 from nerv.router.router import Router
 
@@ -73,11 +71,12 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
     elif method == "heartbeat":
         orchestrator = _get_orchestrator()
         import inspect
+
         if inspect.iscoroutinefunction(orchestrator.check_background_tasks):
             reply = await orchestrator.check_background_tasks()
         else:
             reply = orchestrator.check_background_tasks()
-        
+
         return {"reply": reply or ""}
     elif method == "ping":
         return {"status": "ok"}
@@ -96,9 +95,7 @@ def make_success(result: Any, request_id: int | str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "result": result, "id": request_id}
 
 
-def make_error(
-    code: int, message: str, request_id: int | str | None
-) -> dict[str, Any]:
+def make_error(code: int, message: str, request_id: int | str | None) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",
         "error": {"code": code, "message": message},
@@ -128,7 +125,9 @@ async def run_jsonrpc_loop() -> None:
         params = request.get("params")
 
         if not method:
-            write_response(make_error(-32600, "Invalid request: missing method", request_id))
+            write_response(
+                make_error(-32600, "Invalid request: missing method", request_id)
+            )
             continue
 
         try:
