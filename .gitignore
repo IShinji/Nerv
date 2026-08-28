@@ -26,8 +26,8 @@ build/
 .venv/
 brain/.venv/
 
-# uv
-brain/uv.lock
+# uv — the lock file IS committed (CONVENTIONS.md: commit lock files) so CI
+# and every contributor resolve the same dependency versions.
 
 # IDE
 .idea/
