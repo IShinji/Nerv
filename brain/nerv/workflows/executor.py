@@ -132,14 +132,20 @@ class WorkflowExecutor:
                     attempt=attempt,
                 ):
                     return await self._execute_step(
-                        step.description, step.idx, workflow_name,
-                        model, history_context,
+                        step.description,
+                        step.idx,
+                        workflow_name,
+                        model,
+                        history_context,
                     )
             except Exception as exc:
                 last_error = exc
                 logger.warning(
                     "Workflow step %d attempt %d/%d failed: %s",
-                    step.idx, attempt, attempts, exc,
+                    step.idx,
+                    attempt,
+                    attempts,
+                    exc,
                 )
                 if attempt < attempts:
                     await asyncio.sleep(min(2 ** (attempt - 1), STEP_RETRY_CAP_SECONDS))
@@ -159,8 +165,14 @@ class WorkflowExecutor:
 
         if resolution:
             return await self._execute_tool_step(
-                resolution.tool_def, method_hint, args_hint,
-                step_str, step_idx, workflow_name, model, history_context,
+                resolution.tool_def,
+                method_hint,
+                args_hint,
+                step_str,
+                step_idx,
+                workflow_name,
+                model,
+                history_context,
             )
         return await self._execute_reasoning_step(
             step_str, step_idx, workflow_name, model, history_context
@@ -189,7 +201,7 @@ class WorkflowExecutor:
         first_word = stripped.split()[0]
         resolution, method_hint = capability_registry.resolve_step_target(first_word)
         if resolution is not None:
-            remainder = stripped[len(first_word):].strip()
+            remainder = stripped[len(first_word) :].strip()
             return resolution.requested_name, method_hint, remainder
 
         return None, "", step_str
@@ -314,7 +326,8 @@ class WorkflowExecutor:
         except TypeError:
             logger.debug(
                 "Direct call failed for %s.%s, falling back to LLM",
-                tool_def.name, method_hint,
+                tool_def.name,
+                method_hint,
             )
             return None
 

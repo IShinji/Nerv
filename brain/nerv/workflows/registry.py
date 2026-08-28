@@ -91,7 +91,7 @@ class WorkflowRegistry:
         """Find a workflow by name."""
         return self._workflows.get(name.strip().lower())
 
-    def find_for_agent(self, agent: "AgentDefinition") -> list[WorkflowDefinition]:
+    def find_for_agent(self, agent: AgentDefinition) -> list[WorkflowDefinition]:
         """Return workflows relevant to a specific agent."""
         agent_name = agent.name.strip().lower()
         agent_tags = {tag.lower() for tag in agent.tags}
@@ -105,7 +105,7 @@ class WorkflowRegistry:
 
         return matches
 
-    def render_catalog(self, agent: "AgentDefinition", max_items: int = 4) -> str:
+    def render_catalog(self, agent: AgentDefinition, max_items: int = 4) -> str:
         """Render a compact workflow catalog for prompt injection."""
         workflows = self.find_for_agent(agent)
         if not workflows:
@@ -192,7 +192,9 @@ class ReviewQueue:
         self._write_review(item)
         return item
 
-    def reject_workflow(self, review_id: str, reviewer_notes: str = "") -> WorkflowReviewItem:
+    def reject_workflow(
+        self, review_id: str, reviewer_notes: str = ""
+    ) -> WorkflowReviewItem:
         """Reject a pending workflow proposal."""
         item = self.get(review_id)
         if item is None:
@@ -223,7 +225,9 @@ class ReviewQueue:
             steps=workflow_data.get("steps", []),
             success_criteria=workflow_data.get("success_criteria", []),
             created_by=workflow_data.get("created_by", "agent"),
-            review_status=workflow_data.get("review_status", data.get("status", "pending")),
+            review_status=workflow_data.get(
+                "review_status", data.get("status", "pending")
+            ),
             source_path=workflow_data.get("source_path", ""),
         )
         return WorkflowReviewItem(

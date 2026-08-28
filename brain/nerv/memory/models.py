@@ -1,4 +1,5 @@
 """Data models for Chat Memory."""
+
 from datetime import datetime
 from typing import Any
 

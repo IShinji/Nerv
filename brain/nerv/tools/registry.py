@@ -1,9 +1,10 @@
 """Registry and core types for Tools."""
 
 import inspect
-import typing
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, TypeAlias
+from typing import Any, TypeAlias
+
 
 @dataclass
 class ToolResult:
@@ -11,9 +12,13 @@ class ToolResult:
 
     content: str
     is_error: bool = False
-    is_pending: bool = False  # Indicates the tool was paused/suspended waiting for user approval
+    is_pending: bool = (
+        False  # Indicates the tool was paused/suspended waiting for user approval
+    )
+
 
 ToolFunction: TypeAlias = Callable[..., ToolResult]
+
 
 @dataclass
 class ToolDefinition:
@@ -78,14 +83,16 @@ class ToolRegistry:
         for param_name, param in sig.parameters.items():
             # Skip ctx/self etc if we ever add them, but for now simple funcs
             param_type = "string"  # Default fallback
-            
+
             # Very basic type inference for MVP
             annotation = param.annotation
-            if annotation == int:
+            # `is` rather than `==`: these are type objects, and a custom
+            # annotation with an __eq__ override must not be mistaken for int.
+            if annotation is int:
                 param_type = "integer"
-            elif annotation == bool:
+            elif annotation is bool:
                 param_type = "boolean"
-            elif annotation == float:
+            elif annotation is float:
                 param_type = "number"
 
             properties[param_name] = {
@@ -107,6 +114,7 @@ class ToolRegistry:
                 },
             },
         }
+
 
 # Global registry for convenience
 registry = ToolRegistry()

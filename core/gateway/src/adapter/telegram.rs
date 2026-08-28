@@ -55,7 +55,7 @@ impl super::ChannelAdapter for TelegramAdapter {
                 if let Some(response) = reply_rx.recv().await {
                     if let Some(response_text) = response.text() {
                         let mut final_text = response_text.to_string();
-                        
+
                         // Parse all occurrences of [DOCUMENT: path]
                         while let Some(start) = final_text.find("[DOCUMENT: ") {
                             if let Some(end_offset) = final_text[start..].find(']') {
@@ -63,7 +63,7 @@ impl super::ChannelAdapter for TelegramAdapter {
                                 // We extract the file path between [DOCUMENT: and ]
                                 let path_str = final_text[start + 11..end].trim();
                                 let path = std::path::Path::new(path_str);
-                                
+
                                 if path.exists() {
                                     let input_file = teloxide::types::InputFile::file(path);
                                     match bot.send_document(chat_id, input_file).await {
@@ -73,7 +73,7 @@ impl super::ChannelAdapter for TelegramAdapter {
                                 } else {
                                     error!("Requested document does not exist: {}", path_str);
                                 }
-                                
+
                                 // Remove the token from the text
                                 let mut cleaned = final_text[..start].to_string();
                                 cleaned.push_str(&final_text[end + 1..]);

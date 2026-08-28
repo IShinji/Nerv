@@ -8,7 +8,7 @@ import yaml
 
 from nerv.models import RouteResult
 from nerv.orchestrator.orchestrator import Orchestrator
-from nerv.orchestrator.registry import AgentDefinition, AgentRegistry
+from nerv.orchestrator.registry import AgentRegistry
 from nerv.tools.registry import ToolResult, registry
 from nerv.workflows.models import WorkflowDefinition
 
@@ -31,8 +31,16 @@ class TestAgentRegistry:
             root = self._create_agent_dir(
                 Path(tmp),
                 [
-                    {"name": "General", "description": "General assistant", "tags": ["general"]},
-                    {"name": "Coder", "description": "Code helper", "tags": ["code", "debug"]},
+                    {
+                        "name": "General",
+                        "description": "General assistant",
+                        "tags": ["general"],
+                    },
+                    {
+                        "name": "Coder",
+                        "description": "Code helper",
+                        "tags": ["code", "debug"],
+                    },
                 ],
             )
             registry = AgentRegistry(root)
@@ -73,8 +81,16 @@ class TestAgentRegistry:
             root = self._create_agent_dir(
                 Path(tmp),
                 [
-                    {"name": "General", "description": "General", "tags": ["general", "chat"]},
-                    {"name": "Coder", "description": "Code", "tags": ["code", "debug", "programming"]},
+                    {
+                        "name": "General",
+                        "description": "General",
+                        "tags": ["general", "chat"],
+                    },
+                    {
+                        "name": "Coder",
+                        "description": "Code",
+                        "tags": ["code", "debug", "programming"],
+                    },
                 ],
             )
             registry = AgentRegistry(root)
@@ -101,7 +117,10 @@ class TestAgentRegistry:
             registry = AgentRegistry(root)
             default = registry.get_default()
             assert default.name == "General"
-            assert default.system_prompt == "You are a helpful assistant. Answer concisely."
+            assert (
+                default.system_prompt
+                == "You are a helpful assistant. Answer concisely."
+            )
 
     def test_loads_preset_agents_from_project(self) -> None:
         """Test loading the actual preset agents from the project."""
@@ -178,7 +197,9 @@ async def test_cancel_pending_action_discards_it(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_approve_workflow_review_publishes_shared_workflow(tmp_path: Path) -> None:
+async def test_approve_workflow_review_publishes_shared_workflow(
+    tmp_path: Path,
+) -> None:
     """Direct approval commands should publish pending workflow proposals."""
     orchestrator = Orchestrator(tmp_path)
     item = orchestrator.review_queue.submit_workflow(

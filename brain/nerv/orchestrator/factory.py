@@ -65,6 +65,7 @@ CRITICAL INSTRUCTIONS:
 4. Do not include global runtime rules like language-following or generic honesty boilerplate; those are injected separately at runtime.\
 """
 
+
 class AgentFactory:
     """Dynamically generates YAML configurations for unknown Agent roles."""
 
@@ -76,7 +77,9 @@ class AgentFactory:
 
         self.agents_dir.mkdir(parents=True, exist_ok=True)
 
-    async def create_agent(self, role_name: str, user_intent_hint: str) -> AgentDefinition | None:
+    async def create_agent(
+        self, role_name: str, user_intent_hint: str
+    ) -> AgentDefinition | None:
         """Ask LLM to design an agent for `role_name` based on hint, validate, and save it."""
         logger.info("Factory is creating a new agent for role: '%s'", role_name)
 
@@ -97,6 +100,7 @@ class AgentFactory:
 
             # Use the registry parser to validate and return
             import yaml
+
             data = yaml.safe_load(yaml_content)
 
             return AgentDefinition(**data)

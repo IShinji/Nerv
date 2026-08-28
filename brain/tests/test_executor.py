@@ -93,7 +93,8 @@ async def test_step_retries_then_succeeds(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(executor_mod, "complete", flaky_complete)
     wf = WorkflowDefinition(
-        name="demo", description="d",
+        name="demo",
+        description="d",
         steps=[WorkflowStep(id="s1", tool="", description="Summarize")],
     )
     ex = WorkflowExecutor(_FakeOrchestrator(tmp_path))
@@ -114,7 +115,8 @@ async def test_failure_marks_run_failed_and_keeps_progress(
 
     monkeypatch.setattr(executor_mod, "complete", always_fail)
     wf = WorkflowDefinition(
-        name="demo", description="d",
+        name="demo",
+        description="d",
         steps=[WorkflowStep(id="s1", tool="", description="Summarize")],
     )
     ex = WorkflowExecutor(_FakeOrchestrator(tmp_path))

@@ -10,8 +10,12 @@ class TestCheckAndPullModel:
 
     def test_uses_http_pull_when_server_is_reachable(self) -> None:
         with (
-            patch.object(hardware, "_check_model_via_http", return_value=False) as mock_check,
-            patch.object(hardware, "_pull_model_via_http", return_value=True) as mock_pull,
+            patch.object(
+                hardware, "_check_model_via_http", return_value=False
+            ) as mock_check,
+            patch.object(
+                hardware, "_pull_model_via_http", return_value=True
+            ) as mock_pull,
             patch("shutil.which", return_value=None),
             patch("subprocess.check_output") as mock_check_output,
         ):
@@ -36,7 +40,9 @@ class TestCheckAndPullModel:
         with (
             patch.object(hardware, "_check_model_via_http", return_value=None),
             patch("shutil.which", return_value="/usr/local/bin/ollama"),
-            patch.object(hardware, "_check_and_pull_model_via_cli", return_value=True) as mock_cli,
+            patch.object(
+                hardware, "_check_and_pull_model_via_cli", return_value=True
+            ) as mock_cli,
         ):
             hardware.check_and_pull_model("qwen2.5:1.5b", "http://localhost:11434")
 

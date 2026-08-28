@@ -1,7 +1,6 @@
 """Builtin Tools for agents."""
 
 import datetime as dt
-from html.parser import HTMLParser
 import json
 import logging
 import pathlib
@@ -10,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -85,7 +85,11 @@ class _SearchResultParser(HTMLParser):
             self._title_parts = []
             return
 
-        if self._current_result and tag in {"a", "div", "span"} and "result__snippet" in class_names:
+        if (
+            self._current_result
+            and tag in {"a", "div", "span"}
+            and "result__snippet" in class_names
+        ):
             self._capture_snippet = True
             self._snippet_parts = []
 
@@ -246,7 +250,10 @@ def _resolve_capture_path(output_path: str) -> pathlib.Path:
         return path
 
     timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    return pathlib.Path(tempfile.gettempdir()) / f"{DEFAULT_SCREENSHOT_NAME}-{timestamp}.png"
+    return (
+        pathlib.Path(tempfile.gettempdir())
+        / f"{DEFAULT_SCREENSHOT_NAME}-{timestamp}.png"
+    )
 
 
 def _extract_text_from_image(image_path: pathlib.Path) -> str:
@@ -375,37 +382,43 @@ def _ensure_chrome_applescript_enabled() -> None:
         return
 
     # Probe: try to execute a trivial JS snippet in the current Chrome instance
-    probe = _run_applescript([
-        f'tell application "{CHROME_APP_NAME}"',
-        'if (count of windows) = 0 then',
-        '  make new window',
-        '  delay 1',
-        'end if',
-        'try',
-        '  return execute active tab of front window javascript "1+1"',
-        'on error',
-        '  return "BLOCKED"',
-        'end try',
-        'end tell',
-    ])
+    probe = _run_applescript(
+        [
+            f'tell application "{CHROME_APP_NAME}"',
+            "if (count of windows) = 0 then",
+            "  make new window",
+            "  delay 1",
+            "end if",
+            "try",
+            '  return execute active tab of front window javascript "1+1"',
+            "on error",
+            '  return "BLOCKED"',
+            "end try",
+            "end tell",
+        ]
+    )
 
     if probe.returncode == 0 and probe.stdout.strip() != "BLOCKED":
         _CHROME_AS_ENABLED = True
         return
 
     # JS blocked → try to toggle the menu item via UI scripting (requires Accessibility permission)
-    logger.info("Chrome AppleScript JS is blocked. Attempting to enable via menu toggle...")
+    logger.info(
+        "Chrome AppleScript JS is blocked. Attempting to enable via menu toggle..."
+    )
 
-    toggle_result = _run_applescript([
-        f'tell application "{CHROME_APP_NAME}" to activate',
-        'delay 0.5',
-        'tell application "System Events"',
-        f'  tell process "{CHROME_APP_NAME}"',
-        '    click menu item "Allow JavaScript from Apple Events" of menu "Developer" of menu item "Developer" of menu "View" of menu bar 1',
-        '  end tell',
-        'end tell',
-        'delay 1',
-    ])
+    toggle_result = _run_applescript(
+        [
+            f'tell application "{CHROME_APP_NAME}" to activate',
+            "delay 0.5",
+            'tell application "System Events"',
+            f'  tell process "{CHROME_APP_NAME}"',
+            '    click menu item "Allow JavaScript from Apple Events" of menu "Developer" of menu item "Developer" of menu "View" of menu bar 1',
+            "  end tell",
+            "end tell",
+            "delay 1",
+        ]
+    )
 
     if toggle_result.returncode == 0:
         logger.info("Successfully toggled Chrome JS permission via menu.")
@@ -420,8 +433,9 @@ def _ensure_chrome_applescript_enabled() -> None:
     # Open Chrome and show a macOS notification to guide the user
     subprocess.run(
         [
-            "osascript", "-e",
-            'display notification '
+            "osascript",
+            "-e",
+            "display notification "
             '"Please enable: Chrome → View → Developer → Allow JavaScript from Apple Events" '
             'with title "Nerv Setup Required"',
         ],
@@ -450,7 +464,7 @@ def _chrome_get_state() -> ToolResult:
         [
             f'tell application "{CHROME_APP_NAME}"',
             "activate",
-            "if (count of windows) = 0 then return \"NO_WINDOW\"",
+            'if (count of windows) = 0 then return "NO_WINDOW"',
             "set tab_title to title of active tab of front window",
             "set tab_url to URL of active tab of front window",
             "set tab_loading to (loading of active tab of front window as text)",
@@ -480,7 +494,7 @@ def _chrome_execute_javascript(script: str) -> ToolResult:
         [
             f'tell application "{CHROME_APP_NAME}"',
             "activate",
-            "if (count of windows) = 0 then return \"NO_WINDOW\"",
+            'if (count of windows) = 0 then return "NO_WINDOW"',
             f'return execute active tab of front window javascript "{escaped_script}"',
             "end tell",
         ]
@@ -533,12 +547,16 @@ def _build_browser_interactive_arguments(
 
     if normalized_action == "run_javascript":
         if not script.strip():
-            return None, ToolResult(content="run_javascript requires `script`.", is_error=True)
+            return None, ToolResult(
+                content="run_javascript requires `script`.", is_error=True
+            )
         return {"script": script}, None
 
     if normalized_action == "fill_prompt":
         if not text:
-            return None, ToolResult(content="fill_prompt requires `text`.", is_error=True)
+            return None, ToolResult(
+                content="fill_prompt requires `text`.", is_error=True
+            )
         return {"text": text}, None
 
     if normalized_action == "submit_prompt":
@@ -552,7 +570,9 @@ def _build_browser_interactive_arguments(
 
     if normalized_action == "wait_for_text":
         if not wait_for.strip():
-            return None, ToolResult(content="wait_for_text requires `wait_for`.", is_error=True)
+            return None, ToolResult(
+                content="wait_for_text requires `wait_for`.", is_error=True
+            )
         return {
             "wait_for": wait_for,
             "timeout_secs": max(1, timeout_secs),
@@ -593,7 +613,9 @@ def _parse_search_results(html: str, max_results: int) -> list[dict[str, str]]:
     """Extract a bounded set of search results from DDG HTML."""
     parser = _SearchResultParser()
     parser.feed(html)
-    results = [result for result in parser.results if result.get("title") and result.get("url")]
+    results = [
+        result for result in parser.results if result.get("title") and result.get("url")
+    ]
     return results[:max_results]
 
 
@@ -612,9 +634,11 @@ def _parse_page_content(html: str, base_url: str) -> tuple[str, str, list[str]]:
 
     return title, text, links
 
+
 # -----------------------------------------------------------------------------
 # File System Tools
 # -----------------------------------------------------------------------------
+
 
 @registry.register(
     name="file_io",
@@ -639,11 +663,17 @@ def file_io(
 
     if normalized_op == "list":
         if not target.exists():
-            return ToolResult(content=f"Error: Path {target} does not exist.", is_error=True)
+            return ToolResult(
+                content=f"Error: Path {target} does not exist.", is_error=True
+            )
         if not target.is_dir():
-            return ToolResult(content=f"Error: {target} is not a directory.", is_error=True)
+            return ToolResult(
+                content=f"Error: {target} is not a directory.", is_error=True
+            )
 
-        entries = sorted(target.iterdir(), key=lambda item: (item.is_file(), item.name.lower()))
+        entries = sorted(
+            target.iterdir(), key=lambda item: (item.is_file(), item.name.lower())
+        )
         rendered = []
         for entry in entries[: max(1, limit)]:
             kind = "dir" if entry.is_dir() else "file"
@@ -656,7 +686,9 @@ def file_io(
 
     if normalized_op == "search":
         if not query.strip():
-            return ToolResult(content="Error: search requires a non-empty query.", is_error=True)
+            return ToolResult(
+                content="Error: search requires a non-empty query.", is_error=True
+            )
         return grep_search(str(target), query)
 
     if normalized_op in {"write", "append", "delete", "move"}:
@@ -711,6 +743,7 @@ def current_time(timezone: str = "local") -> ToolResult:
         )
     )
 
+
 @registry.register(
     name="read_file",
     description="Read the exact contents of a file at a given absolute path.",
@@ -720,9 +753,13 @@ def read_file(absolute_path: str) -> ToolResult:
     """Read a file."""
     path = pathlib.Path(absolute_path)
     if not path.exists():
-        return ToolResult(content=f"Error: File {absolute_path} does not exist.", is_error=True)
+        return ToolResult(
+            content=f"Error: File {absolute_path} does not exist.", is_error=True
+        )
     if not path.is_file():
-        return ToolResult(content=f"Error: {absolute_path} is not a file.", is_error=True)
+        return ToolResult(
+            content=f"Error: {absolute_path} is not a file.", is_error=True
+        )
 
     try:
         content = path.read_text(encoding="utf-8")
@@ -756,13 +793,15 @@ def grep_search(search_path: str, query: str) -> ToolResult:
     """Search for a string in files."""
     path = pathlib.Path(search_path)
     if not path.exists():
-        return ToolResult(content=f"Error: Path {search_path} does not exist.", is_error=True)
+        return ToolResult(
+            content=f"Error: Path {search_path} does not exist.", is_error=True
+        )
 
     try:
         # For MVP we use builtin grep via subprocess. No regex for MVP, just exact match
         args = ["grep", "-rnI", query, str(path)]
         result = subprocess.run(args, capture_output=True, text=True)
-        
+
         if result.returncode == 0:
             out = result.stdout
             if len(out) > 5000:
@@ -771,13 +810,17 @@ def grep_search(search_path: str, query: str) -> ToolResult:
         elif result.returncode == 1:
             return ToolResult(content="No matches found.")
         else:
-            return ToolResult(content=f"Error running search: {result.stderr}", is_error=True)
+            return ToolResult(
+                content=f"Error running search: {result.stderr}", is_error=True
+            )
     except Exception as e:
         return ToolResult(content=f"Error searching: {e}", is_error=True)
+
 
 # -----------------------------------------------------------------------------
 # Web Tools
 # -----------------------------------------------------------------------------
+
 
 @registry.register(
     name="web_search",
@@ -790,10 +833,14 @@ def grep_search(search_path: str, query: str) -> ToolResult:
 def web_search(query: str, max_results: int = 5) -> ToolResult:
     """Search the public web and return structured results."""
     if not query.strip():
-        return ToolResult(content="Error: web_search requires a non-empty query.", is_error=True)
+        return ToolResult(
+            content="Error: web_search requires a non-empty query.", is_error=True
+        )
 
     try:
-        with httpx.Client(timeout=DEFAULT_HTTP_TIMEOUT, follow_redirects=True) as client:
+        with httpx.Client(
+            timeout=DEFAULT_HTTP_TIMEOUT, follow_redirects=True
+        ) as client:
             response = client.get(
                 SEARCH_ENDPOINT,
                 params={"q": query},
@@ -835,7 +882,9 @@ def browser(url: str, max_chars: int = 4000, include_links: bool = False) -> Too
         target_url = "https://" + target_url
 
     try:
-        with httpx.Client(timeout=DEFAULT_HTTP_TIMEOUT, follow_redirects=True) as client:
+        with httpx.Client(
+            timeout=DEFAULT_HTTP_TIMEOUT, follow_redirects=True
+        ) as client:
             response = client.get(
                 target_url,
                 headers={"User-Agent": "Nerv/0.1 (+https://github.com/IShinji/Nerv)"},
@@ -896,7 +945,9 @@ def list_workflows(agent_name: str = "") -> ToolResult:
 
     lines = ["Shared workflows:"]
     for workflow in workflows:
-        owners = ", ".join(workflow.owner_agents) if workflow.owner_agents else "all agents"
+        owners = (
+            ", ".join(workflow.owner_agents) if workflow.owner_agents else "all agents"
+        )
         lines.append(f"- {workflow.name}: {workflow.description}")
         lines.append(f"  Owners: {owners}")
         if workflow.tools:
@@ -985,31 +1036,35 @@ def propose_workflow(
 )
 async def execute_workflow(workflow_name: str, inputs: str) -> ToolResult:
     """Execute a shared workflow via the native WorkflowExecutor."""
-    from nerv.workflows.registry import WorkflowRegistry
-    from nerv.workflows.executor import WorkflowExecutor
-    
     # We must fetch the orchestrator from ipc to inject it into the executor
     # To avoid circular import, we fetch it locally
     from nerv.ipc import _get_orchestrator
-    
+    from nerv.workflows.executor import WorkflowExecutor
+    from nerv.workflows.registry import WorkflowRegistry
+
     registry_obj = WorkflowRegistry(_get_project_root())
     workflow = registry_obj.find(workflow_name.strip())
-    
+
     if not workflow:
         return ToolResult(
             content=f"Error: Shared workflow '{workflow_name}' not found. List workflows first.",
-            is_error=True
+            is_error=True,
         )
-    
+
     if not workflow.steps:
-        return ToolResult(content=f"Error: Workflow '{workflow.name}' has no defined steps.", is_error=True)
+        return ToolResult(
+            content=f"Error: Workflow '{workflow.name}' has no defined steps.",
+            is_error=True,
+        )
 
     orchestrator = _get_orchestrator()
     executor = WorkflowExecutor(orchestrator)
-    
+
     try:
         final_result = await executor.execute(workflow, inputs)
-        return ToolResult(content=f"Workflow executed successfully.\\nResult context:\\n{final_result}")
+        return ToolResult(
+            content=f"Workflow executed successfully.\\nResult context:\\n{final_result}"
+        )
     except Exception as e:
         return ToolResult(content=f"Workflow execution failed: {e}", is_error=True)
 
@@ -1040,8 +1095,7 @@ def list_skills(agent_name: str = "") -> ToolResult:
         lines.append(f"- {skill.name}: {skill.description}")
         if skill.recommended_workflows:
             lines.append(
-                "  Recommended workflows: "
-                + ", ".join(skill.recommended_workflows)
+                "  Recommended workflows: " + ", ".join(skill.recommended_workflows)
             )
     return ToolResult(content="\n".join(lines))
 
@@ -1062,9 +1116,7 @@ def get_skill(name: str) -> ToolResult:
     body = _truncate(skill.body.strip(), 3000)
     lines = [f"Skill: {skill.name}", skill.description]
     if skill.recommended_workflows:
-        lines.append(
-            "Recommended workflows: " + ", ".join(skill.recommended_workflows)
-        )
+        lines.append("Recommended workflows: " + ", ".join(skill.recommended_workflows))
     if body:
         lines.append("Body:")
         lines.append(body)
@@ -1082,7 +1134,9 @@ def list_review_queue(status: str = "pending") -> ToolResult:
 
     items = ReviewQueue(_get_project_root()).list_reviews(status=status.strip())
     if not items:
-        return ToolResult(content=f"No workflow review items found for status: {status}")
+        return ToolResult(
+            content=f"No workflow review items found for status: {status}"
+        )
 
     lines = [f"Workflow review items ({status}):"]
     for item in items:
@@ -1117,7 +1171,9 @@ def mcp_presets(preset_name: str = "") -> ToolResult:
 
         lines = ["Builtin MCP presets:"]
         for preset in presets:
-            capabilities = ", ".join(preset.capabilities) if preset.capabilities else "none"
+            capabilities = (
+                ", ".join(preset.capabilities) if preset.capabilities else "none"
+            )
             lines.append(f"- {preset.name}: {preset.description}")
             lines.append(f"  Capabilities: {capabilities}")
             lines.append(f"  Source: {preset.source_url}")
@@ -1184,7 +1240,9 @@ async def mcp_status(server_name: str = "") -> ToolResult:
         lines.append(f"  Args: {args}")
         if status["preset"]:
             lines.append(f"  Preset: {status['preset']}")
-        capabilities = ", ".join(status["capabilities"]) if status["capabilities"] else "none"
+        capabilities = (
+            ", ".join(status["capabilities"]) if status["capabilities"] else "none"
+        )
         lines.append(f"  Capabilities: {capabilities}")
         if status["action_map"]:
             lines.append(
@@ -1262,11 +1320,17 @@ async def browser_interactive(
         text=str(arguments.get("text", "")) if arguments else "",
         script=str(arguments.get("script", "")) if arguments else "",
         wait_for=str(arguments.get("wait_for", "")) if arguments else "",
-        timeout_secs=int(arguments.get("timeout_secs", timeout_secs)) if arguments else timeout_secs,
-        poll_interval_secs=float(arguments.get("poll_interval_secs", poll_interval_secs))
+        timeout_secs=int(arguments.get("timeout_secs", timeout_secs))
+        if arguments
+        else timeout_secs,
+        poll_interval_secs=float(
+            arguments.get("poll_interval_secs", poll_interval_secs)
+        )
         if arguments
         else poll_interval_secs,
-        max_chars=int(arguments.get("max_chars", max_chars)) if arguments else max_chars,
+        max_chars=int(arguments.get("max_chars", max_chars))
+        if arguments
+        else max_chars,
     )
 
 
@@ -1380,7 +1444,10 @@ def chrome_browser(
         if result.is_error:
             return result
         if result.content == "NO_EDITABLE_INPUT":
-            return ToolResult(content="No editable prompt input was found on the current page.", is_error=True)
+            return ToolResult(
+                content="No editable prompt input was found on the current page.",
+                is_error=True,
+            )
         return ToolResult(content=f"Filled prompt using {result.content}.")
 
     if normalized_action == "submit_prompt":
@@ -1429,7 +1496,10 @@ def chrome_browser(
         if result.is_error:
             return result
         if result.content == "NO_SUBMIT_CONTROL":
-            return ToolResult(content="No submit control was found on the current page.", is_error=True)
+            return ToolResult(
+                content="No submit control was found on the current page.",
+                is_error=True,
+            )
         return ToolResult(content=f"Submitted prompt using {result.content}.")
 
     if normalized_action == "wait_for_idle":
@@ -1442,7 +1512,10 @@ def chrome_browser(
             if not payload.get("loading", False):
                 return ToolResult(content="Chrome tab is idle.")
             time.sleep(float(arguments.get("poll_interval_secs", poll_interval_secs)))
-        return ToolResult(content="Timed out waiting for the Chrome tab to finish loading.", is_error=True)
+        return ToolResult(
+            content="Timed out waiting for the Chrome tab to finish loading.",
+            is_error=True,
+        )
 
     if normalized_action == "wait_for_text":
         deadline = time.time() + int(arguments.get("timeout_secs", timeout_secs))
@@ -1453,8 +1526,12 @@ def chrome_browser(
             if page_text.is_error:
                 return page_text
             if str(arguments["wait_for"]) in page_text.content:
-                excerpt = _truncate(page_text.content, int(arguments.get("max_chars", max_chars)))
-                return ToolResult(content=f"Observed target text in Chrome page:\n{excerpt}")
+                excerpt = _truncate(
+                    page_text.content, int(arguments.get("max_chars", max_chars))
+                )
+                return ToolResult(
+                    content=f"Observed target text in Chrome page:\n{excerpt}"
+                )
             time.sleep(float(arguments.get("poll_interval_secs", poll_interval_secs)))
         return ToolResult(
             content=f"Timed out waiting for text in Chrome page: {arguments['wait_for']}",
@@ -1505,7 +1582,9 @@ def screenshot(output_path: str = "", ocr: bool = True) -> ToolResult:
     result = _run_subprocess(args)
     if result.returncode != 0:
         stderr = result.stderr.strip() or result.stdout.strip() or "unknown error"
-        return ToolResult(content=f"Failed to capture screenshot: {stderr}", is_error=True)
+        return ToolResult(
+            content=f"Failed to capture screenshot: {stderr}", is_error=True
+        )
 
     lines = [f"Saved screenshot to {target_path}."]
     if ocr:
@@ -1557,9 +1636,7 @@ def desktop_control(
         elif normalized_action == "activate_application":
             if not application.strip():
                 raise ValueError("activate_application requires `application`.")
-            script = (
-                f'tell application "{_escape_applescript_text(application)}" to activate'
-            )
+            script = f'tell application "{_escape_applescript_text(application)}" to activate'
             args = ["osascript", "-e", script]
             summary = f"Activated application: {application}"
         elif normalized_action == "open_url":
@@ -1621,9 +1698,11 @@ def desktop_control(
         return ToolResult(content=f"{summary}\n{_truncate(details, 1500)}")
     return ToolResult(content=summary)
 
+
 # -----------------------------------------------------------------------------
 # System Tools
 # -----------------------------------------------------------------------------
+
 
 @registry.register(
     name="shell",
@@ -1651,9 +1730,11 @@ def shell(command: str) -> ToolResult:
         is_error=result.returncode != 0,
     )
 
+
 # -----------------------------------------------------------------------------
 # Swarm Tools (Orchestration context needed)
 # -----------------------------------------------------------------------------
+
 
 @registry.register(
     name="delegate_task",
@@ -1662,25 +1743,27 @@ def shell(command: str) -> ToolResult:
 )
 async def delegate_task(role_name: str, task_description: str) -> ToolResult:
     """Spawn or consult a sub-agent for a specific task."""
-    from nerv.orchestrator.orchestrator import Orchestrator
     import pathlib
-    
+
+    from nerv.orchestrator.orchestrator import Orchestrator
+
     # We build a temporary orchestrator for the sub-agent
     orch = Orchestrator(pathlib.Path.cwd())
-    
+
     # Fake the route result
     from nerv.models import RouteResult
+
     route = RouteResult(
         intent=role_name,
         complexity="high",
         model_tier=1,
-        agent_type=role_name, # This forces the Factory to spawn this exact role!
-        reply=""
+        agent_type=role_name,  # This forces the Factory to spawn this exact role!
+        reply="",
     )
-    
+
     # We prefix the message so the sub-agent knows its context
     prompt = f"[DELEGATION TASK]\nYou have been spawned by a higher-level architect agent to handle a sub-task.\nTask Description: {task_description}"
-    
+
     response = await orch.dispatch(prompt, route)
-    
+
     return ToolResult(content=f"Expert ({role_name}) replied: {response}")

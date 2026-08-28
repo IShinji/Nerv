@@ -85,7 +85,11 @@ class StdioMcpClient:
         cwd = self.project_root
         if self.config.cwd.strip():
             candidate = Path(self.config.cwd).expanduser()
-            cwd = candidate if candidate.is_absolute() else (self.project_root / candidate)
+            cwd = (
+                candidate
+                if candidate.is_absolute()
+                else (self.project_root / candidate)
+            )
 
         try:
             self._process = await asyncio.create_subprocess_exec(
@@ -131,7 +135,9 @@ class StdioMcpClient:
         result = await self._send_request("tools/list", {})
         tools = result.get("tools", [])
         if not isinstance(tools, list):
-            raise McpProtocolError(f"MCP server {self.config.name} returned invalid tools/list result.")
+            raise McpProtocolError(
+                f"MCP server {self.config.name} returned invalid tools/list result."
+            )
         return tools
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -167,7 +173,9 @@ class StdioMcpClient:
         self._pending.clear()
         self._initialized = False
 
-    async def _send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def _send_request(
+        self, method: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
         """Send a JSON-RPC request and await its result."""
         if self._process is None or self._process.stdin is None:
             raise McpTransportError(f"MCP server {self.config.name} is not running.")
@@ -175,7 +183,9 @@ class StdioMcpClient:
         async with self._send_lock:
             self._request_id += 1
             request_id = self._request_id
-            future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+            future: asyncio.Future[dict[str, Any]] = (
+                asyncio.get_running_loop().create_future()
+            )
             self._pending[request_id] = future
             payload = {
                 "jsonrpc": "2.0",
@@ -197,7 +207,7 @@ class StdioMcpClient:
 
         try:
             return await asyncio.wait_for(future, timeout=20.0)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             self._pending.pop(request_id, None)
             raise McpTransportError(
                 f"MCP server {self.config.name} timed out handling {method}."
@@ -209,7 +219,9 @@ class StdioMcpClient:
             raise McpTransportError(f"MCP server {self.config.name} is not running.")
 
         payload = {"jsonrpc": "2.0", "method": method, "params": params}
-        self._process.stdin.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+        self._process.stdin.write(
+            (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+        )
         await self._process.stdin.drain()
 
     async def _read_stdout_loop(self) -> None:
@@ -233,7 +245,9 @@ class StdioMcpClient:
                 continue
 
             if "id" not in message:
-                logger.debug("Ignoring MCP notification from %s: %s", self.config.name, message)
+                logger.debug(
+                    "Ignoring MCP notification from %s: %s", self.config.name, message
+                )
                 continue
 
             future = self._pending.pop(message["id"], None)
