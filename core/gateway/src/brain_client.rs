@@ -123,13 +123,16 @@ impl BrainClient {
                         if trimmed.is_empty() {
                             continue;
                         }
-                        
+
                         // Parse as generic JSON to determine if it's a response or notification
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
                             if let Some(method) = value.get("method").and_then(|m| m.as_str()) {
                                 if method == "notify" {
                                     if let Some(params) = value.get("params") {
-                                        let msg = params.get("message").and_then(|m| m.as_str()).unwrap_or(trimmed);
+                                        let msg = params
+                                            .get("message")
+                                            .and_then(|m| m.as_str())
+                                            .unwrap_or(trimmed);
                                         info!("⚡[Brain]: {}", msg);
                                     } else {
                                         info!("⚡[Brain]: {}", trimmed);
@@ -137,9 +140,11 @@ impl BrainClient {
                                     continue;
                                 }
                             }
-                            
+
                             // Otherwise, treat as a JsonRpcResponse
-                            if let Ok(response) = serde_json::from_value::<JsonRpcResponse>(value.clone()) {
+                            if let Ok(response) =
+                                serde_json::from_value::<JsonRpcResponse>(value.clone())
+                            {
                                 let id = response.id;
                                 let mut map = pending_requests.lock().unwrap();
                                 if let Some(tx) = map.remove(&id) {
@@ -154,7 +159,10 @@ impl BrainClient {
                                     };
                                     let _ = tx.send(res);
                                 } else {
-                                    debug!("Received response for unknown/expired request id: {}", id);
+                                    debug!(
+                                        "Received response for unknown/expired request id: {}",
+                                        id
+                                    );
                                 }
                             } else {
                                 // Fallback info printer
@@ -226,10 +234,11 @@ impl BrainClient {
         }
 
         // Wait for response via oneshot channel asynchronously
-        let result = rx
-            .await
-            .context(format!("brain process closed before responding to request id {}", id))?;
-            
+        let result = rx.await.context(format!(
+            "brain process closed before responding to request id {}",
+            id
+        ))?;
+
         if result.get("error").is_some() {
             anyhow::bail!("Brain returned error: {}", result);
         }

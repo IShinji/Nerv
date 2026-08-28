@@ -37,7 +37,11 @@ impl Brain {
         })
     }
 
-    fn call(&mut self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    fn call(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -48,7 +52,9 @@ impl Brain {
             "id": id,
         });
         let line = serde_json::to_string(&req).map_err(|e| e.to_string())?;
-        self.stdin.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+        self.stdin
+            .write_all(line.as_bytes())
+            .map_err(|e| e.to_string())?;
         self.stdin.write_all(b"\n").map_err(|e| e.to_string())?;
         self.stdin.flush().map_err(|e| e.to_string())?;
 
@@ -70,7 +76,10 @@ impl Brain {
                 if let Some(err) = val.get("error") {
                     return Err(err.to_string());
                 }
-                return Ok(val.get("result").cloned().unwrap_or(serde_json::Value::Null));
+                return Ok(val
+                    .get("result")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null));
             }
         }
     }
@@ -84,13 +93,11 @@ struct AppState {
 
 impl AppState {
     /// Lazily spawn the brain on first use, then run `f` against it.
-    fn with_brain<R>(
-        &self,
-        f: impl FnOnce(&mut Brain) -> Result<R, String>,
-    ) -> Result<R, String> {
+    fn with_brain<R>(&self, f: impl FnOnce(&mut Brain) -> Result<R, String>) -> Result<R, String> {
         let mut guard = self.brain.lock().map_err(|e| e.to_string())?;
         if guard.is_none() {
-            let brain = Brain::spawn(&self.brain_dir, &self.project_root).map_err(|e| e.to_string())?;
+            let brain =
+                Brain::spawn(&self.brain_dir, &self.project_root).map_err(|e| e.to_string())?;
             *guard = Some(brain);
         }
         f(guard.as_mut().expect("brain present"))
@@ -145,7 +152,10 @@ fn list_agents(state: State<AppState>) -> Result<Vec<Agent>, String> {
             }
             if let Ok(text) = std::fs::read_to_string(&path) {
                 let name = extract_field(&text, "name").unwrap_or_else(|| {
-                    path.file_stem().unwrap_or_default().to_string_lossy().to_string()
+                    path.file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string()
                 });
                 let description = extract_field(&text, "description").unwrap_or_default();
                 agents.push(Agent { name, description });
