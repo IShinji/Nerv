@@ -14,6 +14,7 @@ tests monkeypatching a tool's internals must target the owning module.
 from nerv.tools import desktop as desktop  # noqa: F401
 from nerv.tools import files as files  # noqa: F401
 from nerv.tools import knowledge as knowledge  # noqa: F401
+from nerv.tools import memory as memory  # noqa: F401
 from nerv.tools import system as system  # noqa: F401
 from nerv.tools import web as web  # noqa: F401
 from nerv.tools._helpers import (  # noqa: F401
@@ -34,6 +35,7 @@ from nerv.tools.files import (  # noqa: F401
     write_file_full,
 )
 from nerv.tools.knowledge import mcp_presets, mcp_status  # noqa: F401
+from nerv.tools.memory import get_fact_section, search_memory  # noqa: F401
 from nerv.tools.registry import ToolResult, registry  # noqa: F401
 from nerv.tools.system import current_time, delegate_task, shell  # noqa: F401
 from nerv.tools.web import browser, web_search  # noqa: F401

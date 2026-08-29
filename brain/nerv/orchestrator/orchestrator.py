@@ -7,6 +7,7 @@ This is the central coordinator that:
 4. Returns the response
 """
 
+import asyncio
 import inspect
 import json
 import logging
@@ -19,7 +20,12 @@ import httpx
 
 from nerv.config import get_workspace_root
 from nerv.memory.context import ContextManager
-from nerv.memory.manager import DEFAULT_SCOPE, MemoryManager, scope_for
+from nerv.memory.manager import (
+    DEFAULT_SCOPE,
+    MemoryManager,
+    scope_for,
+    use_scope,
+)
 from nerv.models import RouteResult
 from nerv.observability import new_trace_id, timed
 from nerv.orchestrator.registry import AgentDefinition, AgentRegistry
@@ -58,6 +64,9 @@ class Orchestrator:
         self.base_url = os.environ.get("NERV_OLLAMA_URL", DEFAULT_OLLAMA_URL)
         self._client = httpx.AsyncClient(timeout=OLLAMA_TIMEOUT)
         self._pending_notifications: list[str] = []
+        # Strong refs to fire-and-forget tasks; asyncio only holds weak ones,
+        # so without this the GC can cancel a summary mid-flight.
+        self._background_tasks: set[asyncio.Task[None]] = set()
         # File-backed so actions queued by the MCP server (a separate process)
         # are visible to this orchestrator's confirm/cancel flow.
         self._pending_store = PendingActionStore(project_root)
@@ -75,6 +84,47 @@ class Orchestrator:
         sender: str = "",
     ) -> str:
         """Dispatch a message to the appropriate agent and return the response."""
+        # Publish the scope for the duration of the turn: builtin memory tools
+        # are module-level and read it to stay inside this sender's history.
+        with use_scope(scope_for(channel, sender)):
+            response = await self._dispatch(message, route_result, channel, sender)
+            self._schedule_summary_backfill(channel, sender)
+            return response
+
+    def _schedule_summary_backfill(self, channel: str, sender: str) -> None:
+        """Kick off summarising any unsummarised past day, off the reply path.
+
+        Fire-and-forget on purpose: a summary is an optimisation for later
+        turns, so it must never add latency to this reply or fail it.
+        """
+        memory, _ = self._memory_for(channel, sender)
+        if not memory.days_needing_summary(limit=1):
+            return
+
+        from nerv.memory.summarizer import backfill_summaries
+
+        async def _run() -> None:
+            try:
+                await backfill_summaries(
+                    memory,
+                    model=self._select_model(0),
+                    project_root=self._project_root,
+                )
+            except Exception as e:
+                logger.warning("Summary backfill failed: %s", e)
+
+        task = asyncio.create_task(_run())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _dispatch(
+        self,
+        message: str,
+        route_result: RouteResult,
+        channel: str,
+        sender: str,
+    ) -> str:
+        """Run one turn. Callers go through :meth:`dispatch`, which binds scope."""
         memory, context_manager = self._memory_for(channel, sender)
 
         pending_response = await self._handle_pending_action_command(
@@ -673,4 +723,8 @@ class Orchestrator:
         Called on brain shutdown so the shared httpx client's connection pool
         is closed instead of being reclaimed by the interpreter exiting.
         """
+        if self._background_tasks:
+            # Let in-flight summaries finish rather than losing the work; they
+            # already swallow their own errors, so gather cannot raise here.
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
         await self._client.aclose()

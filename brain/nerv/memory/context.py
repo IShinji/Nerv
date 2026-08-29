@@ -25,6 +25,17 @@ _CJK_RANGES: tuple[tuple[str, str], ...] = (
 
 _LATIN_CHARS_PER_TOKEN = 3.5
 
+# Above this, `facts.md` stops being pasted in full and the prompt carries only
+# a section outline; an agent pulls what it needs with `get_fact_section`.
+# Below it, inlining is cheaper than making the model spend a tool call.
+FACTS_INLINE_TOKEN_BUDGET = 400
+
+# How many summarised earlier days to carry, and the ceiling on what they may
+# spend. Summaries are the only trace of conversation older than the recency
+# window, so they get a reserved slice rather than competing with raw history.
+MAX_SUMMARY_DAYS = 3
+SUMMARY_TOKEN_BUDGET = 500
+
 
 def _is_cjk(char: str) -> bool:
     return any(low <= char <= high for low, high in _CJK_RANGES)
@@ -44,6 +55,48 @@ class ContextManager:
 
     def __init__(self, memory: MemoryManager) -> None:
         self.memory = memory
+
+    def _render_facts(self, facts: str) -> str:
+        """Inline the facts file, or just its outline once it gets expensive."""
+        if estimate_tokens(facts) <= FACTS_INLINE_TOKEN_BUDGET:
+            return f"[Long-term Facts]\n{facts.strip()}"
+
+        headed = any(heading for heading, _ in self.memory.fact_sections())
+        outline = self.memory.facts_outline() if headed else ""
+        if not outline:
+            # Big but unstructured: no headings to summarise, so inline it and
+            # let the history budget absorb the cost rather than drop facts.
+            return f"[Long-term Facts]\n{facts.strip()}"
+
+        logger.debug("Facts exceed inline budget; sending outline only")
+        return (
+            "[Long-term Facts — outline]\n"
+            "Only section titles are shown. Call `get_fact_section` with a "
+            "title to read one in full.\n"
+            f"{outline}"
+        )
+
+    def _render_summaries(self) -> str:
+        """Render recent days' rolling summaries, newest first, within budget."""
+        from datetime import datetime
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        entries = self.memory.summaries_before(today, limit=MAX_SUMMARY_DAYS)
+        if not entries:
+            return ""
+
+        lines: list[str] = []
+        spent = 0
+        for day, summary in entries:
+            cost = estimate_tokens(summary)
+            if spent + cost > SUMMARY_TOKEN_BUDGET:
+                break
+            lines.append(f"- {day}: {summary}")
+            spent += cost
+
+        if not lines:
+            return ""
+        return "[Earlier days — summaries]\n" + "\n".join(lines)
 
     def build_messages(
         self,
@@ -70,7 +123,11 @@ class ContextManager:
                 if section.strip():
                     system_content += f"\n\n{section.strip()}"
         if facts.strip():
-            system_content += f"\n\n[Long-term Facts]\n{facts.strip()}"
+            system_content += f"\n\n{self._render_facts(facts)}"
+
+        summaries = self._render_summaries()
+        if summaries:
+            system_content += f"\n\n{summaries}"
 
         # 1. System message is always included
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]

@@ -34,6 +34,9 @@ import os
 import re
 import tempfile
 from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -59,6 +62,37 @@ def scope_for(channel: str = "", sender: str = "") -> str:
         return DEFAULT_SCOPE
     slug = _UNSAFE_SCOPE_CHARS.sub("-", "-".join(parts)).strip("-")
     return slug or DEFAULT_SCOPE
+
+
+# The active conversation scope for the current request. Builtin tools are
+# module-level functions with no handle on the orchestrator's MemoryManager,
+# so the orchestrator publishes the scope here and memory tools read it back.
+# It fails closed: an unset var means DEFAULT_SCOPE, never "search everything".
+_active_scope: ContextVar[str] = ContextVar("nerv_active_scope", default=DEFAULT_SCOPE)
+
+
+def active_scope() -> str:
+    """Return the conversation scope the current request belongs to."""
+    return _active_scope.get()
+
+
+@contextmanager
+def use_scope(scope: str) -> Iterator[None]:
+    """Bind ``scope`` as the active scope for the duration of the block."""
+    token = _active_scope.set(scope or DEFAULT_SCOPE)
+    try:
+        yield
+    finally:
+        _active_scope.reset(token)
+
+
+@dataclass(frozen=True)
+class SearchHit:
+    """One conversation message matched by :meth:`MemoryManager.search_messages`."""
+
+    date: str
+    message: ChatMessage
+    score: float
 
 
 class MemoryManager:
@@ -198,6 +232,53 @@ class MemoryManager:
         # Reverse back so the oldest is first, newest is last
         return list(reversed(messages))
 
+    def search_messages(
+        self,
+        query: str,
+        limit: int = 10,
+        since: str = "",
+        until: str = "",
+        role: str = "",
+    ) -> list[SearchHit]:
+        """Find past messages in *this scope* matching ``query``.
+
+        Retrieval here is keyword-based on purpose. The corpus is one owner's
+        chat history — small enough that scanning it costs less than keeping an
+        embedding index correct, and the queries that matter ("what did I say
+        about the telegram bug") are dominated by rare literal terms anyway.
+
+        Scoring favours, in order: matching more distinct query terms, matching
+        the whole phrase, and recency as the tie-break. ``since``/``until`` are
+        inclusive ``YYYY-MM-DD`` bounds; ``role`` filters to one speaker.
+        """
+        terms = [term for term in re.split(r"\W+", query.lower()) if term]
+        phrase = query.strip().lower()
+        if not phrase:
+            return []
+
+        hits: list[SearchHit] = []
+        for date_str, path in self._dated_files():
+            if since and date_str < since:
+                continue
+            if until and date_str > until:
+                continue
+            for msg in self._read_messages(path):
+                if role and msg.role != role:
+                    continue
+                haystack = msg.content.lower()
+                matched = sum(1 for term in terms if term in haystack)
+                if not matched and phrase not in haystack:
+                    continue
+                score = float(matched)
+                if phrase in haystack:
+                    # A whole-phrase hit outranks scattered term hits.
+                    score += len(terms) + 1
+                hits.append(SearchHit(date=date_str, message=msg, score=score))
+
+        # Newest first within equal scores, so recency breaks ties.
+        hits.sort(key=lambda hit: (hit.score, hit.date), reverse=True)
+        return hits[:limit]
+
     # ── Writing ──────────────────────────────────────────────────────────────
 
     def save_conversation(self, conv: DailyConversation) -> None:
@@ -253,6 +334,58 @@ class MemoryManager:
             handle.write(body)
         os.replace(tmp, path)
 
+    # ── Summaries ────────────────────────────────────────────────────────────
+
+    def read_summary(self, date_str: str) -> str:
+        """Return the stored rolling summary for a day, or an empty string."""
+        path = self._summary_file(date_str)
+        if not path.exists():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except OSError as e:
+            logger.error("Failed to read summary %s: %s", path, e)
+            return ""
+
+    def write_summary(self, date_str: str, summary: str) -> None:
+        """Store the rolling summary for a day."""
+        try:
+            with self._locked():
+                self._atomic_write(self._summary_file(date_str), summary.strip() + "\n")
+        except OSError as e:
+            logger.error("Failed to write summary for %s: %s", date_str, e)
+
+    def summaries_before(self, date_str: str, limit: int = 5) -> list[tuple[str, str]]:
+        """Return ``(date, summary)`` for the most recent summarised days before
+        ``date_str``, newest first."""
+        found: list[tuple[str, str]] = []
+        for day, _path in reversed(self._dated_files()):
+            if day >= date_str:
+                continue
+            summary = self.read_summary(day)
+            if summary:
+                found.append((day, summary))
+            if len(found) >= limit:
+                break
+        return found
+
+    def days_needing_summary(self, limit: int = 5) -> list[str]:
+        """Past days that hold messages but no summary yet, newest first.
+
+        Today is excluded: it is still being written to, so summarising it now
+        would only be redone on the next turn.
+        """
+        today = self._get_today_str()
+        pending: list[str] = []
+        for day, path in reversed(self._dated_files()):
+            if day >= today or self.read_summary(day):
+                continue
+            if self._read_messages(path):
+                pending.append(day)
+            if len(pending) >= limit:
+                break
+        return pending
+
     # ── Facts ────────────────────────────────────────────────────────────────
 
     def read_facts(self) -> str:
@@ -260,6 +393,60 @@ class MemoryManager:
         if not self.facts_file.exists():
             return ""
         return self.facts_file.read_text(encoding="utf-8")
+
+    def fact_sections(self) -> list[tuple[str, str]]:
+        """Split ``facts.md`` into ``(heading, body)`` pairs.
+
+        Sections are Markdown ATX headings (``#``..``######``). Anything before
+        the first heading is returned under the empty heading, so an unstructured
+        legacy facts file still round-trips.
+        """
+        text = self.read_facts()
+        if not text.strip():
+            return []
+
+        sections: list[tuple[str, list[str]]] = []
+        preamble: list[str] = []
+        for line in text.splitlines():
+            if re.match(r"^#{1,6}\s+\S", line):
+                sections.append((line.lstrip("#").strip(), []))
+            elif sections:
+                sections[-1][1].append(line)
+            else:
+                preamble.append(line)
+
+        result: list[tuple[str, str]] = []
+        if any(line.strip() for line in preamble):
+            result.append(("", "\n".join(preamble).strip()))
+        result.extend((head, "\n".join(body).strip()) for head, body in sections)
+        return result
+
+    def facts_outline(self) -> str:
+        """A one-line-per-section table of contents for ``facts.md``.
+
+        The context manager sends this instead of the whole file once facts grow
+        past a threshold, so prompt cost stops scaling with everything Nerv has
+        ever learned. An agent pulls a section back with ``get_fact_section``.
+        """
+        sections = self.fact_sections()
+        if not sections:
+            return ""
+        lines: list[str] = []
+        for heading, body in sections:
+            label = heading or "(untitled)"
+            first = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+            if len(first) > 80:
+                first = first[:80] + "…"
+            lines.append(f"- {label}: {first}" if first else f"- {label}")
+        return "\n".join(lines)
+
+    def read_fact_section(self, heading: str) -> str:
+        """Return one section's body, matched case-insensitively by heading."""
+        wanted = heading.strip().lower()
+        for head, body in self.fact_sections():
+            if head.lower() == wanted:
+                return body
+        return ""
 
     def append_fact(self, fact: str) -> None:
         """Append a new long-term fact."""

@@ -34,13 +34,23 @@ Nerv is a personal AI operating system. Rust core (Gateway, hardware detection) 
   commands, so an unauthenticated channel is a remote shell
 - Conversation memory is scoped per sender+channel (`nerv/memory/manager.py`);
   `facts.md` is deliberately shared across a single owner's channels
+- Retrieval over memory is keyword-based, not vector-based, and that is a
+  deliberate choice for a single owner's corpus — do not add an embedding
+  index without evidence that keyword search is missing real recalls
+- Memory tools (`nerv/tools/memory.py`) read the scope the orchestrator binds
+  via `use_scope`; it fails closed to the default scope, so a tool can never
+  read another sender's history. Anything reaching memory from a new entry
+  point must bind the scope the same way
+- Past days outside the recency window survive as rolling summaries generated
+  off the reply path (`nerv/memory/summarizer.py`). Summarizing must never add
+  latency to a reply or fail it
 
 ## When Writing Code
 
 - Run `cargo fmt` and `cargo clippy` before committing Rust code
 - Run `ruff format` and `ruff check` before committing Python code (both are in
   the dev dependency group; CI enforces them)
-- Builtin tools live in focused modules (`nerv/tools/{web,files,system,knowledge,desktop}.py`).
+- Builtin tools live in focused modules (`nerv/tools/{web,files,system,knowledge,desktop,memory}.py`).
   `nerv/tools/builtins.py` only re-exports them, so patching a name *there* does
   not affect the module that defines it — tests must patch the owning module
 - Add tests for new functionality
