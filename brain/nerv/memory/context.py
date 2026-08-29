@@ -1,24 +1,42 @@
 """Context Manager constructs prompt arrays for Ollama, handling token limits."""
 
 import logging
+import math
 from typing import Any
 
 from nerv.memory.manager import MemoryManager
-from nerv.memory.models import ChatMessage
-from nerv.orchestrator.runtime_policy import build_system_prompt
 from nerv.orchestrator.registry import AgentDefinition
+from nerv.orchestrator.runtime_policy import build_system_prompt
 
 logger = logging.getLogger(__name__)
 
-# Basic token estimation heuristic (English + Chinese approx)
-# 1 character ~ 0.5 to 1 token for CJK, standard 1 token = 4 chars English.
-# To be safe without a heavy tokenizer (tiktoken), we'll assume 1 char = 1 token.
-# This ensures we are always under the limit.
+# Token estimation heuristic, chosen to avoid a heavy tokenizer dependency.
+# CJK characters are roughly one token each; Latin text is roughly 4 characters
+# per token, so we divide by a slightly conservative 3.5 to stay under the real
+# count. Treating every character as one token (the previous rule) overestimated
+# Latin text ~4x and silently shrank the usable history window.
+_CJK_RANGES: tuple[tuple[str, str], ...] = (
+    ("\u3040", "\u30ff"),  # Hiragana + Katakana
+    ("\u3400", "\u4dbf"),  # CJK Extension A
+    ("\u4e00", "\u9fff"),  # CJK Unified Ideographs
+    ("\uac00", "\ud7af"),  # Hangul syllables
+    ("\uf900", "\ufaff"),  # CJK Compatibility Ideographs
+)
+
+_LATIN_CHARS_PER_TOKEN = 3.5
+
+
+def _is_cjk(char: str) -> bool:
+    return any(low <= char <= high for low, high in _CJK_RANGES)
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough estimate of tokens in text. Safe upper bound without importing tiktoken."""
-    return len(text)
+    """Rough token estimate — a safe upper bound without importing tiktoken."""
+    if not text:
+        return 0
+    cjk = sum(1 for char in text if _is_cjk(char))
+    latin = len(text) - cjk
+    return cjk + math.ceil(latin / _LATIN_CHARS_PER_TOKEN)
 
 
 class ContextManager:
@@ -55,9 +73,7 @@ class ContextManager:
             system_content += f"\n\n[Long-term Facts]\n{facts.strip()}"
 
         # 1. System message is always included
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_content}
-        ]
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
         tokens_used = estimate_tokens(system_content)
 
         # 2. Add current user message (we MUST fit this)
@@ -73,13 +89,22 @@ class ContextManager:
         for msg in reversed(history):
             msg_tokens = estimate_tokens(msg.content)
             # Safe boundary check: we reserve space for current message + 10% buffer
-            available_tokens = agent.max_context_tokens - tokens_used - current_msg_tokens - (agent.max_context_tokens * 0.1)
+            available_tokens = (
+                agent.max_context_tokens
+                - tokens_used
+                - current_msg_tokens
+                - (agent.max_context_tokens * 0.1)
+            )
             if available_tokens > msg_tokens:
-                history_msgs_to_add.insert(0, {"role": msg.role, "content": msg.content})
+                history_msgs_to_add.insert(
+                    0, {"role": msg.role, "content": msg.content}
+                )
                 tokens_used += msg_tokens
             else:
                 # Out of space for older history
-                logger.debug("Truncating history at message length %d", len(msg.content))
+                logger.debug(
+                    "Truncating history at message length %d", len(msg.content)
+                )
                 break
 
         messages.extend(history_msgs_to_add)

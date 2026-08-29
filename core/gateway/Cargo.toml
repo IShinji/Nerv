@@ -9,7 +9,7 @@ name = "nerv"
 path = "src/main.rs"
 
 [dependencies]
-nerv-shared = { path = "../shared" }
+nerv-shared = { path = "../shared", features = ["brain-client"] }
 anyhow = "1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }

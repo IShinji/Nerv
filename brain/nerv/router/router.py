@@ -136,7 +136,9 @@ class Router:
             return self._sanitize_route_result(message, result)
         except Exception as e:
             logger.error("Router model call failed, using fallback: %s", e)
-            return self._sanitize_route_result(message, self._fallback_classify(message))
+            return self._sanitize_route_result(
+                message, self._fallback_classify(message)
+            )
 
     async def _classify_via_model(self, user_prompt: str) -> RouteResult:
         """Classify via the unified LLM client (provider chosen by config)."""
@@ -230,18 +232,83 @@ class Router:
         message_lower = message.lower()
 
         # Simple keyword matching as fallback
-        code_keywords = ["code", "script", "function", "debug", "error", "bug", "program", "python", "rust", "javascript"]
-        research_keywords = ["search", "find", "look up", "what is", "how does", "explain", "research"]
-        writing_keywords = ["write", "essay", "article", "translate", "summarize", "email"]
-        sysadmin_keywords = ["server", "deploy", "docker", "ssh", "nginx", "process", "disk", "memory"]
+        code_keywords = [
+            "code",
+            "script",
+            "function",
+            "debug",
+            "error",
+            "bug",
+            "program",
+            "python",
+            "rust",
+            "javascript",
+        ]
+        research_keywords = [
+            "search",
+            "find",
+            "look up",
+            "what is",
+            "how does",
+            "explain",
+            "research",
+        ]
+        writing_keywords = [
+            "write",
+            "essay",
+            "article",
+            "translate",
+            "summarize",
+            "email",
+        ]
+        sysadmin_keywords = [
+            "server",
+            "deploy",
+            "docker",
+            "ssh",
+            "nginx",
+            "process",
+            "disk",
+            "memory",
+        ]
 
         if any(kw in message_lower for kw in code_keywords):
-            return RouteResult(intent="code_generation", complexity="medium", model_tier=1, agent_type="coder", reply="")
+            return RouteResult(
+                intent="code_generation",
+                complexity="medium",
+                model_tier=1,
+                agent_type="coder",
+                reply="",
+            )
         elif any(kw in message_lower for kw in research_keywords):
-            return RouteResult(intent="research", complexity="medium", model_tier=1, agent_type="researcher", reply="")
+            return RouteResult(
+                intent="research",
+                complexity="medium",
+                model_tier=1,
+                agent_type="researcher",
+                reply="",
+            )
         elif any(kw in message_lower for kw in writing_keywords):
-            return RouteResult(intent="writing", complexity="medium", model_tier=1, agent_type="writer", reply="")
+            return RouteResult(
+                intent="writing",
+                complexity="medium",
+                model_tier=1,
+                agent_type="writer",
+                reply="",
+            )
         elif any(kw in message_lower for kw in sysadmin_keywords):
-            return RouteResult(intent="sysadmin", complexity="medium", model_tier=0, agent_type="sysadmin", reply="")
+            return RouteResult(
+                intent="sysadmin",
+                complexity="medium",
+                model_tier=0,
+                agent_type="sysadmin",
+                reply="",
+            )
         else:
-            return RouteResult(intent="general", complexity="low", model_tier=0, agent_type="general", reply="")
+            return RouteResult(
+                intent="general",
+                complexity="low",
+                model_tier=0,
+                agent_type="general",
+                reply="",
+            )

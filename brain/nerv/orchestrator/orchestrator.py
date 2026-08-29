@@ -19,7 +19,7 @@ import httpx
 
 from nerv.config import get_workspace_root
 from nerv.memory.context import ContextManager
-from nerv.memory.manager import MemoryManager
+from nerv.memory.manager import DEFAULT_SCOPE, MemoryManager, scope_for
 from nerv.models import RouteResult
 from nerv.observability import new_trace_id, timed
 from nerv.orchestrator.registry import AgentDefinition, AgentRegistry
@@ -43,8 +43,15 @@ class Orchestrator:
     def __init__(self, project_root: Path) -> None:
         self._project_root = project_root
         self.registry = AgentRegistry(project_root)
+        # Default-scope memory, used by channel-less internal callers.
         self.memory = MemoryManager(project_root)
         self.context_manager = ContextManager(self.memory)
+        # Per-conversation memory, keyed by channel+sender, so two senders on
+        # the same instance never read each other's history.
+        self._memory_by_scope: dict[str, MemoryManager] = {DEFAULT_SCOPE: self.memory}
+        self._context_by_scope: dict[str, ContextManager] = {
+            DEFAULT_SCOPE: self.context_manager
+        }
         self.workflow_registry = WorkflowRegistry(project_root)
         self.skill_registry = SkillRegistry(project_root)
         self.review_queue = ReviewQueue(project_root)
@@ -56,7 +63,9 @@ class Orchestrator:
         self._pending_store = PendingActionStore(project_root)
         self._workspace_root = get_workspace_root(project_root)
         self._proactive = ProactiveMonitor(project_root)
-        logger.info("Orchestrator initialized with %d agents", len(self.registry.list_agents()))
+        logger.info(
+            "Orchestrator initialized with %d agents", len(self.registry.list_agents())
+        )
 
     async def dispatch(
         self,
@@ -66,23 +75,25 @@ class Orchestrator:
         sender: str = "",
     ) -> str:
         """Dispatch a message to the appropriate agent and return the response."""
+        memory, context_manager = self._memory_for(channel, sender)
+
         pending_response = await self._handle_pending_action_command(
             message,
             sender=sender,
             channel=channel,
         )
         if pending_response:
-            self._remember_turn(message, pending_response)
+            self._remember_turn(message, pending_response, memory)
             return pending_response
 
         review_response = self._handle_review_queue_command(message)
         if review_response:
-            self._remember_turn(message, review_response)
+            self._remember_turn(message, review_response, memory)
             return review_response
 
         # If the router already provided a direct reply, use it
         if route_result.reply:
-            self._remember_turn(message, route_result.reply)
+            self._remember_turn(message, route_result.reply, memory)
             return route_result.reply
 
         # Find the matching agent, or manufacture one
@@ -94,8 +105,8 @@ class Orchestrator:
             route_result.model_tier,
         )
 
-        # 1. Save user's message to persistent memory
-        self.memory.append_message("user", message)
+        # 1. Save user's message to this conversation's persistent memory
+        memory.append_message("user", message)
 
         # Select model based on tier
         model = self._select_model(route_result.model_tier)
@@ -108,7 +119,7 @@ class Orchestrator:
                 agent, message, route_result.model_tier, model
             )
             if fallback_response is not None:
-                self.memory.append_message("assistant", fallback_response)
+                memory.append_message("assistant", fallback_response)
                 return fallback_response
 
         # 2. Build contextual messages (System + Facts + History + Current msg)
@@ -117,7 +128,7 @@ class Orchestrator:
             self.workflow_registry.render_catalog(agent),
             self.skill_registry.render_catalog(agent),
         ]
-        messages = self.context_manager.build_messages(
+        messages = context_manager.build_messages(
             agent,
             message,
             max_history_msg=10,
@@ -152,7 +163,7 @@ class Orchestrator:
                 )
 
             # 3. Save assistant's reply to memory
-            self.memory.append_message("assistant", response)
+            memory.append_message("assistant", response)
 
             return response
         except Exception as e:
@@ -164,13 +175,18 @@ class Orchestrator:
                 "just now. Please try again in a moment."
             )
 
-    async def _find_agent(self, route_result: RouteResult, message_hint: str) -> AgentDefinition:
+    async def _find_agent(
+        self, route_result: RouteResult, message_hint: str
+    ) -> AgentDefinition:
         """Find the best matching agent for the routing result, or create one if missing."""
         agent = self.registry.find_by_type(route_result.agent_type)
         if agent:
             return agent
 
-        logger.info("Agent '%s' not found. Manufacturing via AgentFactory...", route_result.agent_type)
+        logger.info(
+            "Agent '%s' not found. Manufacturing via AgentFactory...",
+            route_result.agent_type,
+        )
 
         # Avoid circular import at top level
         from nerv.orchestrator.factory import AgentFactory
@@ -182,7 +198,9 @@ class Orchestrator:
         if new_agent:
             # Hot-reload the new agent into memory
             self.registry.agents[new_agent.name] = new_agent
-            logger.info("Successfully birthed and registered new expert: '%s'", new_agent.name)
+            logger.info(
+                "Successfully birthed and registered new expert: '%s'", new_agent.name
+            )
             return new_agent
 
         logger.warning(
@@ -200,10 +218,28 @@ class Orchestrator:
         logger.debug("Selected model for tier %d: %s", tier, model)
         return model
 
-    def _remember_turn(self, user_message: str, assistant_message: str) -> None:
+    def _memory_for(
+        self, channel: str, sender: str
+    ) -> tuple[MemoryManager, ContextManager]:
+        """Return the memory and context manager for one conversation scope."""
+        scope = scope_for(channel, sender)
+        memory = self._memory_by_scope.get(scope)
+        if memory is None:
+            memory = MemoryManager(self._project_root, scope)
+            self._memory_by_scope[scope] = memory
+            self._context_by_scope[scope] = ContextManager(memory)
+        return memory, self._context_by_scope[scope]
+
+    def _remember_turn(
+        self,
+        user_message: str,
+        assistant_message: str,
+        memory: MemoryManager | None = None,
+    ) -> None:
         """Persist a direct user/assistant turn without invoking the model."""
-        self.memory.append_message("user", user_message)
-        self.memory.append_message("assistant", assistant_message)
+        target = memory or self.memory
+        target.append_message("user", user_message)
+        target.append_message("assistant", assistant_message)
 
     async def _try_workflow_fallback(
         self,
@@ -246,6 +282,7 @@ class Orchestrator:
         else:
             # For cloud models, check if relevant API key exists
             import os
+
             key_checks = {
                 "gemini": "GEMINI_API_KEY",
                 "claude": "ANTHROPIC_API_KEY",
@@ -261,7 +298,9 @@ class Orchestrator:
                 model_available = False
 
         if model_available:
-            logger.debug("Model '%s' is available, skipping workflow fallback.", selected_model)
+            logger.debug(
+                "Model '%s' is available, skipping workflow fallback.", selected_model
+            )
             return None
 
         # Model is NOT available → search for a fallback workflow
@@ -296,6 +335,7 @@ class Orchestrator:
         logger.info("Workflow fallback → '%s' for user request.", fallback_wf.name)
 
         from nerv.workflows.executor import WorkflowExecutor
+
         executor = WorkflowExecutor(self)
         try:
             result = await executor.execute(fallback_wf, user_message)
@@ -361,7 +401,9 @@ class Orchestrator:
                     resolution = capability_registry.resolve(func_name)
                     if not resolution:
                         # Agent hallucinated a tool
-                        messages.append({"role": "tool", "content": f"Unknown tool: {func_name}"})
+                        messages.append(
+                            {"role": "tool", "content": f"Unknown tool: {func_name}"}
+                        )
                         continue
 
                     tool_def = resolution.tool_def
@@ -387,9 +429,15 @@ class Orchestrator:
                             "⚠️ [SYSTEM BACKGROUND ALERT] "
                             f"Pending action #{pending_action.id} ({executable_name}) is waiting for confirmation."
                         )
-                        logger.warning("Tool %s suspended for confirmation: %s", executable_name, reason)
+                        logger.warning(
+                            "Tool %s suspended for confirmation: %s",
+                            executable_name,
+                            reason,
+                        )
                     else:
-                        logger.debug("Executing tool %s with args %s", executable_name, arguments)
+                        logger.debug(
+                            "Executing tool %s with args %s", executable_name, arguments
+                        )
                         if inspect.iscoroutinefunction(tool_def.func):
                             tool_result = await tool_def.func(**arguments)
                         else:
@@ -435,10 +483,16 @@ class Orchestrator:
                 if value:
                     details.append(f"{key}={value}")
             detail_text = f" ({', '.join(details)})" if details else ""
-            summary = f"Pending action #{action.id}: desktop_control -> {verb}{detail_text}"
+            summary = (
+                f"Pending action #{action.id}: desktop_control -> {verb}{detail_text}"
+            )
         elif action.tool_name == "screenshot":
-            output_path = str(action.arguments.get("output_path", "")).strip() or "(auto path)"
-            summary = f"Pending action #{action.id}: screenshot -> save to {output_path}"
+            output_path = (
+                str(action.arguments.get("output_path", "")).strip() or "(auto path)"
+            )
+            summary = (
+                f"Pending action #{action.id}: screenshot -> save to {output_path}"
+            )
         else:
             summary = (
                 f"Pending action #{action.id}: {action.tool_name} "
@@ -450,10 +504,14 @@ class Orchestrator:
         """Create a deterministic user reply for queued high-risk actions."""
         lines = ["I queued the following high-risk action(s) for confirmation:"]
         lines.extend(f"- {self._format_pending_action(action)}" for action in actions)
-        lines.append('Reply with "confirm <id>" to run one, or "cancel <id>" to discard it.')
+        lines.append(
+            'Reply with "confirm <id>" to run one, or "cancel <id>" to discard it.'
+        )
         return "\n".join(lines)
 
-    def _visible_pending_actions(self, sender: str, channel: str) -> list[PendingRecord]:
+    def _visible_pending_actions(
+        self, sender: str, channel: str
+    ) -> list[PendingRecord]:
         """Return pending actions scoped to the current sender/channel.
 
         Actions queued without a sender/channel (e.g. by the MCP server) are
@@ -495,7 +553,10 @@ class Orchestrator:
         action_id = command_match.group(2)
 
         if action_id:
-            target = next((action for action in visible_actions if action.id == int(action_id)), None)
+            target = next(
+                (action for action in visible_actions if action.id == int(action_id)),
+                None,
+            )
             if target is None:
                 return f"I could not find pending action #{action_id}."
         elif len(visible_actions) == 1:
@@ -544,7 +605,11 @@ class Orchestrator:
             return None
 
         lower = normalized.lower()
-        if lower in {"show workflow reviews", "list workflow reviews", "show review queue"}:
+        if lower in {
+            "show workflow reviews",
+            "list workflow reviews",
+            "show review queue",
+        }:
             items = self.review_queue.list_reviews(status="pending")
             if not items:
                 return "Workflow review queue is empty."
@@ -553,7 +618,9 @@ class Orchestrator:
                 lines.append(
                     f"- {item.review_id}: {item.workflow.name} — {item.workflow.description}"
                 )
-            lines.append('Reply with "approve workflow <review_id>" or "reject workflow <review_id>".')
+            lines.append(
+                'Reply with "approve workflow <review_id>" or "reject workflow <review_id>".'
+            )
             return "\n".join(lines)
 
         approve_match = re.match(r"^approve workflow ([a-z0-9_-]+)$", lower)
@@ -574,7 +641,9 @@ class Orchestrator:
             review_id = reject_match.group(1)
             notes = normalized[len("reject workflow ") + len(review_id) :].strip()
             try:
-                item = self.review_queue.reject_workflow(review_id, reviewer_notes=notes)
+                item = self.review_queue.reject_workflow(
+                    review_id, reviewer_notes=notes
+                )
             except ValueError as e:
                 return str(e)
             return f"Rejected workflow review {item.review_id}."
@@ -597,3 +666,11 @@ class Orchestrator:
         if self._pending_notifications:
             return self._pending_notifications.pop(0)
         return None
+
+    async def aclose(self) -> None:
+        """Release the orchestrator's network resources.
+
+        Called on brain shutdown so the shared httpx client's connection pool
+        is closed instead of being reclaimed by the interpreter exiting.
+        """
+        await self._client.aclose()

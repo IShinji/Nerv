@@ -100,9 +100,9 @@ def calendar_list(limit: int = 20) -> ToolResult:
     summary = start = ""
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.startswith("SUMMARY:"):
-            summary = line[len("SUMMARY:"):]
+            summary = line[len("SUMMARY:") :]
         elif line.startswith("DTSTART:"):
-            start = line[len("DTSTART:"):]
+            start = line[len("DTSTART:") :]
         elif line.startswith("END:VEVENT"):
             if summary:
                 events.append((start, summary))

@@ -8,6 +8,12 @@ channels:
   telegram:
     enabled: false         # Set to true and add bot_token in config.yaml
     bot_token: ""          # Telegram Bot API token
+    # REQUIRED when telegram is enabled. Nerv can run shell commands and read
+    # your filesystem, so an open bot is a remote shell for anyone who finds
+    # it. This list fails closed: empty means nobody is authorized and the
+    # gateway refuses to start the adapter. Put your own Telegram user id here
+    # (message @userinfobot to find it).
+    allowed_users: []      # e.g. ["123456789"]
 
 # Model strings use a provider-prefix scheme — the active backend is a pure
 # config switch (no code change needed to swap providers):
@@ -49,7 +55,9 @@ brain:
   python_command: "uv run python"  # Uses uv-managed venv in brain/
   module: "nerv"            # Python module to run (python -m nerv)
   auto_install_ollama: false  # Only used when a local: model is configured
-  restart_max: 3            # Max restart attempts on crash
+  restart_max: 3            # Max respawns of a crashed brain before giving up
+  call_timeout_secs: 300    # Per-request ceiling; a wedged brain errors out
+  heartbeat_interval_secs: 30  # Proactive check interval (no model calls)
 
 # Optional MCP integrations.
 # Rust currently ignores this block; the Python brain reads it directly.

@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 import nerv.tools.builtins as builtins
+import nerv.tools.desktop as desktop
+import nerv.tools.knowledge as knowledge
 from nerv.config import load_project_config
 from nerv.mcp import reset_mcp_managers
 from nerv.mcp.manager import McpServerManager
@@ -84,9 +86,9 @@ def test_builtin_mcp_preset_renders_config_snippet() -> None:
     assert preset is not None
 
     snippet = render_mcp_preset_snippet(preset)
-    assert 'preset: chrome_devtools_official' in snippet
-    assert 'command: npx' in snippet
-    assert '- chrome-devtools-mcp@latest' in snippet
+    assert "preset: chrome_devtools_official" in snippet
+    assert "command: npx" in snippet
+    assert "- chrome-devtools-mcp@latest" in snippet
 
 
 @pytest.mark.asyncio
@@ -116,7 +118,9 @@ mcp:
 
 
 @pytest.mark.asyncio
-async def test_browser_interactive_prefers_mcp_server(tmp_path: Path, monkeypatch) -> None:
+async def test_browser_interactive_prefers_mcp_server(
+    tmp_path: Path, monkeypatch
+) -> None:
     """browser_interactive should route through MCP when configured and available."""
     server_script = tmp_path / "fake_mcp_server.py"
     server_script.write_text(
@@ -193,11 +197,13 @@ mcp:
 """,
     )
 
-    monkeypatch.setattr(builtins, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(desktop, "_get_project_root", lambda: tmp_path)
     monkeypatch.setattr(
-        builtins,
+        desktop,
         "chrome_browser",
-        lambda **kwargs: ToolResult(content="native fallback should not run", is_error=True),
+        lambda **kwargs: ToolResult(
+            content="native fallback should not run", is_error=True
+        ),
     )
 
     await reset_mcp_managers()
@@ -214,7 +220,9 @@ mcp:
 
 
 @pytest.mark.asyncio
-async def test_mcp_manager_uses_preset_action_binding(tmp_path: Path, monkeypatch) -> None:
+async def test_mcp_manager_uses_preset_action_binding(
+    tmp_path: Path, monkeypatch
+) -> None:
     """Preset-backed browser_interactive should translate Nerv actions to MCP tools."""
     server_script = tmp_path / "fake_preset_mcp_server.py"
     server_script.write_text(
@@ -289,11 +297,13 @@ mcp:
 """,
     )
 
-    monkeypatch.setattr(builtins, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(desktop, "_get_project_root", lambda: tmp_path)
     monkeypatch.setattr(
-        builtins,
+        desktop,
         "chrome_browser",
-        lambda **kwargs: ToolResult(content="native fallback should not run", is_error=True),
+        lambda **kwargs: ToolResult(
+            content="native fallback should not run", is_error=True
+        ),
     )
 
     await reset_mcp_managers()
@@ -310,7 +320,9 @@ mcp:
 
 
 @pytest.mark.asyncio
-async def test_mcp_status_tool_reports_remote_tools(tmp_path: Path, monkeypatch) -> None:
+async def test_mcp_status_tool_reports_remote_tools(
+    tmp_path: Path, monkeypatch
+) -> None:
     """The mcp_status tool should surface remote tools for a healthy server."""
     server_script = tmp_path / "fake_mcp_status_server.py"
     server_script.write_text(
@@ -368,7 +380,7 @@ mcp:
 """,
     )
 
-    monkeypatch.setattr(builtins, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(knowledge, "_get_project_root", lambda: tmp_path)
 
     await reset_mcp_managers()
     try:
@@ -382,7 +394,9 @@ mcp:
 
 
 @pytest.mark.asyncio
-async def test_browser_interactive_falls_back_to_native(tmp_path: Path, monkeypatch) -> None:
+async def test_browser_interactive_falls_back_to_native(
+    tmp_path: Path, monkeypatch
+) -> None:
     """browser_interactive should use the native fallback when MCP is unavailable."""
     _write_project_config(
         tmp_path,
@@ -400,9 +414,9 @@ mcp:
 """,
     )
 
-    monkeypatch.setattr(builtins, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(desktop, "_get_project_root", lambda: tmp_path)
     monkeypatch.setattr(
-        builtins,
+        desktop,
         "chrome_browser",
         lambda **kwargs: ToolResult(content=f"native fallback {kwargs['url']}"),
     )
@@ -425,4 +439,4 @@ def test_mcp_presets_tool_renders_builtin_preset() -> None:
     result = builtins.mcp_presets("chrome_devtools_official")
     assert result.is_error is False
     assert "Official Chrome DevTools MCP server" in result.content
-    assert 'preset: chrome_devtools_official' in result.content
+    assert "preset: chrome_devtools_official" in result.content

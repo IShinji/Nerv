@@ -12,5 +12,23 @@ serde_yaml = "0.9"
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# Only needed by the `brain-client` feature — hosts that just read config or
+# messages (and any future non-async consumer) do not pull in a runtime.
+tokio = { version = "1", features = [
+    "io-util",
+    "macros",
+    "process",
+    "rt",
+    "sync",
+    "time",
+], optional = true }
+tracing = { version = "0.1", optional = true }
+
+[features]
+default = []
+# Supervised JSON-RPC client for the Python brain subprocess.
+brain-client = ["dep:tokio", "dep:tracing"]
+
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

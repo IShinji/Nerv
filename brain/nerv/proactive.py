@@ -68,11 +68,11 @@ class ProactiveMonitor:
         uid = summary = start = ""
         for line in self._calendar_path.read_text(encoding="utf-8").splitlines():
             if line.startswith("UID:"):
-                uid = line[len("UID:"):]
+                uid = line[len("UID:") :]
             elif line.startswith("SUMMARY:"):
-                summary = line[len("SUMMARY:"):]
+                summary = line[len("SUMMARY:") :]
             elif line.startswith("DTSTART:"):
-                start = line[len("DTSTART:"):]
+                start = line[len("DTSTART:") :]
             elif line.startswith("END:VEVENT"):
                 start_dt = self._parse_ics_dt(start)
                 if summary and start_dt and now <= start_dt <= window_end:

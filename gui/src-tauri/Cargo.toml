@@ -9,9 +9,16 @@ rust-version = "1.77"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Same supervised brain client and config loader the gateway uses, so both
+# hosts spawn the brain identically instead of diverging.
+nerv-shared = { path = "../../core/shared", features = ["brain-client"] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+tempfile = "3"

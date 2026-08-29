@@ -50,6 +50,26 @@ pub struct TelegramChannelConfig {
     pub enabled: bool,
     #[serde(default)]
     pub bot_token: String,
+    /// Telegram user/chat ids permitted to talk to this instance.
+    ///
+    /// The brain can run shell commands and read the filesystem, so an
+    /// unrestricted bot is a remote shell for anyone who finds it. This list
+    /// therefore fails closed: an empty list authorizes nobody, and the
+    /// gateway refuses to start the adapter at all.
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+}
+
+impl TelegramChannelConfig {
+    /// Whether `sender` (a Telegram chat id) may talk to this instance.
+    pub fn is_allowed(&self, sender: &str) -> bool {
+        let sender = sender.trim();
+        !sender.is_empty()
+            && self
+                .allowed_users
+                .iter()
+                .any(|allowed| allowed.trim() == sender)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,17 +134,27 @@ pub struct BrainConfig {
     pub module: String,
     #[serde(default)]
     pub auto_install_ollama: bool,
+    /// How many times the gateway may respawn a brain that died.
     #[serde(default = "default_restart_max")]
     pub restart_max: u32,
+    /// Per-request ceiling, so a wedged brain surfaces an error instead of
+    /// leaving the caller blocked forever.
+    #[serde(default = "default_call_timeout_secs")]
+    pub call_timeout_secs: u64,
+    /// Interval between proactive heartbeat polls.
+    #[serde(default = "default_heartbeat_interval_secs")]
+    pub heartbeat_interval_secs: u64,
 }
 
 impl Default for BrainConfig {
     fn default() -> Self {
         Self {
-            python_command: "uv run python".to_string(),
-            module: "nerv".to_string(),
+            python_command: default_python_cmd(),
+            module: default_brain_module(),
             auto_install_ollama: false,
-            restart_max: 3,
+            restart_max: default_restart_max(),
+            call_timeout_secs: default_call_timeout_secs(),
+            heartbeat_interval_secs: default_heartbeat_interval_secs(),
         }
     }
 }
@@ -135,20 +165,24 @@ fn default_true() -> bool {
 fn default_ollama() -> String {
     "ollama".to_string()
 }
+// These fall back to the same values as `core/config.default.yaml` and the
+// Python brain's `DEFAULT_TIER_MODELS`. Keeping the three in sync matters: a
+// config that omits a key must not silently give the Rust and Python halves
+// different models.
 fn default_router_model() -> String {
-    "qwen2.5:1.5b".to_string()
+    "claude-cli:opus".to_string()
 }
 fn default_tier0_model() -> String {
-    "qwen2.5:1.5b".to_string()
+    "claude-cli:opus".to_string()
 }
 fn default_tier1_model() -> String {
-    "qwen2.5:7b".to_string()
+    "claude-cli:opus".to_string()
 }
 fn default_tier2_model() -> String {
-    "qwen2.5:14b".to_string()
+    "claude-cli:opus".to_string()
 }
 fn default_tier3_model() -> String {
-    "qwen2.5:32b".to_string()
+    "claude-cli:opus".to_string()
 }
 fn default_ollama_url() -> String {
     "http://localhost:11434".to_string()
@@ -164,6 +198,12 @@ fn default_brain_module() -> String {
 }
 fn default_restart_max() -> u32 {
     3
+}
+fn default_call_timeout_secs() -> u64 {
+    300
+}
+fn default_heartbeat_interval_secs() -> u64 {
+    30
 }
 
 impl NervConfig {
@@ -255,7 +295,7 @@ models:
         assert!(config.channels.cli.enabled);
         assert!(!config.channels.telegram.enabled);
         assert_eq!(config.models.router.model, "qwen2.5:1.5b");
-        assert_eq!(config.models.tiers.tier0, "qwen2.5:1.5b");
+        assert_eq!(config.models.tiers.tier0, default_tier0_model());
     }
 
     #[test]
@@ -301,7 +341,7 @@ models:
         assert!(config.channels.telegram.enabled);
         assert_eq!(config.channels.telegram.bot_token, "my-secret-token");
         assert_eq!(config.models.router.model, "qwen2.5:7b");
-        assert_eq!(config.models.tiers.tier0, "qwen2.5:1.5b");
+        assert_eq!(config.models.tiers.tier0, default_tier0_model());
     }
 
     #[test]
@@ -346,7 +386,89 @@ models:
         assert_eq!(config.models.router.provider, "ollama");
         assert_eq!(config.models.router.model, "qwen2.5:1.5b");
         assert_eq!(config.models.router.base_url, "http://localhost:11434");
-        assert_eq!(config.models.tiers.tier0, "qwen2.5:1.5b");
+        assert_eq!(config.models.tiers.tier0, default_tier0_model());
         assert_eq!(config.brain.module, "nerv");
+        // Timing knobs fall back to defaults when the file omits them.
+        assert_eq!(config.brain.call_timeout_secs, 300);
+        assert_eq!(config.brain.heartbeat_interval_secs, 30);
+    }
+
+    #[test]
+    fn model_defaults_match_the_shipped_default_config() {
+        // core/config.default.yaml is the source of truth; the serde fallbacks
+        // exist only for keys a user's config.yaml omits entirely.
+        let shipped = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("config.default.yaml"),
+        )
+        .expect("shipped default config is readable");
+        let shipped: NervConfig =
+            serde_yaml::from_str(&shipped).expect("shipped default config parses");
+
+        assert_eq!(shipped.models.router.model, default_router_model());
+        assert_eq!(shipped.models.tiers.tier0, default_tier0_model());
+        assert_eq!(shipped.models.tiers.tier1, default_tier1_model());
+        assert_eq!(shipped.models.tiers.tier2, default_tier2_model());
+        assert_eq!(shipped.models.tiers.tier3, default_tier3_model());
+    }
+
+    #[test]
+    fn telegram_allowlist_denies_by_default() {
+        let config = TelegramChannelConfig::default();
+        assert!(!config.is_allowed("12345"));
+        assert!(!config.is_allowed(""));
+    }
+
+    #[test]
+    fn telegram_allowlist_admits_only_listed_senders() {
+        let config = TelegramChannelConfig {
+            enabled: true,
+            bot_token: "token".to_string(),
+            allowed_users: vec!["12345".to_string(), " 67890 ".to_string()],
+        };
+
+        assert!(config.is_allowed("12345"));
+        assert!(config.is_allowed("67890"), "entries are trimmed");
+        assert!(config.is_allowed(" 12345 "), "senders are trimmed");
+        assert!(!config.is_allowed("1234"), "no prefix matching");
+        assert!(!config.is_allowed("999"));
+        assert!(!config.is_allowed(""));
+    }
+
+    #[test]
+    fn telegram_allowlist_parses_from_yaml() {
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            "config.default.yaml",
+            r#"
+channels:
+  cli:
+    enabled: true
+  telegram:
+    enabled: false
+    bot_token: ""
+    allowed_users: []
+models:
+  router:
+    model: "claude-cli:opus"
+"#,
+        );
+        write_config(
+            dir.path(),
+            "config.yaml",
+            r#"
+channels:
+  telegram:
+    enabled: true
+    bot_token: "secret"
+    allowed_users: ["42"]
+"#,
+        );
+
+        let config = NervConfig::load(dir.path()).unwrap();
+        assert!(config.channels.telegram.is_allowed("42"));
+        assert!(!config.channels.telegram.is_allowed("43"));
     }
 }

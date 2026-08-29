@@ -40,7 +40,7 @@ class SkillRegistry:
         """Find a skill by name."""
         return self._skills.get(name.strip().lower())
 
-    def find_for_agent(self, agent: "AgentDefinition") -> list[SkillDefinition]:
+    def find_for_agent(self, agent: AgentDefinition) -> list[SkillDefinition]:
         """Return skills relevant to an agent."""
         agent_name = agent.name.strip().lower()
         agent_tags = {tag.lower() for tag in agent.tags}
@@ -54,7 +54,7 @@ class SkillRegistry:
 
         return matches
 
-    def render_catalog(self, agent: "AgentDefinition", max_items: int = 4) -> str:
+    def render_catalog(self, agent: AgentDefinition, max_items: int = 4) -> str:
         """Render a compact skill summary for prompt injection."""
         skills = self.find_for_agent(agent)
         if not skills:

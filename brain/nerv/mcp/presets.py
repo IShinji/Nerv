@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 import yaml
 
@@ -165,8 +166,7 @@ def merge_preset_into_server_config(
         args = list(preset.args)
 
     env = {
-        str(key): str(value)
-        for key, value in (raw_value.get("env", {}) or {}).items()
+        str(key): str(value) for key, value in (raw_value.get("env", {}) or {}).items()
     }
     if not env and preset is not None:
         env = dict(preset.env)
@@ -176,8 +176,7 @@ def merge_preset_into_server_config(
         cwd = preset.cwd
 
     capabilities = [
-        str(capability)
-        for capability in raw_value.get("capabilities", []) or []
+        str(capability) for capability in raw_value.get("capabilities", []) or []
     ]
     if not capabilities and preset is not None:
         capabilities = list(preset.capabilities)

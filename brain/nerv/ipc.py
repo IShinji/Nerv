@@ -2,23 +2,35 @@
 
 Protocol: newline-delimited JSON. Each message is one line.
 stderr is used for logging — never write non-JSON to stdout.
+
+The loop is genuinely asynchronous: stdin is drained through an asyncio pipe
+reader and each request is handled in its own task, so a long model call for
+one message no longer blocks the heartbeat or a second channel's message.
+Responses may therefore come back out of order — every reply carries the
+request ``id``, which is what the Rust gateway matches on. Concurrency is
+capped by :data:`MAX_CONCURRENT_REQUESTS` so a burst cannot spawn unbounded
+model calls.
 """
 
+import asyncio
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Any
 
-from nerv.models import RouteResult
 from nerv.orchestrator.orchestrator import Orchestrator
 from nerv.router.router import Router
 
 logger = logging.getLogger(__name__)
 
+#: Upper bound on requests being handled at once.
+MAX_CONCURRENT_REQUESTS = 8
+
 _router: Router | None = None
 _orchestrator: Orchestrator | None = None
+_init_lock: asyncio.Lock | None = None
+_stdout_lock: asyncio.Lock | None = None
 
 
 def _get_project_root() -> Path:
@@ -32,18 +44,30 @@ def _get_project_root() -> Path:
     return Path.cwd().parent if Path.cwd().name == "brain" else Path.cwd()
 
 
-def _get_router() -> Router:
+def _get_init_lock() -> asyncio.Lock:
+    global _init_lock
+    if _init_lock is None:
+        _init_lock = asyncio.Lock()
+    return _init_lock
+
+
+async def _get_router() -> Router:
+    """Return the shared Router, constructing it once even under concurrency."""
     global _router
     if _router is None:
-        _router = Router(project_root=_get_project_root())
+        async with _get_init_lock():
+            if _router is None:
+                _router = Router(project_root=_get_project_root())
     return _router
 
 
-def _get_orchestrator() -> Orchestrator:
+async def _get_orchestrator() -> Orchestrator:
+    """Return the shared Orchestrator, constructing it once even under concurrency."""
     global _orchestrator
     if _orchestrator is None:
-        project_root = _get_project_root()
-        _orchestrator = Orchestrator(project_root)
+        async with _get_init_lock():
+            if _orchestrator is None:
+                _orchestrator = Orchestrator(_get_project_root())
     return _orchestrator
 
 
@@ -55,11 +79,11 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
         message = params.get("message", "")
         channel = params.get("channel", "")
         sender = params.get("sender", "")
-        router = _get_router()
+        router = await _get_router()
         route_result = await router.classify(message)
 
         # Dispatch to orchestrator for actual agent response
-        orchestrator = _get_orchestrator()
+        orchestrator = await _get_orchestrator()
         reply = await orchestrator.dispatch(
             message,
             route_result,
@@ -71,13 +95,8 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
         result["reply"] = reply
         return result
     elif method == "heartbeat":
-        orchestrator = _get_orchestrator()
-        import inspect
-        if inspect.iscoroutinefunction(orchestrator.check_background_tasks):
-            reply = await orchestrator.check_background_tasks()
-        else:
-            reply = orchestrator.check_background_tasks()
-        
+        orchestrator = await _get_orchestrator()
+        reply = await orchestrator.check_background_tasks()
         return {"reply": reply or ""}
     elif method == "ping":
         return {"status": "ok"}
@@ -92,13 +111,20 @@ def write_response(response: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+async def write_response_async(response: dict[str, Any]) -> None:
+    """Write one response, serialized against other in-flight handlers."""
+    global _stdout_lock
+    if _stdout_lock is None:
+        _stdout_lock = asyncio.Lock()
+    async with _stdout_lock:
+        write_response(response)
+
+
 def make_success(result: Any, request_id: int | str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "result": result, "id": request_id}
 
 
-def make_error(
-    code: int, message: str, request_id: int | str | None
-) -> dict[str, Any]:
+def make_error(code: int, message: str, request_id: int | str | None) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",
         "error": {"code": code, "message": message},
@@ -106,34 +132,88 @@ def make_error(
     }
 
 
+async def _connect_stdin() -> asyncio.StreamReader:
+    """Wrap stdin in an asyncio reader so the event loop stays responsive."""
+    loop = asyncio.get_running_loop()
+    reader = asyncio.StreamReader()
+    protocol = asyncio.StreamReaderProtocol(reader)
+    await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+    return reader
+
+
+async def _process_request(
+    method: str,
+    params: dict[str, Any] | None,
+    request_id: int | str | None,
+    semaphore: asyncio.Semaphore,
+) -> None:
+    """Run one request to completion and write its response."""
+    async with semaphore:
+        try:
+            result = await handle_request(method, params)
+            await write_response_async(make_success(result, request_id))
+        except Exception as e:
+            logger.exception("Error handling method %s", method)
+            await write_response_async(make_error(-32000, str(e), request_id))
+
+
+async def _shutdown() -> None:
+    """Release resources held by the long-lived singletons."""
+    global _orchestrator
+    if _orchestrator is not None:
+        try:
+            await _orchestrator.aclose()
+        except Exception:
+            logger.debug("Orchestrator shutdown failed", exc_info=True)
+        _orchestrator = None
+
+
 async def run_jsonrpc_loop() -> None:
     """Main loop: read JSON-RPC requests from stdin, process, write responses."""
     logger.info("JSON-RPC loop started, waiting for requests on stdin...")
 
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
+    reader = await _connect_stdin()
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+    in_flight: set[asyncio.Task[None]] = set()
 
-        logger.debug("← Received: %s", line)
+    try:
+        while True:
+            raw = await reader.readline()
+            if not raw:  # EOF — the gateway closed our stdin
+                logger.info("stdin closed, shutting down JSON-RPC loop")
+                break
 
-        try:
-            request = json.loads(line)
-        except json.JSONDecodeError as e:
-            write_response(make_error(-32700, f"Parse error: {e}", None))
-            continue
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
 
-        request_id = request.get("id")
-        method = request.get("method")
-        params = request.get("params")
+            logger.debug("← Received: %s", line)
 
-        if not method:
-            write_response(make_error(-32600, "Invalid request: missing method", request_id))
-            continue
+            try:
+                request = json.loads(line)
+            except json.JSONDecodeError as e:
+                await write_response_async(
+                    make_error(-32700, f"Parse error: {e}", None)
+                )
+                continue
 
-        try:
-            result = await handle_request(method, params)
-            write_response(make_success(result, request_id))
-        except Exception as e:
-            logger.exception("Error handling method %s", method)
-            write_response(make_error(-32000, str(e), request_id))
+            request_id = request.get("id")
+            method = request.get("method")
+            params = request.get("params")
+
+            if not method:
+                await write_response_async(
+                    make_error(-32600, "Invalid request: missing method", request_id)
+                )
+                continue
+
+            task = asyncio.create_task(
+                _process_request(method, params, request_id, semaphore)
+            )
+            in_flight.add(task)
+            task.add_done_callback(in_flight.discard)
+    finally:
+        if in_flight:
+            logger.info("Draining %d in-flight request(s)", len(in_flight))
+            await asyncio.gather(*in_flight, return_exceptions=True)
+        await _shutdown()

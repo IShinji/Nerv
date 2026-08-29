@@ -3,6 +3,9 @@
 from pathlib import Path
 
 import nerv.tools.builtins as builtins
+import nerv.tools.desktop as desktop
+import nerv.tools.knowledge as knowledge
+import nerv.tools.web as web
 from nerv.tools.registry import registry
 
 
@@ -193,7 +196,7 @@ def test_web_search_parses_results(monkeypatch) -> None:
     </body></html>
     """
     response = _DummyResponse(html, "https://html.duckduckgo.com/html/?q=test")
-    monkeypatch.setattr(builtins.httpx, "Client", lambda **kwargs: _DummyClient(response))
+    monkeypatch.setattr(web.httpx, "Client", lambda **kwargs: _DummyClient(response))
 
     tool = registry.get_tool("web_search")
     assert tool is not None
@@ -216,7 +219,7 @@ def test_browser_extracts_page_content(monkeypatch) -> None:
     </html>
     """
     response = _DummyResponse(html, "https://example.com/page")
-    monkeypatch.setattr(builtins.httpx, "Client", lambda **kwargs: _DummyClient(response))
+    monkeypatch.setattr(web.httpx, "Client", lambda **kwargs: _DummyClient(response))
 
     tool = registry.get_tool("browser")
     assert tool is not None
@@ -236,9 +239,9 @@ def test_chrome_browser_open_url(monkeypatch) -> None:
         captured.append(args)
         return _DummyCompletedProcess(stdout="Opened URL: https://gemini.google.com")
 
-    monkeypatch.setattr(builtins.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(builtins.pathlib.Path, "exists", lambda self: True)
-    monkeypatch.setattr(builtins, "_run_subprocess", fake_run)
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(desktop.pathlib.Path, "exists", lambda self: True)
+    monkeypatch.setattr(desktop, "_run_subprocess", fake_run)
 
     tool = registry.get_tool("chrome_browser")
     assert tool is not None
@@ -253,7 +256,7 @@ def test_chrome_browser_open_url(monkeypatch) -> None:
 def test_chrome_browser_fill_prompt(monkeypatch) -> None:
     """Test chrome_browser uses JS execution for prompt filling."""
     monkeypatch.setattr(
-        builtins,
+        desktop,
         "_chrome_execute_javascript",
         lambda script: builtins.ToolResult(content="filled:textarea"),
     )
@@ -275,8 +278,8 @@ def test_chrome_browser_wait_for_text(monkeypatch) -> None:
         ]
     )
 
-    monkeypatch.setattr(builtins, "_chrome_page_text", lambda max_chars: next(responses))
-    monkeypatch.setattr(builtins.time, "sleep", lambda _: None)
+    monkeypatch.setattr(desktop, "_chrome_page_text", lambda max_chars: next(responses))
+    monkeypatch.setattr(desktop.time, "sleep", lambda _: None)
 
     tool = registry.get_tool("chrome_browser")
     assert tool is not None
@@ -312,7 +315,7 @@ review_status: "approved"
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(builtins, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(knowledge, "_get_project_root", lambda: tmp_path)
 
     list_tool = registry.get_tool("list_workflows")
     assert list_tool is not None
@@ -361,7 +364,7 @@ Do browser work carefully.
     (tmp_path / "workflows").mkdir(parents=True, exist_ok=True)
     (tmp_path / "reviews" / "workflows").mkdir(parents=True, exist_ok=True)
 
-    monkeypatch.setattr(builtins, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(knowledge, "_get_project_root", lambda: tmp_path)
 
     list_tool = registry.get_tool("list_skills")
     assert list_tool is not None
@@ -382,8 +385,8 @@ def test_desktop_control_open_application_on_macos(monkeypatch) -> None:
         captured.append(args)
         return _DummyCompletedProcess()
 
-    monkeypatch.setattr(builtins.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(builtins, "_run_subprocess", fake_run)
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(desktop, "_run_subprocess", fake_run)
 
     tool = registry.get_tool("desktop_control")
     assert tool is not None
@@ -404,9 +407,9 @@ def test_screenshot_captures_to_explicit_path(monkeypatch, tmp_path: Path) -> No
         target.write_text("fake image", encoding="utf-8")
         return _DummyCompletedProcess()
 
-    monkeypatch.setattr(builtins.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(builtins, "_run_subprocess", fake_run)
-    monkeypatch.setattr(builtins, "_extract_text_from_image", lambda path: "Button OK")
+    monkeypatch.setattr(desktop.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(desktop, "_run_subprocess", fake_run)
+    monkeypatch.setattr(desktop, "_extract_text_from_image", lambda path: "Button OK")
 
     tool = registry.get_tool("screenshot")
     assert tool is not None

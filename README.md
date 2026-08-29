@@ -32,7 +32,8 @@ You (Telegram / Slack / Email / CLI / WebChat)
   ▼
 ┌─────────────────────────────────────────┐
 │         Gateway (Rust)                  │
-│   Channel adapters · Auth · Queue       │
+│  Adapters · Sender allow-list · Queue   │
+│  Supervises the brain (restart, timeout)│
 ├─────────────────────────────────────────┤
 │         Router (Local model, ~200 tok)  │
 │   Intent classify · Model select        │
@@ -66,7 +67,9 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 | **MCP client** — connect to external MCP servers, with builtin presets (e.g. Chrome DevTools) and a diagnostics tool | ✅ Built | `brain/nerv/mcp/` |
 | **MCP server** — exposes Nerv's own tools over MCP, so a host like the Claude Code CLI can drive Nerv | ✅ Built | `brain/nerv/mcp_server/` |
 | **Guardrails** — workspace sandbox policy; outward-acting tools (`shell`, `desktop_control`, `send_email`) and any path escaping the sandbox are suspended into a cross-process, file-locked approval queue and only run on explicit `confirm <id>` | ✅ Built | `brain/nerv/security/` |
-| **Agent memory** — date-partitioned conversation persistence plus a long-term `facts.md`, and a context manager that assembles a token-budgeted window (system prompt + facts + newest-first history, truncated to fit) rather than replaying full history | ✅ Built | `brain/nerv/memory/` |
+| **Channel authorization** — every channel with a remote sender requires an explicit allow-list. Telegram fails closed: an empty `allowed_users` authorizes nobody and the gateway refuses to start the adapter | ✅ Built | `core/shared/src/config.rs`, `core/gateway/src/adapter/` |
+| **Brain supervision** — the JSON-RPC client fails in-flight requests when the brain dies, respawns it up to `restart_max`, and bounds every call with a timeout | ✅ Built | `core/shared/src/brain_client.rs` |
+| **Agent memory** — conversation history partitioned by day *and* by sender/channel scope (JSON Lines, append-only, file-locked across processes), a long-term `facts.md` shared by the owner across channels, and a context manager that assembles a token-budgeted window (system prompt + facts + newest-first history, truncated to fit) rather than replaying full history | ✅ Built | `brain/nerv/memory/` |
 | **Context summarization** — summarizing the dropped history instead of truncating it | 📋 Roadmap | — |
 | **Pluggable model backends** — provider-prefix scheme (`claude-cli:` / `local:` / `litellm:`) so swapping providers is a config edit, not a code change | ✅ Built | `brain/nerv/llm/` |
 | **Skills / Workflows** — markdown skill guidelines and YAML workflows run by a native executor | ✅ Built | `brain/nerv/skills/`, `brain/nerv/workflows/` |
@@ -76,7 +79,16 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 | **Agent Store** | 📋 Roadmap | — |
 | **Vector retrieval / RAG** | ❌ Not built — memory is file-backed and summary-based by design | — |
 
-**Size:** 7.2k lines of Python in `brain/nerv/`, 1.4k lines of Rust in `core/`, and 2.4k lines of tests — **115 tests, all passing** (`cd brain && uv run pytest`).
+**Size:** 7.9k lines of Python in `brain/nerv/`, 2.1k lines of Rust in `core/`, and 2.7k lines of Python tests. **All green in CI** (`.github/workflows/ci.yml`):
+
+| Suite | Command | Tests |
+|---|---|---|
+| Brain | `cd brain && uv run pytest` | 128 |
+| Core (Rust) | `cd core && cargo test --workspace` | 36 |
+| GUI (Rust) | `cd gui/src-tauri && cargo test` | 4 |
+
+CI also enforces `ruff check`, `ruff format --check`, `cargo fmt --check`, and
+`cargo clippy -D warnings`.
 
 ---
 
@@ -115,6 +127,10 @@ config — no code changes.
 
 ### 🔌 Channel-Agnostic
 Telegram is just one adapter. The Gateway speaks a universal `Message` format. Adding a new channel = one new file, zero changes to the brain.
+
+Each remote channel is gated by an allow-list, because the brain can run shell
+commands and read your filesystem. Conversation history is stored per sender,
+so two people on the same instance never see each other's messages.
 
 ### 🧬 Portable & Replicable
 ```
@@ -155,6 +171,22 @@ uv run pytest
 cd ../core/gateway
 cargo run
 ```
+
+### Enabling Telegram
+
+Nerv's tools can run shell commands and read your filesystem, so the Telegram
+adapter refuses to start without an explicit allow-list. In `config.yaml`:
+
+```yaml
+channels:
+  telegram:
+    enabled: true
+    bot_token: "<from @BotFather>"
+    allowed_users: ["123456789"]   # your id — ask @userinfobot
+```
+
+An empty `allowed_users` authorizes nobody; the gateway logs an error and skips
+the adapter rather than exposing an open bot.
 
 ---
 
