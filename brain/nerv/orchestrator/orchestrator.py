@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from nerv.config import get_workspace_root
+from nerv.config import get_max_tool_iterations, get_workspace_root
 from nerv.memory.context import ContextManager
 from nerv.memory.manager import (
     DEFAULT_SCOPE,
@@ -466,7 +466,8 @@ class Orchestrator:
 
             load_dotenv(env_path)
 
-        while True:
+        max_rounds = get_max_tool_iterations(self._project_root)
+        for _round in range(max_rounds):
             result = await complete(
                 messages,
                 model=model,
@@ -556,6 +557,13 @@ class Orchestrator:
             if not content:
                 return "I received an empty response from the model."
             return content
+
+        logger.warning("Tool loop stopped after %d rounds", max_rounds)
+        return (
+            f"I stopped after {max_rounds} rounds of tool calls without reaching "
+            "a final answer. Try a narrower request, or raise "
+            "orchestrator.max_tool_iterations in the config."
+        )
 
     def _queue_pending_action(
         self,
