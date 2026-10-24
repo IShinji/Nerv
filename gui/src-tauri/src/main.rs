@@ -1,6 +1,7 @@
 // Prevents an extra console window on Windows in release.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,6 +53,15 @@ impl AppState {
 /// `uv run python -m nerv`, so a user who changed the interpreter or module in
 /// config got a different brain depending on which host launched it.
 fn brain_spawn_config(project_root: &Path) -> BrainSpawnConfig {
+    let spawn = brain_spawn_config_inner(project_root);
+    let path = child_path(
+        std::env::var("PATH").ok().as_deref(),
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+    );
+    spawn.with_env("PATH", path)
+}
+
+fn brain_spawn_config_inner(project_root: &Path) -> BrainSpawnConfig {
     let brain_dir = project_root.join("brain");
 
     let config = match NervConfig::load(project_root) {
@@ -62,6 +72,10 @@ fn brain_spawn_config(project_root: &Path) -> BrainSpawnConfig {
                 .with_env("NERV_PROJECT_ROOT", project_root.to_string_lossy());
         }
     };
+
+    for warning in config.startup_warnings(project_root) {
+        eprintln!("[nerv-gui] warning: {warning}");
+    }
 
     BrainSpawnConfig::python(
         &config.brain.python_command,
@@ -143,9 +157,21 @@ fn extract_field(text: &str, key: &str) -> Option<String> {
     None
 }
 
-/// Walk up from the working directory to find the Nerv project root.
+/// Find the Nerv project root: `NERV_PROJECT_ROOT` wins (a packaged app
+/// launched from Finder has an unrelated cwd), otherwise walk up from the
+/// working directory.
 fn find_project_root() -> PathBuf {
-    if let Ok(cwd) = std::env::current_dir() {
+    resolve_project_root(
+        std::env::var_os("NERV_PROJECT_ROOT"),
+        std::env::current_dir().ok(),
+    )
+}
+
+fn resolve_project_root(env_root: Option<OsString>, cwd: Option<PathBuf>) -> PathBuf {
+    if let Some(root) = env_root.filter(|r| !r.is_empty()) {
+        return PathBuf::from(root);
+    }
+    if let Some(cwd) = cwd {
         for ancestor in cwd.ancestors() {
             if ancestor.join("brain").is_dir() && ancestor.join("core").is_dir() {
                 return ancestor.to_path_buf();
@@ -153,6 +179,27 @@ fn find_project_root() -> PathBuf {
         }
     }
     PathBuf::from("..")
+}
+
+/// PATH for the brain child. An app started from Finder inherits a minimal
+/// PATH, so `uv`/`python` installed by Homebrew, uv or rustup would not be
+/// found; prepend the usual user bin dirs (without duplicating entries).
+fn child_path(existing: Option<&str>, home: Option<&Path>) -> String {
+    let mut dirs: Vec<String> = vec!["/opt/homebrew/bin".into(), "/usr/local/bin".into()];
+    if let Some(home) = home {
+        dirs.push(home.join(".local/bin").to_string_lossy().into_owned());
+        dirs.push(home.join(".cargo/bin").to_string_lossy().into_owned());
+    }
+    let mut out: Vec<String> = Vec::new();
+    for dir in dirs
+        .into_iter()
+        .chain(existing.unwrap_or("").split(':').map(str::to_string))
+    {
+        if !dir.is_empty() && !out.contains(&dir) {
+            out.push(dir);
+        }
+    }
+    out.join(":")
 }
 
 fn main() {
@@ -175,6 +222,50 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_root_prefers_env_override() {
+        let root = resolve_project_root(Some("/srv/nerv".into()), Some(PathBuf::from("/")));
+        assert_eq!(root, PathBuf::from("/srv/nerv"));
+    }
+
+    #[test]
+    fn project_root_ignores_empty_env_and_walks_up_from_cwd() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("brain")).unwrap();
+        std::fs::create_dir_all(dir.path().join("core")).unwrap();
+        let nested = dir.path().join("gui").join("src-tauri");
+        std::fs::create_dir_all(&nested).unwrap();
+        let root = resolve_project_root(Some("".into()), Some(nested));
+        assert_eq!(root, dir.path());
+    }
+
+    #[test]
+    fn child_path_prepends_common_bins_without_duplicates() {
+        let path = child_path(
+            Some("/usr/bin:/opt/homebrew/bin:/bin"),
+            Some(Path::new("/Users/me")),
+        );
+        assert_eq!(
+            path,
+            "/opt/homebrew/bin:/usr/local/bin:/Users/me/.local/bin:/Users/me/.cargo/bin:/usr/bin:/bin"
+        );
+    }
+
+    #[test]
+    fn child_path_works_with_minimal_environment() {
+        assert_eq!(child_path(None, None), "/opt/homebrew/bin:/usr/local/bin");
+    }
+
+    #[test]
+    fn spawn_config_sets_path_env() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let spawn = brain_spawn_config(dir.path());
+        assert!(spawn
+            .env
+            .iter()
+            .any(|(k, v)| k == "PATH" && v.starts_with("/opt/homebrew/bin")));
+    }
 
     #[test]
     fn extract_field_reads_a_quoted_value() {
