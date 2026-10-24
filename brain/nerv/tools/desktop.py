@@ -431,7 +431,7 @@ def _build_browser_interactive_arguments(
         "Supported actions: open_url, get_state, get_page_text, fill_prompt, "
         "submit_prompt, wait_for_text, wait_for_idle, run_javascript."
     ),
-    requires_confirmation=False,
+    requires_confirmation=True,
 )
 async def browser_interactive(
     action: str,
@@ -504,7 +504,7 @@ async def browser_interactive(
         "Supported actions: open_url, get_state, get_page_text, fill_prompt, "
         "submit_prompt, wait_for_text, wait_for_idle, run_javascript."
     ),
-    requires_confirmation=False,
+    requires_confirmation=True,
 )
 def chrome_browser(
     action: str,

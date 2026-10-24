@@ -153,7 +153,7 @@ async def execute_workflow(workflow_name: str, inputs: str) -> ToolResult:
             is_error=True,
         )
 
-    orchestrator = _get_orchestrator()
+    orchestrator = await _get_orchestrator()
     executor = WorkflowExecutor(orchestrator)
 
     try:

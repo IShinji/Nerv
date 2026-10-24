@@ -8,6 +8,7 @@ store and reported back so the user can approve them inside Nerv.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import os
@@ -19,6 +20,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
 from nerv.config import get_workspace_root
+from nerv.memory.manager import DEFAULT_SCOPE, use_scope
 from nerv.security import PendingActionStore, confirmation_reason
 from nerv.tools import builtins as _builtins  # noqa: F401  (registers core tools)
 from nerv.tools import (
@@ -32,6 +34,10 @@ from nerv.tools.builtins import registry
 logger = logging.getLogger(__name__)
 
 SERVER_NAME = "nerv"
+# Env var through which the launcher hands the conversation scope to this
+# process, so memory tools read the right sender's history (fails closed to
+# the default scope when unset).
+SCOPE_ENV = "NERV_MEMORY_SCOPE"
 
 
 def _project_root() -> Path:
@@ -58,9 +64,17 @@ async def execute_or_suspend(
     if tool_def is None:
         return f"Unknown tool: {name}"
 
-    reason = confirmation_reason(name, arguments, workspace_root)
+    reason = confirmation_reason(
+        name,
+        arguments,
+        workspace_root,
+        requires_confirmation=tool_def.requires_confirmation,
+        project_root=_project_root(),
+    )
     if reason:
-        record = store.add(name, arguments, reason=reason)
+        record = store.add(
+            name, arguments, reason=reason, scope=os.environ.get(SCOPE_ENV, "")
+        )
         logger.info("Suspended %s (#%d): %s", name, record.id, reason)
         return (
             f"[ACTION SUSPENDED #{record.id}] {reason}. This action was NOT "
@@ -73,7 +87,7 @@ async def execute_or_suspend(
         if inspect.iscoroutinefunction(tool_def.func):
             result = await tool_def.func(**arguments)
         else:
-            result = tool_def.func(**arguments)
+            result = await asyncio.to_thread(tool_def.func, **arguments)
     except Exception as exc:  # surface tool errors to the model, don't crash
         logger.exception("Tool %s raised", name)
         return f"Tool {name} failed: {exc}"
@@ -108,7 +122,8 @@ def build_server(project_root: Path | None = None) -> Server:
     async def call_tool(
         name: str, arguments: dict[str, Any]
     ) -> list[types.TextContent]:
-        text = await execute_or_suspend(name, arguments, workspace_root, store)
+        with use_scope(os.environ.get(SCOPE_ENV, DEFAULT_SCOPE)):
+            text = await execute_or_suspend(name, arguments, workspace_root, store)
         return [types.TextContent(type="text", text=text)]
 
     return server

@@ -105,7 +105,9 @@ def read_file(absolute_path: str) -> ToolResult:
 @registry.register(
     name="write_file_full",
     description="Overwrite a file entirely with new content. Use carefully as this deletes old content.",
-    requires_confirmation=True,
+    # Path-gated by security.sandbox (outside the workspace or protected paths
+    # are confirmed), so the blanket flag stays off for ordinary workspace files.
+    requires_confirmation=False,
 )
 def write_file_full(absolute_path: str, content: str) -> ToolResult:
     """Overwrite a file entirely."""

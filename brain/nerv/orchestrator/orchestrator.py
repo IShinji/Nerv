@@ -41,6 +41,7 @@ OLLAMA_TIMEOUT = 60.0
 
 CONFIRM_COMMANDS = {"confirm", "approve", "run", "yes", "y", "ok"}
 CANCEL_COMMANDS = {"cancel", "deny", "reject", "no", "n", "stop"}
+CASUAL_WORDS = {"yes", "y", "ok", "no", "n", "stop", "run"}
 
 
 class Orchestrator:
@@ -460,7 +461,11 @@ class Orchestrator:
                     executable_name = resolution.provider_name
 
                     reason = confirmation_reason(
-                        executable_name, arguments, self._workspace_root
+                        executable_name,
+                        arguments,
+                        self._workspace_root,
+                        requires_confirmation=tool_def.requires_confirmation,
+                        project_root=self._project_root,
                     )
                     if reason:
                         pending_action = self._queue_pending_action(
@@ -521,6 +526,7 @@ class Orchestrator:
             reason=reason,
             sender=sender,
             channel=channel,
+            scope=scope_for(channel, sender) if (sender or channel) else "",
         )
 
     def _format_pending_action(self, action: PendingRecord) -> str:
@@ -562,20 +568,27 @@ class Orchestrator:
     def _visible_pending_actions(
         self, sender: str, channel: str
     ) -> list[PendingRecord]:
-        """Return pending actions scoped to the current sender/channel.
+        """Return pending actions that belong to exactly this sender/channel.
 
-        Actions queued without a sender/channel (e.g. by the MCP server) are
-        unscoped and therefore visible to everyone.
+        An action is visible only to the scope that queued it. Unscoped actions
+        (no sender, channel, or scope) are visible only to an unscoped caller
+        such as the local CLI, never to a remote sender.
         """
         actions = self._pending_store.list()
-        if sender or channel:
-            return [
-                action
-                for action in actions
-                if (not sender or not action.sender or action.sender == sender)
-                and (not channel or not action.channel or action.channel == channel)
-            ]
-        return actions
+        if not (sender or channel):
+            return [a for a in actions if not (a.sender or a.channel or a.scope)]
+        wanted = scope_for(channel, sender)
+        return [
+            a
+            for a in actions
+            if (a.scope and a.scope == wanted)
+            or (
+                not a.scope
+                and (a.sender or a.channel)
+                and a.sender == sender
+                and a.channel == channel
+            )
+        ]
 
     async def _handle_pending_action_command(
         self,
@@ -601,6 +614,13 @@ class Orchestrator:
 
         command = command_match.group(1)
         action_id = command_match.group(2)
+
+        # Plain chat words ("yes", "ok", "no", "stop") must never run or cancel
+        # a queued action, and running one always names its id.
+        if command in CONFIRM_COMMANDS and not action_id:
+            return None
+        if command in CANCEL_COMMANDS and not action_id and command in CASUAL_WORDS:
+            return None
 
         if action_id:
             target = next(
@@ -640,7 +660,7 @@ class Orchestrator:
         if inspect.iscoroutinefunction(tool_def.func):
             result = await tool_def.func(**action.arguments)
         else:
-            result = tool_def.func(**action.arguments)
+            result = await asyncio.to_thread(tool_def.func, **action.arguments)
 
         status = "Executed" if not result.is_error else "Execution failed for"
         return (

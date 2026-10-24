@@ -88,7 +88,7 @@ def shell(command: str) -> ToolResult:
 @registry.register(
     name="delegate_task",
     description="Ask another specialized professional agent to do a task and return the result to you. Use this to consult domain experts.",
-    requires_confirmation=False,
+    requires_confirmation=True,  # spawns an agent that may use any of its tools
 )
 async def delegate_task(role_name: str, task_description: str) -> ToolResult:
     """Spawn or consult a sub-agent for a specific task."""

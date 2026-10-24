@@ -139,7 +139,12 @@ class ContextManager:
             logger.warning("User message is extremely large, might truncate history.")
 
         # 3. Retrieve history and append if it fits
-        history = self.memory.load_recent_messages(limit=max_history_msg)
+        history = self.memory.load_recent_messages(limit=max_history_msg + 1)
+        # The orchestrator persists the user's message before building the
+        # prompt; drop that trailing copy so it is not sent twice.
+        if history and history[-1].role == "user" and history[-1].content == user_msg:
+            history = history[:-1]
+        history = history[-max_history_msg:] if max_history_msg > 0 else []
 
         history_msgs_to_add: list[dict[str, Any]] = []
         # Walk backwards: we want the most recent bits of history

@@ -5,9 +5,9 @@ extraction and reasoning — flows through the unified client, so the executor i
 backend-agnostic (claude-cli / ollama / litellm). Runs are persisted per-step to
 a TaskRun, so an interrupted workflow can be resumed instead of restarting.
 
-Note: workflow tool steps execute directly. Workflows are pre-approved sequences
-(authored or passed through the review queue), unlike an agent's ad-hoc tool use
-which is sandbox-gated in the orchestrator.
+Tool steps go through the same confirmation gate as an agent's ad-hoc tool
+use (see ``_call_tool_gated``): a step that needs approval is queued as a
+pending action and reported, never run silently.
 """
 
 import asyncio
@@ -20,7 +20,9 @@ from typing import TYPE_CHECKING, Any
 
 from nerv.capabilities import capability_registry
 from nerv.llm import complete
+from nerv.memory.manager import DEFAULT_SCOPE, active_scope
 from nerv.observability import log_event, timed
+from nerv.security import confirmation_reason
 from nerv.tasks import TaskRunStore
 from nerv.tasks.store import DONE, FAILED, RUNNING
 from nerv.workflows.models import WorkflowDefinition
@@ -260,10 +262,35 @@ class WorkflowExecutor:
         args = self._parse_json_args(result.content)
 
         self._notify(f"[Workflow] Calling {tool_def.name}...")
+        return await self._call_tool_gated(tool_def, args)
+
+    async def _call_tool_gated(self, tool_def: Any, kwargs: dict[str, Any]) -> str:
+        """Run a tool, or queue it for confirmation per the sandbox policy."""
+        orch = self.orchestrator
+        reason = confirmation_reason(
+            tool_def.name,
+            kwargs,
+            orch._workspace_root,
+            requires_confirmation=tool_def.requires_confirmation,
+            project_root=orch._project_root,
+        )
+        if reason:
+            scope = active_scope()
+            record = orch._pending_store.add(
+                tool_def.name,
+                kwargs,
+                reason=reason,
+                scope="" if scope == DEFAULT_SCOPE else scope,
+            )
+            logger.warning("Workflow tool %s suspended: %s", tool_def.name, reason)
+            return (
+                f"[ACTION SUSPENDED #{record.id}] {reason}. Not executed; the "
+                f"user must reply 'confirm {record.id}' to run it."
+            )
         if inspect.iscoroutinefunction(tool_def.func):
-            tool_result = await tool_def.func(**args)
+            tool_result = await tool_def.func(**kwargs)
         else:
-            tool_result = tool_def.func(**args)
+            tool_result = await asyncio.to_thread(tool_def.func, **kwargs)
         return tool_result.content
 
     @staticmethod
@@ -318,11 +345,9 @@ class WorkflowExecutor:
         kwargs = param_mappings[method_hint]
         try:
             self._notify(f"[Workflow] Direct call: {tool_def.name}.{method_hint}")
-            if inspect.iscoroutinefunction(tool_def.func):
-                result = await tool_def.func(action=method_hint, **kwargs)
-            else:
-                result = tool_def.func(action=method_hint, **kwargs)
-            return result.content
+            return await self._call_tool_gated(
+                tool_def, {"action": method_hint, **kwargs}
+            )
         except TypeError:
             logger.debug(
                 "Direct call failed for %s.%s, falling back to LLM",

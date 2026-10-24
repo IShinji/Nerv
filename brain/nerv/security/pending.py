@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import tempfile
+import time
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -29,12 +30,22 @@ class PendingRecord:
     reason: str = ""
     sender: str = ""
     channel: str = ""
+    scope: str = ""
+    created_at: float = 0.0
+
+
+# A suspended action that nobody confirmed within this window is dropped, so a
+# stale approval can never fire long after the user forgot about it.
+DEFAULT_PENDING_TTL_SECONDS = 3600.0
 
 
 class PendingActionStore:
     """JSON-file queue of pending actions, safe for concurrent processes."""
 
-    def __init__(self, project_root: Path) -> None:
+    def __init__(
+        self, project_root: Path, ttl_seconds: float = DEFAULT_PENDING_TTL_SECONDS
+    ) -> None:
+        self._ttl = ttl_seconds
         self._dir = project_root / "personal"
         self._path = self._dir / "pending_actions.json"
         self._lock_path = self._dir / "pending_actions.lock"
@@ -72,10 +83,12 @@ class PendingActionStore:
         reason: str = "",
         sender: str = "",
         channel: str = "",
+        scope: str = "",
     ) -> PendingRecord:
         """Enqueue a suspended action and return its assigned record."""
         with self._locked():
             data = self._read()
+            data["actions"] = self._live(data.get("actions", []))
             record = PendingRecord(
                 id=int(data.get("next_id", 1)),
                 tool_name=tool_name,
@@ -83,16 +96,29 @@ class PendingActionStore:
                 reason=reason,
                 sender=sender,
                 channel=channel,
+                scope=scope,
+                created_at=time.time(),
             )
             data["next_id"] = record.id + 1
             data.setdefault("actions", []).append(asdict(record))
             self._write(data)
             return record
 
+    def _live(self, actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop expired actions. Records without a timestamp count as expired."""
+        if self._ttl <= 0:
+            return actions
+        now = time.time()
+        return [a for a in actions if now - float(a.get("created_at", 0.0)) < self._ttl]
+
     def list(self) -> list[PendingRecord]:
-        """Return all pending actions."""
+        """Return all non-expired pending actions."""
         data = self._read()
-        return [PendingRecord(**item) for item in data.get("actions", [])]
+        known = set(PendingRecord.__dataclass_fields__)
+        return [
+            PendingRecord(**{k: v for k, v in item.items() if k in known})
+            for item in self._live(data.get("actions", []))
+        ]
 
     def get(self, action_id: int) -> PendingRecord | None:
         """Return one pending action by id, or ``None``."""
@@ -103,9 +129,12 @@ class PendingActionStore:
         with self._locked():
             data = self._read()
             actions = data.get("actions", [])
-            removed = next((a for a in actions if a.get("id") == action_id), None)
+            removed = next(
+                (a for a in self._live(actions) if a.get("id") == action_id), None
+            )
             if removed is None:
                 return None
             data["actions"] = [a for a in actions if a.get("id") != action_id]
             self._write(data)
-            return PendingRecord(**removed)
+            known = set(PendingRecord.__dataclass_fields__)
+            return PendingRecord(**{k: v for k, v in removed.items() if k in known})

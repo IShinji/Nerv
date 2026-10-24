@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from nerv.llm.client import CompletionResult
+from nerv.memory.manager import active_scope
 from nerv.observability import log_event
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,12 @@ def _write_mcp_config(project_root: Path) -> Path:
                 "command": "uv",
                 "args": ["run", "python", "-m", "nerv.mcp_server"],
                 "cwd": str(project_root / "brain"),
-                "env": {"NERV_PROJECT_ROOT": str(project_root)},
+                "env": {
+                    "NERV_PROJECT_ROOT": str(project_root),
+                    # Memory tools in the MCP process must read this request's
+                    # scope, not the default one.
+                    "NERV_MEMORY_SCOPE": active_scope(),
+                },
             }
         }
     }
