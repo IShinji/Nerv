@@ -11,6 +11,8 @@ pub enum ConfigError {
     },
     #[error("failed to parse config: {0}")]
     Parse(#[from] serde_yaml::Error),
+    #[error("invalid config: {0}")]
+    Invalid(String),
 }
 
 /// Top-level Nerv configuration.
@@ -264,8 +266,94 @@ impl NervConfig {
         }
 
         let config: NervConfig = serde_yaml::from_value(merged)?;
+        validate_python_command(&config.brain.python_command).map_err(ConfigError::Invalid)?;
         Ok(config)
     }
+
+    /// Non-fatal findings the host should log once at startup: an unfamiliar
+    /// `brain.python_command` launcher and an over-permissive user config file.
+    pub fn startup_warnings(&self, project_root: &Path) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if let Some(w) = python_command_warning(&self.brain.python_command) {
+            warnings.push(w);
+        }
+        let user_path = resolve_user_config_path(
+            project_root,
+            std::env::var_os("NERV_CONFIG").map(PathBuf::from),
+            std::env::var_os("HOME").map(PathBuf::from),
+        );
+        #[cfg(unix)]
+        if let Some(path) = user_path {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if let Some(w) = file_mode_warning(&path, meta.permissions().mode()) {
+                    warnings.push(w);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = user_path;
+        warnings
+    }
+}
+
+/// Reject a `brain.python_command` that cannot name a program.
+pub fn validate_python_command(command: &str) -> Result<(), String> {
+    if command.trim().is_empty() {
+        return Err("brain.python_command must not be empty".to_string());
+    }
+    Ok(())
+}
+
+/// Whether the first token of `command` looks like a known interpreter or
+/// launcher: `uv`, `python`, `python3`, or a path ending in `/uv` or `/python*`.
+fn is_known_launcher(command: &str) -> bool {
+    let Some(first) = command.split_whitespace().next() else {
+        return false;
+    };
+    if first.contains('/') {
+        let name = Path::new(first)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        return name == "uv" || name.starts_with("python");
+    }
+    matches!(first, "uv" | "python" | "python3")
+}
+
+/// The gateway executes `brain.python_command` as a program, so an unexpected
+/// launcher deserves a visible warning (it is not an error: custom setups exist).
+pub fn python_command_warning(command: &str) -> Option<String> {
+    if command.trim().is_empty() || is_known_launcher(command) {
+        return None;
+    }
+    Some(format!(
+        "brain.python_command starts with an unrecognized launcher ({command:?}); \
+         it will be executed as a program. Expected uv, python, python3 or a path to one"
+    ))
+}
+
+/// Warn when the config file (which can hold a bot token) is accessible to
+/// group or others. `mode` is the unix st_mode.
+pub fn file_mode_warning(path: &Path, mode: u32) -> Option<String> {
+    let bits = mode & 0o077;
+    if bits == 0 {
+        return None;
+    }
+    let mut problems = Vec::new();
+    if bits & 0o022 != 0 {
+        problems.push("writable");
+    }
+    if bits & 0o044 != 0 {
+        problems.push("readable");
+    }
+    Some(format!(
+        "{} is group/world-{} (mode {:o}); it may hold secrets, run: chmod 600 {}",
+        path.display(),
+        problems.join(" and group/world-"),
+        mode & 0o777,
+        path.display()
+    ))
 }
 
 /// Pick the user config file. An explicit override is returned as-is (so a
@@ -550,5 +638,56 @@ channels:
         let config = NervConfig::load(dir.path()).unwrap();
         assert!(config.channels.telegram.is_allowed("42"));
         assert!(!config.channels.telegram.is_allowed("43"));
+    }
+
+    #[test]
+    fn empty_python_command_is_rejected() {
+        assert!(validate_python_command("").is_err());
+        assert!(validate_python_command("  \t ").is_err());
+        assert!(validate_python_command("uv run python").is_ok());
+    }
+
+    #[test]
+    fn known_launchers_do_not_warn() {
+        for cmd in [
+            "uv run python",
+            "python",
+            "python3 -u",
+            "/opt/homebrew/bin/uv run python",
+            "/usr/bin/python3.12",
+            "./.venv/bin/python",
+        ] {
+            assert!(python_command_warning(cmd).is_none(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn unknown_launchers_warn() {
+        for cmd in ["bash -c x", "/tmp/evil", "pythonista", "sh"] {
+            assert!(python_command_warning(cmd).is_some(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn file_mode_warning_flags_group_and_world_access() {
+        let p = Path::new("config.yaml");
+        assert!(file_mode_warning(p, 0o100600).is_none());
+        assert!(file_mode_warning(p, 0o100644).unwrap().contains("readable"));
+        assert!(file_mode_warning(p, 0o100620).unwrap().contains("writable"));
+        assert!(file_mode_warning(p, 0o100666).is_some());
+    }
+
+    #[test]
+    fn load_rejects_blank_python_command() {
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            "config.default.yaml",
+            "channels: {}\nmodels:\n  router: {}\nbrain:\n  python_command: \"  \"\n",
+        );
+        assert!(matches!(
+            NervConfig::load(dir.path()),
+            Err(ConfigError::Invalid(_))
+        ));
     }
 }

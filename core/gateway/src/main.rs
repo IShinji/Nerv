@@ -98,6 +98,9 @@ async fn main() -> Result<()> {
 
     let config = NervConfig::load(&project_root)?;
     info!("Configuration loaded");
+    for warning in config.startup_warnings(&project_root) {
+        warn!("{warning}");
+    }
     ollama::ensure_ollama_ready(&config).await?;
 
     // Start the Python brain process
