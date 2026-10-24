@@ -67,6 +67,8 @@ Nerv is a personal AI operating system. Rust core (Gateway, hardware detection) 
 
 ## What NOT To Do
 
-- Do not use `.env` files for config — use `~/.nerv/config.yaml`
+- Do not use `.env` files for config — use `config.yaml` (user overrides on top of
+  `core/config.default.yaml`). The gateway looks for `$NERV_CONFIG` first, then
+  `<project root>/config.yaml`, then `~/.nerv/config.yaml`
 - Do not hardcode model names — read from config
 - Do not send full conversation history to LLMs — use rolling summaries

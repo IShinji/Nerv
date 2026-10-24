@@ -234,11 +234,17 @@ fn default_heartbeat_interval_secs() -> u64 {
 impl NervConfig {
     /// Load config by merging default config with user overrides.
     ///
-    /// Looks for config.yaml next to config.default.yaml (project root).
-    /// When present, user config overrides only the keys it defines.
+    /// The user config is, in order of precedence: the file named by the
+    /// `NERV_CONFIG` environment variable (it must exist), `config.yaml` in
+    /// the project root, then `~/.nerv/config.yaml`. When present, it overrides
+    /// only the keys it defines.
     pub fn load(project_root: &Path) -> Result<Self, ConfigError> {
         let default_path = project_root.join("core").join("config.default.yaml");
-        let user_path = project_root.join("config.yaml");
+        let user_path = resolve_user_config_path(
+            project_root,
+            std::env::var_os("NERV_CONFIG").map(PathBuf::from),
+            std::env::var_os("HOME").map(PathBuf::from),
+        );
 
         let default_content =
             std::fs::read_to_string(&default_path).map_err(|e| ConfigError::ReadFile {
@@ -247,7 +253,7 @@ impl NervConfig {
             })?;
         let mut merged: serde_yaml::Value = serde_yaml::from_str(&default_content)?;
 
-        if user_path.exists() {
+        if let Some(user_path) = user_path {
             let user_content =
                 std::fs::read_to_string(&user_path).map_err(|e| ConfigError::ReadFile {
                     path: user_path.clone(),
@@ -260,6 +266,24 @@ impl NervConfig {
         let config: NervConfig = serde_yaml::from_value(merged)?;
         Ok(config)
     }
+}
+
+/// Pick the user config file. An explicit override is returned as-is (so a
+/// typo fails loudly when it is read); the fallbacks only count if they exist.
+fn resolve_user_config_path(
+    project_root: &Path,
+    env_override: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(path) = env_override.filter(|p| !p.as_os_str().is_empty()) {
+        return Some(path);
+    }
+    let in_project = project_root.join("config.yaml");
+    if in_project.exists() {
+        return Some(in_project);
+    }
+    let in_home = home?.join(".nerv").join("config.yaml");
+    in_home.exists().then_some(in_home)
 }
 
 fn merge_yaml(base: &mut serde_yaml::Value, override_value: serde_yaml::Value) {
@@ -436,6 +460,36 @@ models:
         assert_eq!(shipped.models.tiers.tier1, default_tier1_model());
         assert_eq!(shipped.models.tiers.tier2, default_tier2_model());
         assert_eq!(shipped.models.tiers.tier3, default_tier3_model());
+    }
+
+    #[test]
+    fn user_config_path_precedence() {
+        let root = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir_all(home.path().join(".nerv")).unwrap();
+        std::fs::write(home.path().join(".nerv/config.yaml"), "").unwrap();
+        let home_cfg = home.path().join(".nerv/config.yaml");
+
+        // Only the home fallback exists.
+        assert_eq!(
+            resolve_user_config_path(root.path(), None, Some(home.path().into())),
+            Some(home_cfg.clone())
+        );
+        // A project-root config wins over the home one.
+        std::fs::write(root.path().join("config.yaml"), "").unwrap();
+        assert_eq!(
+            resolve_user_config_path(root.path(), None, Some(home.path().into())),
+            Some(root.path().join("config.yaml"))
+        );
+        // NERV_CONFIG wins over both, even if missing.
+        let custom = root.path().join("nope.yaml");
+        assert_eq!(
+            resolve_user_config_path(root.path(), Some(custom.clone()), Some(home.path().into())),
+            Some(custom)
+        );
+        // Nothing anywhere.
+        let empty = TempDir::new().unwrap();
+        assert_eq!(resolve_user_config_path(empty.path(), None, None), None);
     }
 
     #[test]
