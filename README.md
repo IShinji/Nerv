@@ -79,11 +79,11 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 | **Agent Store** | 📋 Roadmap | — |
 | **Vector retrieval / RAG** | ❌ Not built — memory is file-backed and summary-based by design | — |
 
-**Size:** 7.9k lines of Python in `brain/nerv/`, 2.1k lines of Rust in `core/`, and 2.7k lines of Python tests. A CI workflow lives in `.github/workflows/ci.yml`; this README does not claim it is passing. Test counts (the brain figure was collected locally; the Rust figures are from an earlier count and were not re-run):
+**Size:** 8.8k lines of Python in `brain/nerv/`, 2.1k lines of Rust in `core/`, and 3.9k lines of Python tests. A CI workflow lives in `.github/workflows/ci.yml`; this README does not claim it is passing. Test counts (the brain figure was collected locally; the Rust figures are from an earlier count and were not re-run):
 
 | Suite | Command | Tests |
 |---|---|---|
-| Brain | `cd brain && uv run pytest` | 187 |
+| Brain | `cd brain && uv run pytest` | 205 |
 | Core (Rust) | `cd core && cargo test --workspace` | 56 |
 | GUI (Rust) | `cd gui/src-tauri && cargo test` | 4 |
 
@@ -164,9 +164,9 @@ cd Nerv
 
 # Setup python environment
 cd brain
-uv sync
+uv sync                 # add `--extra litellm` only if you use the dormant litellm: backend
 
-# Run the test suite (185 tests, ~2s)
+# Run the test suite (205 tests, ~2s)
 uv run pytest
 
 # Run the gateway
