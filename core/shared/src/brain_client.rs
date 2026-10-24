@@ -323,9 +323,7 @@ impl BrainClient {
             }
             e if e.is_transport() => {
                 warn!("Brain call `{method}` failed after sending ({err}); not re-sending");
-                if let Err(restart_err) = self.restart(generation).await {
-                    return Err(restart_err);
-                }
+                self.restart(generation).await?;
                 Err(err)
             }
             _ => Err(err),

@@ -44,7 +44,7 @@ impl Default for CliChannelConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelegramChannelConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -58,10 +58,35 @@ pub struct TelegramChannelConfig {
     /// gateway refuses to start the adapter at all.
     #[serde(default)]
     pub allowed_users: Vec<String>,
+    /// Only accept messages from private (1:1) chats. Group chats are refused
+    /// unless this is turned off explicitly.
+    #[serde(default = "default_true")]
+    pub private_chats_only: bool,
+    /// Directories (relative to the project root, or absolute) whose files the
+    /// bot may upload through a `[DOCUMENT: path]` marker. Nothing outside
+    /// them is ever sent, and dotfiles / `config.yaml` are always refused.
+    #[serde(default = "default_document_dirs")]
+    pub document_dirs: Vec<String>,
+}
+
+impl Default for TelegramChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bot_token: String::new(),
+            allowed_users: Vec::new(),
+            private_chats_only: true,
+            document_dirs: default_document_dirs(),
+        }
+    }
+}
+
+fn default_document_dirs() -> Vec<String> {
+    vec!["personal/workspace".to_string()]
 }
 
 impl TelegramChannelConfig {
-    /// Whether `sender` (a Telegram chat id) may talk to this instance.
+    /// Whether `sender` (a Telegram user id) may talk to this instance.
     pub fn is_allowed(&self, sender: &str) -> bool {
         let sender = sender.trim();
         !sender.is_empty()
@@ -426,6 +451,7 @@ models:
             enabled: true,
             bot_token: "token".to_string(),
             allowed_users: vec!["12345".to_string(), " 67890 ".to_string()],
+            ..Default::default()
         };
 
         assert!(config.is_allowed("12345"));
