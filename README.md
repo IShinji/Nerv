@@ -79,13 +79,13 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 | **Agent Store** | 📋 Roadmap | — |
 | **Vector retrieval / RAG** | ❌ Not built — memory is file-backed and summary-based by design | — |
 
-**Size:** 8.8k lines of Python in `brain/nerv/`, 2.1k lines of Rust in `core/`, and 3.9k lines of Python tests. A CI workflow lives in `.github/workflows/ci.yml`; this README does not claim it is passing. Test counts (the brain figure was collected locally; the Rust figures are from an earlier count and were not re-run):
+**Size:** 8.8k lines of Python in `brain/nerv/`, 2.1k lines of Rust in `core/`, and 3.9k lines of Python tests. A CI workflow lives in `.github/workflows/ci.yml`; this README does not claim it is passing. Test counts (brain figure collected earlier; the Rust figures were re-run locally after the latest changes):
 
 | Suite | Command | Tests |
 |---|---|---|
 | Brain | `cd brain && uv run pytest` | 205 |
-| Core (Rust) | `cd core && cargo test --workspace` | 56 |
-| GUI (Rust) | `cd gui/src-tauri && cargo test` | 4 |
+| Core (Rust) | `cd core && cargo test --workspace` | 61 |
+| GUI (Rust) | `cd gui/src-tauri && cargo test` | 9 |
 
 CI also enforces `ruff check`, `ruff format --check`, `cargo fmt --check`, and
 `cargo clippy -D warnings`.
@@ -155,7 +155,7 @@ Share your best agents with the community. Install a battle-tested "Legal Adviso
 - macOS (Apple Silicon) or Linux
 - Rust (latest stable)
 - Python 3.11+ and [uv](https://docs.astral.sh/uv/)
-- A model backend — the default config uses the local [Claude Code](https://claude.com/claude-code) CLI (no API key). [Ollama](https://ollama.ai) is only needed if you switch a tier to a `local:` model.
+- A model backend — the default config uses the local [Claude Code](https://claude.com/claude-code) CLI (no API key). [Ollama](https://ollama.com) is only needed if you switch a tier to a `local:` model; `scripts/setup.sh` skips it unless `NERV_SETUP_OLLAMA=1`. The script never pipes downloads into a shell and creates `config.yaml` with mode 600.
 
 ### Install & Run
 ```bash
