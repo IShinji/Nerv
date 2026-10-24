@@ -83,8 +83,8 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 
 | Suite | Command | Tests |
 |---|---|---|
-| Brain | `cd brain && uv run pytest` | 185 |
-| Core (Rust) | `cd core && cargo test --workspace` | 36 |
+| Brain | `cd brain && uv run pytest` | 187 |
+| Core (Rust) | `cd core && cargo test --workspace` | 56 |
 | GUI (Rust) | `cd gui/src-tauri && cargo test` | 4 |
 
 CI also enforces `ruff check`, `ruff format --check`, `cargo fmt --check`, and
