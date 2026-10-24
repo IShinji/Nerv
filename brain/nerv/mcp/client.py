@@ -17,6 +17,7 @@ MAX_LINE_BYTES = 64 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
 DEFAULT_MCP_PROTOCOL_VERSION = "2024-11-05"
+DEFAULT_MCP_REQUEST_TIMEOUT = 30.0
 
 
 class McpError(RuntimeError):
@@ -45,6 +46,8 @@ class McpServerConfig:
     cwd: str = ""
     capabilities: list[str] = field(default_factory=list)
     action_map: dict[str, str] = field(default_factory=dict)
+    # Seconds to wait for any single request (initialize, list, call).
+    request_timeout: float = DEFAULT_MCP_REQUEST_TIMEOUT
 
 
 class StdioMcpClient:
@@ -210,11 +213,14 @@ class StdioMcpClient:
                 ) from exc
 
         try:
-            return await asyncio.wait_for(future, timeout=20.0)
+            return await asyncio.wait_for(future, timeout=self.config.request_timeout)
         except TimeoutError as exc:
             self._pending.pop(request_id, None)
             raise McpTransportError(
-                f"MCP server {self.config.name} timed out handling {method}."
+                f"MCP server {self.config.name} timed out after "
+                f"{self.config.request_timeout:g}s handling {method}. "
+                "Raise request_timeout for this server in the config if it is "
+                "just slow."
             ) from exc
 
     async def _send_notification(self, method: str, params: dict[str, Any]) -> None:
