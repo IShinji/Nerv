@@ -788,7 +788,10 @@ class Orchestrator:
             logger.debug("Proactive monitor check failed", exc_info=True)
 
         if self._pending_notifications:
-            return self._pending_notifications.pop(0)
+            # Deliver everything queued in one batched reply; draining one per
+            # 30 s tick would lag far behind a chatty workflow.
+            batch, self._pending_notifications = self._pending_notifications, []
+            return "\n".join(batch)
         return None
 
     async def aclose(self) -> None:
