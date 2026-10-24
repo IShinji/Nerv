@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+#: Longest single line accepted from an MCP server (asyncio default is 64 KiB).
+MAX_LINE_BYTES = 64 * 1024 * 1024
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MCP_PROTOCOL_VERSION = "2024-11-05"
@@ -100,6 +103,7 @@ class StdioMcpClient:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd),
                 env=env,
+                limit=MAX_LINE_BYTES,
             )
         except FileNotFoundError as exc:
             raise McpTransportError(
@@ -229,12 +233,33 @@ class StdioMcpClient:
         assert self._process is not None and self._process.stdout is not None
         stream = self._process.stdout
 
+        try:
+            await self._read_stdout_messages(stream)
+        finally:
+            # Reader is gone (EOF, oversize line, crash): nobody will answer the
+            # pending requests, so fail them now instead of waiting for timeouts.
+            self._fail_pending(
+                McpTransportError(f"MCP server {self.config.name} closed its output.")
+            )
+
+    def _fail_pending(self, error: Exception) -> None:
+        for future in list(self._pending.values()):
+            if not future.done():
+                future.set_exception(error)
+        self._pending.clear()
+
+    async def _read_stdout_messages(self, stream: asyncio.StreamReader) -> None:
         while True:
-            raw_line = await stream.readline()
+            try:
+                raw_line = await stream.readline()
+            except (ValueError, asyncio.LimitOverrunError) as exc:
+                raise McpTransportError(
+                    f"MCP server {self.config.name} sent an oversize line: {exc}"
+                ) from exc
             if not raw_line:
                 break
 
-            line = raw_line.decode("utf-8").strip()
+            line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
 

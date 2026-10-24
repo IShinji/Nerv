@@ -118,7 +118,11 @@ async fn main() -> Result<()> {
                 let text = incoming.message.text().unwrap_or("").to_string();
                 let channel = incoming.message.channel;
 
-                info!("Processing message from {channel}: {text}");
+                // Message bodies are private: log only the channel and size.
+                info!(
+                    "Processing message from {channel} ({} chars)",
+                    text.chars().count()
+                );
 
                 let params = serde_json::json!({
                     "message": text,
@@ -128,8 +132,12 @@ async fn main() -> Result<()> {
 
                 let response_text = match brain.call("route", params).await {
                     Ok(result) => {
-                        info!("Brain response: {result}");
-                        format_brain_response(&result)
+                        let reply = format_brain_response(&result);
+                        info!(
+                            "Brain replied on {channel} ({} chars)",
+                            reply.chars().count()
+                        );
+                        reply
                     }
                     Err(e) => {
                         error!("Brain call failed: {e}");
@@ -146,38 +154,16 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Start heartbeat loop (Priority 4)
-    let brain_heartbeat = brain.clone();
-    let heartbeat_interval = Duration::from_secs(config.brain.heartbeat_interval_secs);
-    let heartbeat_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(heartbeat_interval);
-        loop {
-            interval.tick().await;
-            match brain_heartbeat
-                .call("heartbeat", serde_json::json!({}))
-                .await
-            {
-                Ok(result) => {
-                    if let Some(reply) = result.get("reply").and_then(|v| v.as_str()) {
-                        if !reply.is_empty() {
-                            // Print the proactive background hook message to the screen!
-                            println!("\n{reply}\n");
-                        }
-                    }
-                }
-                Err(e) => warn!("Heartbeat failed: {e}"),
-            }
-        }
-    });
-
     // Start the appropriate adapter(s) concurrently!
     let mut adapter_tasks = vec![];
+    let mut broadcasters: Vec<Arc<dyn ChannelAdapter>> = Vec::new();
 
     if config.channels.cli.enabled {
         info!("Starting CLI adapter...");
         let tx_cli = gateway_tx.clone();
+        let cli = Arc::new(CliAdapter::new());
+        broadcasters.push(cli.clone());
         adapter_tasks.push(tokio::spawn(async move {
-            let cli = CliAdapter::new();
             if let Err(e) = cli.start(tx_cli).await {
                 error!("CLI adapter crashed: {}", e);
             }
@@ -201,14 +187,41 @@ async fn main() -> Result<()> {
             );
             let tx_tg = gateway_tx.clone();
             let telegram_config = config.channels.telegram.clone();
+            let telegram = Arc::new(TelegramAdapter::new(telegram_config, project_root.clone()));
+            broadcasters.push(telegram.clone());
             adapter_tasks.push(tokio::spawn(async move {
-                let telegram = TelegramAdapter::new(telegram_config);
                 if let Err(e) = telegram.start(tx_tg).await {
                     error!("Telegram adapter crashed: {}", e);
                 }
             }));
         }
     }
+
+    // Heartbeat results go to every channel that can push proactively
+    // (the CLI prints them; Telegram messages the allow-listed users).
+    let brain_heartbeat = brain.clone();
+    let heartbeat_interval = Duration::from_secs(config.brain.heartbeat_interval_secs);
+    let heartbeat_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(heartbeat_interval);
+        loop {
+            interval.tick().await;
+            match brain_heartbeat
+                .call("heartbeat", serde_json::json!({}))
+                .await
+            {
+                Ok(result) => {
+                    if let Some(reply) = result.get("reply").and_then(|v| v.as_str()) {
+                        if !reply.is_empty() {
+                            for adapter in &broadcasters {
+                                adapter.broadcast(reply).await;
+                            }
+                        }
+                    }
+                }
+                Err(e) => warn!("Heartbeat failed: {e}"),
+            }
+        }
+    });
 
     // Hang until all running adapters close or crash
     drop(gateway_tx);

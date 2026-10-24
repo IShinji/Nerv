@@ -44,7 +44,7 @@ impl Default for CliChannelConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelegramChannelConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -58,10 +58,35 @@ pub struct TelegramChannelConfig {
     /// gateway refuses to start the adapter at all.
     #[serde(default)]
     pub allowed_users: Vec<String>,
+    /// Only accept messages from private (1:1) chats. Group chats are refused
+    /// unless this is turned off explicitly.
+    #[serde(default = "default_true")]
+    pub private_chats_only: bool,
+    /// Directories (relative to the project root, or absolute) whose files the
+    /// bot may upload through a `[DOCUMENT: path]` marker. Nothing outside
+    /// them is ever sent, and dotfiles / `config.yaml` are always refused.
+    #[serde(default = "default_document_dirs")]
+    pub document_dirs: Vec<String>,
+}
+
+impl Default for TelegramChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bot_token: String::new(),
+            allowed_users: Vec::new(),
+            private_chats_only: true,
+            document_dirs: default_document_dirs(),
+        }
+    }
+}
+
+fn default_document_dirs() -> Vec<String> {
+    vec!["personal/workspace".to_string()]
 }
 
 impl TelegramChannelConfig {
-    /// Whether `sender` (a Telegram chat id) may talk to this instance.
+    /// Whether `sender` (a Telegram user id) may talk to this instance.
     pub fn is_allowed(&self, sender: &str) -> bool {
         let sender = sender.trim();
         !sender.is_empty()
@@ -209,11 +234,17 @@ fn default_heartbeat_interval_secs() -> u64 {
 impl NervConfig {
     /// Load config by merging default config with user overrides.
     ///
-    /// Looks for config.yaml next to config.default.yaml (project root).
-    /// When present, user config overrides only the keys it defines.
+    /// The user config is, in order of precedence: the file named by the
+    /// `NERV_CONFIG` environment variable (it must exist), `config.yaml` in
+    /// the project root, then `~/.nerv/config.yaml`. When present, it overrides
+    /// only the keys it defines.
     pub fn load(project_root: &Path) -> Result<Self, ConfigError> {
         let default_path = project_root.join("core").join("config.default.yaml");
-        let user_path = project_root.join("config.yaml");
+        let user_path = resolve_user_config_path(
+            project_root,
+            std::env::var_os("NERV_CONFIG").map(PathBuf::from),
+            std::env::var_os("HOME").map(PathBuf::from),
+        );
 
         let default_content =
             std::fs::read_to_string(&default_path).map_err(|e| ConfigError::ReadFile {
@@ -222,7 +253,7 @@ impl NervConfig {
             })?;
         let mut merged: serde_yaml::Value = serde_yaml::from_str(&default_content)?;
 
-        if user_path.exists() {
+        if let Some(user_path) = user_path {
             let user_content =
                 std::fs::read_to_string(&user_path).map_err(|e| ConfigError::ReadFile {
                     path: user_path.clone(),
@@ -235,6 +266,24 @@ impl NervConfig {
         let config: NervConfig = serde_yaml::from_value(merged)?;
         Ok(config)
     }
+}
+
+/// Pick the user config file. An explicit override is returned as-is (so a
+/// typo fails loudly when it is read); the fallbacks only count if they exist.
+fn resolve_user_config_path(
+    project_root: &Path,
+    env_override: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(path) = env_override.filter(|p| !p.as_os_str().is_empty()) {
+        return Some(path);
+    }
+    let in_project = project_root.join("config.yaml");
+    if in_project.exists() {
+        return Some(in_project);
+    }
+    let in_home = home?.join(".nerv").join("config.yaml");
+    in_home.exists().then_some(in_home)
 }
 
 fn merge_yaml(base: &mut serde_yaml::Value, override_value: serde_yaml::Value) {
@@ -414,6 +463,36 @@ models:
     }
 
     #[test]
+    fn user_config_path_precedence() {
+        let root = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir_all(home.path().join(".nerv")).unwrap();
+        std::fs::write(home.path().join(".nerv/config.yaml"), "").unwrap();
+        let home_cfg = home.path().join(".nerv/config.yaml");
+
+        // Only the home fallback exists.
+        assert_eq!(
+            resolve_user_config_path(root.path(), None, Some(home.path().into())),
+            Some(home_cfg.clone())
+        );
+        // A project-root config wins over the home one.
+        std::fs::write(root.path().join("config.yaml"), "").unwrap();
+        assert_eq!(
+            resolve_user_config_path(root.path(), None, Some(home.path().into())),
+            Some(root.path().join("config.yaml"))
+        );
+        // NERV_CONFIG wins over both, even if missing.
+        let custom = root.path().join("nope.yaml");
+        assert_eq!(
+            resolve_user_config_path(root.path(), Some(custom.clone()), Some(home.path().into())),
+            Some(custom)
+        );
+        // Nothing anywhere.
+        let empty = TempDir::new().unwrap();
+        assert_eq!(resolve_user_config_path(empty.path(), None, None), None);
+    }
+
+    #[test]
     fn telegram_allowlist_denies_by_default() {
         let config = TelegramChannelConfig::default();
         assert!(!config.is_allowed("12345"));
@@ -426,6 +505,7 @@ models:
             enabled: true,
             bot_token: "token".to_string(),
             allowed_users: vec!["12345".to_string(), " 67890 ".to_string()],
+            ..Default::default()
         };
 
         assert!(config.is_allowed("12345"));
