@@ -24,6 +24,9 @@ from nerv.router.router import Router
 
 logger = logging.getLogger(__name__)
 
+#: Longest single JSON-RPC line accepted from stdin (asyncio's default is 64 KiB).
+MAX_LINE_BYTES = 64 * 1024 * 1024
+
 #: Upper bound on requests being handled at once.
 MAX_CONCURRENT_REQUESTS = 8
 
@@ -135,7 +138,7 @@ def make_error(code: int, message: str, request_id: int | str | None) -> dict[st
 async def _connect_stdin() -> asyncio.StreamReader:
     """Wrap stdin in an asyncio reader so the event loop stays responsive."""
     loop = asyncio.get_running_loop()
-    reader = asyncio.StreamReader()
+    reader = asyncio.StreamReader(limit=MAX_LINE_BYTES)
     protocol = asyncio.StreamReaderProtocol(reader)
     await loop.connect_read_pipe(lambda: protocol, sys.stdin)
     return reader
@@ -178,7 +181,14 @@ async def run_jsonrpc_loop() -> None:
 
     try:
         while True:
-            raw = await reader.readline()
+            try:
+                raw = await reader.readline()
+            except (ValueError, asyncio.LimitOverrunError) as e:
+                # Oversize line: the reader already discarded it; report and go on.
+                await write_response_async(
+                    make_error(-32600, f"Request too large: {e}", None)
+                )
+                continue
             if not raw:  # EOF — the gateway closed our stdin
                 logger.info("stdin closed, shutting down JSON-RPC loop")
                 break
@@ -194,6 +204,12 @@ async def run_jsonrpc_loop() -> None:
             except json.JSONDecodeError as e:
                 await write_response_async(
                     make_error(-32700, f"Parse error: {e}", None)
+                )
+                continue
+
+            if not isinstance(request, dict):
+                await write_response_async(
+                    make_error(-32600, "Invalid request: not an object", None)
                 )
                 continue
 

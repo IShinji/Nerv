@@ -176,3 +176,53 @@ async def test_ping_does_not_build_the_orchestrator() -> None:
     assert await ipc.handle_request("ping", None) == {"status": "ok"}
     assert ipc._router is None
     assert ipc._orchestrator is None
+
+
+async def test_oversize_line_gets_handled_and_loop_survives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A >64 KiB line used to raise ValueError and kill the brain."""
+
+    async def fake_handle(method: str, params: dict | None) -> Any:
+        return {"ok": True}
+
+    monkeypatch.setattr(ipc, "handle_request", fake_handle)
+    big = json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {"x": "a" * 200_000}}
+    )
+    small = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"})
+
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd, "r")
+    stdout = io.StringIO()
+    monkeypatch.setattr(ipc.sys, "stdin", stdin)
+    monkeypatch.setattr(ipc.sys, "stdout", stdout)
+
+    def feed() -> None:
+        with os.fdopen(write_fd, "w") as writer:
+            writer.write(big + "\n" + small + "\n")
+
+    loop_task = asyncio.create_task(ipc.run_jsonrpc_loop())
+    await asyncio.to_thread(feed)
+    await asyncio.wait_for(loop_task, timeout=10)
+    stdin.close()
+
+    responses = [json.loads(x) for x in stdout.getvalue().splitlines() if x.strip()]
+    assert {r["id"] for r in responses} == {1, 2}
+    assert all("result" in r for r in responses)
+
+
+async def test_line_over_limit_returns_error_and_loop_survives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ipc, "MAX_LINE_BYTES", 1024)
+
+    async def fake_handle(method: str, params: dict | None) -> Any:
+        return {"ok": True}
+
+    monkeypatch.setattr(ipc, "handle_request", fake_handle)
+    responses = await _run_loop(
+        ["x" * 5000, json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"})],
+        monkeypatch,
+    )
+    assert any(r.get("id") == 2 and "result" in r for r in responses)
