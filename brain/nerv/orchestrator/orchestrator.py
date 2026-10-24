@@ -92,6 +92,23 @@ class Orchestrator:
             self._schedule_summary_backfill(channel, sender)
             return response
 
+    async def dispatch_pending_command(
+        self, message: str, channel: str = "", sender: str = ""
+    ) -> str | None:
+        """Handle ``confirm <id>`` / ``cancel <id>`` without any routing.
+
+        Returns the reply, or None when ``message`` is not a pending-action
+        command for this scope (the caller then routes it normally).
+        """
+        with use_scope(scope_for(channel, sender)):
+            reply = await self._handle_pending_action_command(
+                message, sender=sender, channel=channel
+            )
+            if reply:
+                memory, _ = self._memory_for(channel, sender)
+                self._remember_turn(message, reply, memory)
+            return reply or None
+
     def _schedule_summary_backfill(self, channel: str, sender: str) -> None:
         """Kick off summarising any unsummarised past day, off the reply path.
 

@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from nerv.models import RouteResult
 from nerv.orchestrator.orchestrator import Orchestrator
 from nerv.router.router import Router
 
@@ -82,11 +83,21 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
         message = params.get("message", "")
         channel = params.get("channel", "")
         sender = params.get("sender", "")
+        orchestrator = await _get_orchestrator()
+
+        # confirm/cancel <id> is handled before classification, so approving a
+        # queued action never depends on a model call succeeding.
+        pending_reply = await orchestrator.dispatch_pending_command(
+            message, channel=channel, sender=sender
+        )
+        if pending_reply is not None:
+            result = RouteResult(intent="pending_action", reply=pending_reply)
+            return result.model_dump()
+
         router = await _get_router()
         route_result = await router.classify(message)
 
         # Dispatch to orchestrator for actual agent response
-        orchestrator = await _get_orchestrator()
         reply = await orchestrator.dispatch(
             message,
             route_result,
