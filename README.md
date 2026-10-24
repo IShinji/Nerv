@@ -49,7 +49,7 @@ You (Telegram / Slack / Email / CLI / WebChat)
 └──────────────────┴──────────────────────┘
 ```
 
-**Key insight:** OpenClaw sends your entire conversation history (~120K tokens) with every single message. Nerv sends a bounded window instead: the agent's system prompt, a long-term facts file, and only as many recent messages as fit the agent's token budget — oldest first to be dropped. Summarizing that window rather than truncating it is a planned improvement, not what ships today.
+**Key insight:** OpenClaw sends your entire conversation history (~120K tokens) with every single message. Nerv sends a bounded window instead: the agent's system prompt, a long-term facts file, and only as many recent messages as fit the agent's token budget — oldest first to be dropped. Days that fall outside the window survive as rolling summaries generated off the reply path, so summarizing never adds latency to a reply.
 
 **Integration direction:** Nerv should be `MCP-first` for external apps and services. If a stable MCP server already exists for Chrome, GitHub, Notion, or another system, Nerv should use that before adding a bespoke integration. Native tools remain critical for core local capabilities and as fallbacks.
 
@@ -63,14 +63,14 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 |---|---|---|
 | **Router** — intent classification + model tier selection from a small dedicated prompt, with an offline eval harness | ✅ Built | `brain/nerv/router/`, `brain/nerv/eval.py` |
 | **Orchestrator + Agent Factory** — task dispatch, runtime policy injection, on-demand specialist agent creation | ✅ Built | `brain/nerv/orchestrator/` |
-| **Tool / function calling** — decorator-based registry that derives JSON schemas from Python signatures; **31 registered tools** | ✅ Built | `brain/nerv/tools/` |
+| **Tool / function calling** — decorator-based registry that derives JSON schemas from Python signatures; **33 registered tools** | ✅ Built | `brain/nerv/tools/` |
 | **MCP client** — connect to external MCP servers, with builtin presets (e.g. Chrome DevTools) and a diagnostics tool | ✅ Built | `brain/nerv/mcp/` |
 | **MCP server** — exposes Nerv's own tools over MCP, so a host like the Claude Code CLI can drive Nerv | ✅ Built | `brain/nerv/mcp_server/` |
-| **Guardrails** — workspace sandbox policy; outward-acting tools (`shell`, `desktop_control`, `send_email`) and any path escaping the sandbox are suspended into a cross-process, file-locked approval queue and only run on explicit `confirm <id>` | ✅ Built | `brain/nerv/security/` |
+| **Guardrails** — workspace sandbox policy (config, `personal/` secrets, and code directories are protected even inside the workspace); every tool with `requires_confirmation`, outward-acting tools (`shell`, `desktop_control`, `send_email`) and any path escaping the sandbox are suspended into a cross-process, file-locked approval queue and only run on explicit `confirm <id>` | ✅ Built | `brain/nerv/security/` |
 | **Channel authorization** — every channel with a remote sender requires an explicit allow-list. Telegram fails closed: an empty `allowed_users` authorizes nobody and the gateway refuses to start the adapter | ✅ Built | `core/shared/src/config.rs`, `core/gateway/src/adapter/` |
 | **Brain supervision** — the JSON-RPC client fails in-flight requests when the brain dies, respawns it up to `restart_max`, and bounds every call with a timeout | ✅ Built | `core/shared/src/brain_client.rs` |
 | **Agent memory** — conversation history partitioned by day *and* by sender/channel scope (JSON Lines, append-only, file-locked across processes), a long-term `facts.md` shared by the owner across channels, and a context manager that assembles a token-budgeted window (system prompt + facts + newest-first history, truncated to fit) rather than replaying full history | ✅ Built | `brain/nerv/memory/` |
-| **Context summarization** — summarizing the dropped history instead of truncating it | 📋 Roadmap | — |
+| **Context summarization** — past days outside the recency window are kept as rolling summaries, generated off the reply path | ✅ Built | `brain/nerv/memory/summarizer.py` |
 | **Pluggable model backends** — provider-prefix scheme (`claude-cli:` / `local:` / `litellm:`) so swapping providers is a config edit, not a code change | ✅ Built | `brain/nerv/llm/` |
 | **Skills / Workflows** — markdown skill guidelines and YAML workflows run by a native executor | ✅ Built | `brain/nerv/skills/`, `brain/nerv/workflows/` |
 | **Gateway** — Rust daemon, channel adapters, IPC to the brain | ✅ Built | `core/` |
@@ -79,11 +79,11 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 | **Agent Store** | 📋 Roadmap | — |
 | **Vector retrieval / RAG** | ❌ Not built — memory is file-backed and summary-based by design | — |
 
-**Size:** 7.9k lines of Python in `brain/nerv/`, 2.1k lines of Rust in `core/`, and 2.7k lines of Python tests. **All green in CI** (`.github/workflows/ci.yml`):
+**Size:** 7.9k lines of Python in `brain/nerv/`, 2.1k lines of Rust in `core/`, and 2.7k lines of Python tests. A CI workflow lives in `.github/workflows/ci.yml`; this README does not claim it is passing. Test counts (the brain figure was collected locally; the Rust figures are from an earlier count and were not re-run):
 
 | Suite | Command | Tests |
 |---|---|---|
-| Brain | `cd brain && uv run pytest` | 128 |
+| Brain | `cd brain && uv run pytest` | 185 |
 | Core (Rust) | `cd core && cargo test --workspace` | 36 |
 | GUI (Rust) | `cd gui/src-tauri && cargo test` | 4 |
 
@@ -95,6 +95,8 @@ CI also enforces `ruff check`, `ruff format --check`, `cargo fmt --check`, and
 ## ✨ Core Features
 
 ### 🧩 Multi-Agent with Auto-Creation
+No agent definitions ship with the repo (there is no `agents/` preset directory); generated agents are written to `personal/agents/`.
+
 No matching agent for your task? Nerv creates one on the spot, saves it, and reuses it next time. Over time you build a personal team of experts — from tax advisors to recipe planners.
 
 ### 📈 Agents That Evolve
@@ -164,7 +166,7 @@ cd Nerv
 cd brain
 uv sync
 
-# Run the test suite (115 tests, ~1s)
+# Run the test suite (185 tests, ~2s)
 uv run pytest
 
 # Run the gateway

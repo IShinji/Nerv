@@ -1,18 +1,21 @@
 """System tools: the clock, shell access, and delegation to another agent."""
 
+import asyncio
 import datetime as dt
 import logging
-import pathlib
 import subprocess
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from nerv.tools._helpers import (
     TIMEZONE_ALIASES,
+    _get_project_root,
     _truncate,
 )
 from nerv.tools.registry import ToolResult, registry
 
 logger = logging.getLogger(__name__)
+
+SHELL_TIMEOUT_SECONDS = 120
 
 
 @registry.register(
@@ -58,14 +61,22 @@ def current_time(timezone: str = "local") -> ToolResult:
     description="Execute a shell command on the host OS. This includes running build scripts, python commands, git, etc.",
     requires_confirmation=True,  # Shell is always dangerous
 )
-def shell(command: str) -> ToolResult:
-    """Run a shell command."""
+async def shell(command: str) -> ToolResult:
+    """Run a shell command off the event loop, with a timeout and no stdin."""
     try:
-        result = subprocess.run(
+        result = await asyncio.to_thread(
+            subprocess.run,
             command,
             shell=True,
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=SHELL_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return ToolResult(
+            content=f"Shell command timed out after {SHELL_TIMEOUT_SECONDS}s.",
+            is_error=True,
         )
     except Exception as e:
         return ToolResult(content=f"Shell execution failed: {e}", is_error=True)
@@ -93,10 +104,16 @@ def shell(command: str) -> ToolResult:
 async def delegate_task(role_name: str, task_description: str) -> ToolResult:
     """Spawn or consult a sub-agent for a specific task."""
 
+    from nerv.orchestrator.factory import normalize_role_name
     from nerv.orchestrator.orchestrator import Orchestrator
 
+    safe_role = normalize_role_name(role_name)
+    if safe_role is None:
+        return ToolResult(content=f"Invalid role name: {role_name!r}", is_error=True)
+    role_name = safe_role
+
     # We build a temporary orchestrator for the sub-agent
-    orch = Orchestrator(pathlib.Path.cwd())
+    orch = Orchestrator(_get_project_root())
 
     # Fake the route result
     from nerv.models import RouteResult

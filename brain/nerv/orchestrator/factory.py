@@ -1,6 +1,7 @@
 """Agent Factory module for dynamically creating missing agents."""
 
 import logging
+import re
 from pathlib import Path
 
 from nerv.config import get_tier_models
@@ -66,6 +67,19 @@ CRITICAL INSTRUCTIONS:
 """
 
 
+_ROLE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+
+
+def normalize_role_name(role_name: str) -> str | None:
+    """Return a filesystem-safe role name, or ``None`` if it cannot be made safe.
+
+    Spaces become underscores; anything else outside ``[A-Za-z0-9_-]`` (path
+    separators, dots, traversal) is rejected rather than silently rewritten.
+    """
+    candidate = re.sub(r"\s+", "_", (role_name or "").strip())
+    return candidate if _ROLE_NAME_RE.match(candidate) else None
+
+
 class AgentFactory:
     """Dynamically generates YAML configurations for unknown Agent roles."""
 
@@ -81,7 +95,11 @@ class AgentFactory:
         self, role_name: str, user_intent_hint: str
     ) -> AgentDefinition | None:
         """Ask LLM to design an agent for `role_name` based on hint, validate, and save it."""
-        logger.info("Factory is creating a new agent for role: '%s'", role_name)
+        safe_name = normalize_role_name(role_name)
+        if safe_name is None:
+            logger.error("Factory refused unsafe role name: %r", role_name)
+            return None
+        logger.info("Factory is creating a new agent for role: '%s'", safe_name)
 
         user_prompt = (
             f"Please generate the agent YAML for the role: '{role_name}'.\n"
@@ -95,7 +113,9 @@ class AgentFactory:
             yaml_content = self._clean_yaml(yaml_content)
 
             # Save it
-            file_path = self.agents_dir / f"{role_name}.yaml"
+            file_path = (self.agents_dir / f"{safe_name}.yaml").resolve()
+            if file_path.parent != self.agents_dir.resolve():
+                raise ValueError("agent file path escapes the agents directory")
             file_path.write_text(yaml_content, encoding="utf-8")
 
             # Use the registry parser to validate and return

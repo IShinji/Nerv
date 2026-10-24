@@ -27,9 +27,8 @@ PATH_ARG_BY_TOOL: dict[str, str] = {
 # Even inside the workspace they are never readable or writable by tools without
 # confirmation (writes) or at all (reads): writing code/config is privilege
 # escalation, and personal/ holds credentials.
-PROTECTED_RELATIVE_PATHS: tuple[str, ...] = (
-    "config.yaml",
-    "personal",
+SECRET_RELATIVE_PATHS: tuple[str, ...] = ("config.yaml", "personal")
+CODE_RELATIVE_PATHS: tuple[str, ...] = (
     "brain",
     "core",
     "gui",
@@ -45,25 +44,43 @@ PROTECTED_FILE_NAMES: frozenset[str] = frozenset(
 )
 
 
-def is_protected_path(path: str, project_root: Path) -> bool:
-    """Return whether ``path`` is a secret/config/code location of the project."""
-    if not path:
-        return False
-    try:
-        resolved = Path(path).expanduser().resolve()
-    except (OSError, RuntimeError, ValueError):
-        return True
-    if resolved.name in PROTECTED_FILE_NAMES:
-        return True
-    nerv_home = Path.home() / ".nerv"
-    if resolved == nerv_home or nerv_home in resolved.parents:
-        return True
+def _under_any(path: str, project_root: Path, relatives: tuple[str, ...]) -> bool:
+    """Return whether the resolved path is one of, or inside, ``relatives``."""
+    resolved = Path(path).expanduser().resolve()
     root = project_root.resolve()
-    for rel in PROTECTED_RELATIVE_PATHS:
+    for rel in relatives:
         guarded = root / rel
         if resolved == guarded or guarded in resolved.parents:
             return True
     return False
+
+
+def is_secret_path(path: str, project_root: Path) -> bool:
+    """Return whether ``path`` holds credentials or config (never readable)."""
+    if not path:
+        return False
+    try:
+        resolved = Path(path).expanduser().resolve()
+        if resolved.name in PROTECTED_FILE_NAMES:
+            return True
+        nerv_home = Path.home() / ".nerv"
+        if resolved == nerv_home or nerv_home in resolved.parents:
+            return True
+        return _under_any(path, project_root, SECRET_RELATIVE_PATHS)
+    except (OSError, RuntimeError, ValueError):
+        return True
+
+
+def is_protected_path(path: str, project_root: Path) -> bool:
+    """Return whether ``path`` is a secret/config/code location (not writable)."""
+    if not path:
+        return False
+    if is_secret_path(path, project_root):
+        return True
+    try:
+        return _under_any(path, project_root, CODE_RELATIVE_PATHS)
+    except (OSError, RuntimeError, ValueError):
+        return True
 
 
 def is_within_sandbox(path: str, root: Path) -> bool:

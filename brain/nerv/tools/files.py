@@ -4,12 +4,27 @@ import logging
 import pathlib
 import subprocess
 
+from nerv.security.sandbox import PROTECTED_FILE_NAMES, is_secret_path
 from nerv.tools._helpers import (
+    _get_project_root,
     _resolve_path,
 )
 from nerv.tools.registry import ToolResult, registry
 
 logger = logging.getLogger(__name__)
+
+
+GREP_TIMEOUT_SECONDS = 20
+
+
+def _deny_secret(path: str) -> ToolResult | None:
+    """Return an error result if ``path`` is a credentials/config location."""
+    if path and is_secret_path(path, _get_project_root()):
+        return ToolResult(
+            content="Error: access to config and secret files is not allowed.",
+            is_error=True,
+        )
+    return None
 
 
 @registry.register(
@@ -28,6 +43,8 @@ def file_io(
 ) -> ToolResult:
     """Unified read/list/search file tool."""
     target = _resolve_path(path)
+    if (denied := _deny_secret(str(target))) is not None:
+        return denied
     normalized_op = operation.strip().lower()
 
     if normalized_op == "read":
@@ -85,6 +102,8 @@ def file_io(
 )
 def read_file(absolute_path: str) -> ToolResult:
     """Read a file."""
+    if (denied := _deny_secret(absolute_path)) is not None:
+        return denied
     path = pathlib.Path(absolute_path)
     if not path.exists():
         return ToolResult(
@@ -127,6 +146,8 @@ def write_file_full(absolute_path: str, content: str) -> ToolResult:
 )
 def grep_search(search_path: str, query: str) -> ToolResult:
     """Search for a string in files."""
+    if (denied := _deny_secret(search_path)) is not None:
+        return denied
     path = pathlib.Path(search_path)
     if not path.exists():
         return ToolResult(
@@ -135,8 +156,17 @@ def grep_search(search_path: str, query: str) -> ToolResult:
 
     try:
         # For MVP we use builtin grep via subprocess. No regex for MVP, just exact match
-        args = ["grep", "-rnI", query, str(path)]
-        result = subprocess.run(args, capture_output=True, text=True)
+        # Never descend into secret locations when searching a parent directory.
+        excludes = ["--exclude-dir=personal", "--exclude-dir=.git"]
+        excludes += [f"--exclude={name}" for name in sorted(PROTECTED_FILE_NAMES)]
+        args = ["grep", "-rnI", "-F", *excludes, "--", query, str(path)]
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=GREP_TIMEOUT_SECONDS,
+        )
 
         if result.returncode == 0:
             out = result.stdout
@@ -149,5 +179,10 @@ def grep_search(search_path: str, query: str) -> ToolResult:
             return ToolResult(
                 content=f"Error running search: {result.stderr}", is_error=True
             )
+    except subprocess.TimeoutExpired:
+        return ToolResult(
+            content=f"Error: search timed out after {GREP_TIMEOUT_SECONDS}s.",
+            is_error=True,
+        )
     except Exception as e:
         return ToolResult(content=f"Error searching: {e}", is_error=True)

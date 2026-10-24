@@ -137,7 +137,7 @@ def test_greedy_tools() -> None:
 
     tool = registry.get_tool("browser_interactive")
     assert tool is not None
-    assert tool.requires_confirmation is False
+    assert tool.requires_confirmation is True
 
     tool = registry.get_tool("mcp_presets")
     assert tool is not None
@@ -149,7 +149,7 @@ def test_greedy_tools() -> None:
 
     tool = registry.get_tool("chrome_browser")
     assert tool is not None
-    assert tool.requires_confirmation is False
+    assert tool.requires_confirmation is True
 
     tool = registry.get_tool("screenshot")
     assert tool is not None

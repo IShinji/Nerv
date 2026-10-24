@@ -6,6 +6,7 @@ instead, so its tools keep calling them through their own namespace.
 """
 
 import logging
+import os
 import pathlib
 from urllib.parse import urlparse
 
@@ -38,6 +39,9 @@ def _resolve_path(path: str) -> pathlib.Path:
 
 def _get_project_root() -> pathlib.Path:
     """Find the Nerv project root from the current working directory."""
+    env_root = os.environ.get("NERV_PROJECT_ROOT")
+    if env_root:
+        return pathlib.Path(env_root).expanduser().resolve()
     current = pathlib.Path.cwd().resolve()
     for candidate in [current, *current.parents]:
         if (candidate / "agents").exists() or (candidate / "core").exists():
