@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 # Enough of a day to summarise faithfully without paying for a huge prompt.
 MAX_CHARS_PER_DAY = 12000
 
+# (conversation dir, date) pairs currently being summarised in this process.
+_in_flight: set[tuple[str, str]] = set()
+
 _PROMPT = """\
 Summarise this day of conversation between a user and their assistant.
 
@@ -53,6 +56,27 @@ async def summarize_day(
     project_root: Path | None = None,
 ) -> str:
     """Generate and store the summary for one day. Returns it, or "" on failure."""
+    key = (str(memory.conv_dir), date_str)
+    # Idempotent: a day already summarised, or being summarised by an
+    # overlapping run, is left alone instead of paying for a duplicate call.
+    if key in _in_flight:
+        return ""
+    existing = memory.read_summary(date_str)
+    if existing:
+        return existing
+    _in_flight.add(key)
+    try:
+        return await _summarize_day(memory, date_str, model, project_root)
+    finally:
+        _in_flight.discard(key)
+
+
+async def _summarize_day(
+    memory: MemoryManager,
+    date_str: str,
+    model: str,
+    project_root: Path | None,
+) -> str:
     from nerv.llm import complete
 
     body = _render_day(memory, date_str)
