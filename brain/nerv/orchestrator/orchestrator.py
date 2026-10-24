@@ -296,7 +296,7 @@ class Orchestrator:
 
         if new_agent:
             # Hot-reload the new agent into memory
-            self.registry.agents[new_agent.name] = new_agent
+            self.registry._agents[new_agent.name] = new_agent
             logger.info(
                 "Successfully birthed and registered new expert: '%s'", new_agent.name
             )
