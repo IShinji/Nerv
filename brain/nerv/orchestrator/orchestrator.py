@@ -309,6 +309,44 @@ class Orchestrator:
         target.append_message("user", user_message)
         target.append_message("assistant", assistant_message)
 
+    async def _model_available(self, model: str) -> bool:
+        """Whether the provider-prefixed ``model`` can serve a request right now."""
+        import shutil
+
+        from nerv.llm.client import parse_model
+
+        provider, name = parse_model(model)
+        if provider == "claude-cli":
+            # Uses the logged-in subscription, not an API key.
+            from nerv.llm.claude_cli import CLAUDE_BIN
+
+            return shutil.which(CLAUDE_BIN) is not None
+        if provider == "local":
+            try:
+                resp = await self._client.post(
+                    f"{self.base_url}/api/show", json={"name": name}, timeout=5
+                )
+                return resp.status_code == 200
+            except Exception:
+                return False
+
+        # litellm: the API key depends on the vendor, which is either a
+        # "vendor/model" prefix or recognisable from the bare model name.
+        vendor = name.split("/", 1)[0].lower()
+        key_checks = {
+            "gemini": "GEMINI_API_KEY",
+            "claude": "ANTHROPIC_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "gpt": "OPENAI_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "o1": "OPENAI_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
+        }
+        for prefix, env_var in key_checks.items():
+            if vendor.startswith(prefix):
+                return bool(os.environ.get(env_var))
+        return False
+
     async def _try_workflow_fallback(
         self,
         agent: "AgentDefinition",
@@ -323,47 +361,7 @@ class Orchestrator:
         workflow in the user's workflow library and executes it instead.
         Returns None if no fallback is needed or available.
         """
-        is_local = selected_model.startswith("local:")
-        actual_model = selected_model[6:] if is_local else selected_model
-
-        model_available = False
-
-        if selected_model.startswith("claude-cli:"):
-            # The Claude Code backend is available whenever the CLI is on PATH;
-            # it uses the logged-in subscription, not an API key.
-            import shutil
-
-            from nerv.llm.claude_cli import CLAUDE_BIN
-
-            model_available = shutil.which(CLAUDE_BIN) is not None
-        elif is_local:
-            # Probe Ollama to confirm the model actually exists
-            try:
-                resp = await self._client.post(
-                    f"{self.base_url}/api/show",
-                    json={"name": actual_model},
-                    timeout=5,
-                )
-                model_available = resp.status_code == 200
-            except Exception:
-                model_available = False
-        else:
-            # For cloud models, check if relevant API key exists
-            import os
-
-            key_checks = {
-                "gemini": "GEMINI_API_KEY",
-                "claude": "ANTHROPIC_API_KEY",
-                "gpt": "OPENAI_API_KEY",
-                "o1": "OPENAI_API_KEY",
-                "deepseek": "DEEPSEEK_API_KEY",
-            }
-            for prefix, env_var in key_checks.items():
-                if actual_model.startswith(prefix) or selected_model.startswith(prefix):
-                    model_available = bool(os.environ.get(env_var))
-                    break
-            else:
-                model_available = False
+        model_available = await self._model_available(selected_model)
 
         if model_available:
             logger.debug(
