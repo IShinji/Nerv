@@ -1005,6 +1005,7 @@ name = "nerv-shared"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "serde",
  "serde_json",
  "serde_yaml",
