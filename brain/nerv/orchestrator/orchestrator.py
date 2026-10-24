@@ -210,6 +210,10 @@ class Orchestrator:
 
             tools_schemas = capability_registry.get_schemas(agent.tools)
 
+        # Actions already waiting before this turn; anything new afterwards was
+        # queued during it (possibly by the MCP server process).
+        known_pending = {a.id for a in self._visible_pending_actions(sender, channel)}
+
         # Call the model (traced for observability + reliability debugging)
         try:
             with timed(
@@ -230,6 +234,10 @@ class Orchestrator:
                     channel=channel,
                 )
 
+            response = self._append_new_pending(
+                response, known_pending, sender, channel
+            )
+
             # 3. Save assistant's reply to memory
             memory.append_message("assistant", response)
 
@@ -242,6 +250,29 @@ class Orchestrator:
                 "I hit a problem reaching the model and couldn't complete that "
                 "just now. Please try again in a moment."
             )
+
+    def _append_new_pending(
+        self, response: str, known_ids: set[int], sender: str, channel: str
+    ) -> str:
+        """Mention actions queued during the turn that the reply doesn't cover.
+
+        Under the claude-cli backend the MCP server (a separate process) queues
+        suspended actions in the shared store; the model may not mention them,
+        so the user would never learn that something awaits approval.
+        """
+        new_actions = [
+            a
+            for a in self._visible_pending_actions(sender, channel)
+            if a.id not in known_ids and f"#{a.id}" not in response
+        ]
+        if not new_actions:
+            return response
+        lines = ["", "Waiting for your confirmation:"]
+        for action in new_actions:
+            reason = f" — {action.reason}" if action.reason else ""
+            lines.append(f"- {self._format_pending_action(action)}{reason}")
+        lines.append('Reply "confirm <id>" to run one, or "cancel <id>" to discard it.')
+        return response + "\n".join(lines)
 
     async def _find_agent(
         self, route_result: RouteResult, message_hint: str
