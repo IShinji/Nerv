@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 import nerv.tools.builtins as builtins
+import nerv.tools.desktop as desktop
+import nerv.tools.knowledge as knowledge
 from nerv.config import load_project_config
 from nerv.mcp import reset_mcp_managers
 from nerv.mcp.manager import McpServerManager
@@ -195,9 +197,9 @@ mcp:
 """,
     )
 
-    monkeypatch.setattr(builtins, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(desktop, "_get_project_root", lambda: tmp_path)
     monkeypatch.setattr(
-        builtins,
+        desktop,
         "chrome_browser",
         lambda **kwargs: ToolResult(
             content="native fallback should not run", is_error=True
@@ -295,9 +297,9 @@ mcp:
 """,
     )
 
-    monkeypatch.setattr(builtins, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(desktop, "_get_project_root", lambda: tmp_path)
     monkeypatch.setattr(
-        builtins,
+        desktop,
         "chrome_browser",
         lambda **kwargs: ToolResult(
             content="native fallback should not run", is_error=True
@@ -378,7 +380,7 @@ mcp:
 """,
     )
 
-    monkeypatch.setattr(builtins, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(knowledge, "_get_project_root", lambda: tmp_path)
 
     await reset_mcp_managers()
     try:
@@ -412,9 +414,9 @@ mcp:
 """,
     )
 
-    monkeypatch.setattr(builtins, "_get_project_root", lambda: tmp_path)
+    monkeypatch.setattr(desktop, "_get_project_root", lambda: tmp_path)
     monkeypatch.setattr(
-        builtins,
+        desktop,
         "chrome_browser",
         lambda **kwargs: ToolResult(content=f"native fallback {kwargs['url']}"),
     )

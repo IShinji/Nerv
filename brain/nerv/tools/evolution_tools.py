@@ -42,7 +42,7 @@ def _clean_yaml(text: str) -> str:
     name="evolve_agent",
     description="Update an existing agent's knowledge/behavior. Snapshots the old "
     "version first. Args: agent_name, update_instruction.",
-    requires_confirmation=False,
+    requires_confirmation=True,
 )
 async def evolve_agent(agent_name: str, update_instruction: str) -> ToolResult:
     """Revise an agent's definition per an instruction, with version history."""
@@ -107,7 +107,7 @@ def list_agent_versions(agent_name: str) -> ToolResult:
 @registry.register(
     name="rollback_agent",
     description="Roll an agent back to a saved version. Args: agent_name, version.",
-    requires_confirmation=False,
+    requires_confirmation=True,
 )
 def rollback_agent(agent_name: str, version: str) -> ToolResult:
     """Restore an agent to a previously archived version."""

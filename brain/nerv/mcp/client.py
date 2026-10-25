@@ -11,9 +11,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+#: Longest single line accepted from an MCP server (asyncio default is 64 KiB).
+MAX_LINE_BYTES = 64 * 1024 * 1024
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MCP_PROTOCOL_VERSION = "2024-11-05"
+DEFAULT_MCP_REQUEST_TIMEOUT = 30.0
 
 
 class McpError(RuntimeError):
@@ -42,6 +46,8 @@ class McpServerConfig:
     cwd: str = ""
     capabilities: list[str] = field(default_factory=list)
     action_map: dict[str, str] = field(default_factory=dict)
+    # Seconds to wait for any single request (initialize, list, call).
+    request_timeout: float = DEFAULT_MCP_REQUEST_TIMEOUT
 
 
 class StdioMcpClient:
@@ -100,6 +106,7 @@ class StdioMcpClient:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd),
                 env=env,
+                limit=MAX_LINE_BYTES,
             )
         except FileNotFoundError as exc:
             raise McpTransportError(
@@ -206,11 +213,14 @@ class StdioMcpClient:
                 ) from exc
 
         try:
-            return await asyncio.wait_for(future, timeout=20.0)
+            return await asyncio.wait_for(future, timeout=self.config.request_timeout)
         except TimeoutError as exc:
             self._pending.pop(request_id, None)
             raise McpTransportError(
-                f"MCP server {self.config.name} timed out handling {method}."
+                f"MCP server {self.config.name} timed out after "
+                f"{self.config.request_timeout:g}s handling {method}. "
+                "Raise request_timeout for this server in the config if it is "
+                "just slow."
             ) from exc
 
     async def _send_notification(self, method: str, params: dict[str, Any]) -> None:
@@ -229,12 +239,33 @@ class StdioMcpClient:
         assert self._process is not None and self._process.stdout is not None
         stream = self._process.stdout
 
+        try:
+            await self._read_stdout_messages(stream)
+        finally:
+            # Reader is gone (EOF, oversize line, crash): nobody will answer the
+            # pending requests, so fail them now instead of waiting for timeouts.
+            self._fail_pending(
+                McpTransportError(f"MCP server {self.config.name} closed its output.")
+            )
+
+    def _fail_pending(self, error: Exception) -> None:
+        for future in list(self._pending.values()):
+            if not future.done():
+                future.set_exception(error)
+        self._pending.clear()
+
+    async def _read_stdout_messages(self, stream: asyncio.StreamReader) -> None:
         while True:
-            raw_line = await stream.readline()
+            try:
+                raw_line = await stream.readline()
+            except (ValueError, asyncio.LimitOverrunError) as exc:
+                raise McpTransportError(
+                    f"MCP server {self.config.name} sent an oversize line: {exc}"
+                ) from exc
             if not raw_line:
                 break
 
-            line = raw_line.decode("utf-8").strip()
+            line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
 

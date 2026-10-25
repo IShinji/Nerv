@@ -166,7 +166,13 @@ async def _complete_litellm(
     json_mode: bool,
 ) -> CompletionResult:
     """Cloud API backend via litellm (reserved; dormant by default)."""
-    import litellm
+    try:
+        import litellm
+    except ImportError as exc:
+        raise RuntimeError(
+            "The litellm backend needs the optional extra: "
+            'install it with `uv sync --extra litellm` (pip install "nerv-brain[litellm]").'
+        ) from exc
 
     kwargs: dict[str, Any] = {
         "model": model_name,

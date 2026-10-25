@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Nerv — Environment Bootstrap Script
-# Detects and installs all required dependencies.
+# Checks required tools (Rust, uv, Python), builds, and creates config.yaml.
+# Never pipes a downloaded script into a shell; prints official instructions instead.
 # Idempotent: safe to run multiple times.
 
 RED='\033[0;31m'
@@ -40,61 +41,51 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 info "Project root: $PROJECT_ROOT"
 
-# --- Check / Install asdf (version manager) ---
-check_version_manager() {
-    if command -v asdf &>/dev/null; then
-        ok "asdf: $(asdf version)"
-        return
-    fi
+# --- Optional version manager (asdf) ---
+# asdf >= 0.16 is a Go binary: it has no asdf.sh to source and a different CLI
+# (`asdf set` instead of `asdf global`). We never bootstrap it ourselves; if it
+# is already installed we use it, otherwise we print the official instructions.
+ASDF_AVAILABLE=0
+command -v asdf &>/dev/null && ASDF_AVAILABLE=1
 
-    info "No version manager found, installing asdf..."
-    if [ "$OS" = "Darwin" ]; then
-        if command -v brew &>/dev/null; then
-            brew install asdf
-            echo -e "\n. \"$(brew --prefix asdf)/libexec/asdf.sh\"" >> "$HOME/.zshrc"
-            . "$(brew --prefix asdf)/libexec/asdf.sh"
-        else
-            info "Homebrew not found, installing asdf via git..."
-            git clone https://github.com/asdf-vm/asdf.git "$HOME/.asdf" --branch v0.16.0
-            echo -e "\n. \"$HOME/.asdf/asdf.sh\"" >> "$HOME/.zshrc"
-            . "$HOME/.asdf/asdf.sh"
-        fi
+asdf_pin_home() {
+    # $1 = tool. Works with both asdf >= 0.16 (`set --home`) and older (`global`).
+    if asdf set --help &>/dev/null; then
+        asdf set --home "$1" latest
     else
-        # Linux
-        git clone https://github.com/asdf-vm/asdf.git "$HOME/.asdf" --branch v0.16.0
-        echo -e "\n. \"$HOME/.asdf/asdf.sh\"" >> "$HOME/.bashrc"
-        . "$HOME/.asdf/asdf.sh"
+        asdf global "$1" latest
     fi
-    ok "asdf installed: $(asdf version)"
 }
 
-# --- Check / Install Rust ---
+# --- Check Rust ---
 check_rust() {
     if command -v rustc &>/dev/null; then
         ok "Rust: $(rustc --version)"
-    else
+    elif [ "$ASDF_AVAILABLE" = 1 ]; then
         info "Rust not found, installing via asdf..."
         asdf plugin add rust 2>/dev/null || true
         asdf install rust latest
-        asdf set --home rust latest
+        asdf_pin_home rust
         ok "Rust installed: $(rustc --version)"
+    else
+        fail "Rust not found. Install it from https://rustup.rs (review the installer first), then re-run."
     fi
 }
 
-# --- Check / Install uv (Python package manager) ---
+# --- Check uv (Python package manager) ---
 check_uv() {
     if command -v uv &>/dev/null; then
         ok "uv: $(uv --version)"
-    else
-        info "uv not found, installing..."
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        # Add to PATH for this session
-        export PATH="$HOME/.local/bin:$PATH"
+    elif command -v brew &>/dev/null; then
+        info "uv not found, installing via Homebrew..."
+        brew install uv
         ok "uv installed: $(uv --version)"
+    else
+        fail "uv not found. Install it per https://docs.astral.sh/uv/getting-started/installation/ (pipx install uv, or your package manager), then re-run."
     fi
 }
 
-# --- Check / Install Python ---
+# --- Check Python ---
 check_python() {
     if command -v python3 &>/dev/null; then
         local version major minor
@@ -110,31 +101,30 @@ check_python() {
         fi
     fi
 
-    info "Installing Python via asdf..."
-    asdf plugin add python 2>/dev/null || true
-    asdf install python latest
-    asdf set --home python latest
-    ok "Python installed: $(python3 --version)"
+    if [ "$ASDF_AVAILABLE" = 1 ]; then
+        info "Installing Python via asdf..."
+        asdf plugin add python 2>/dev/null || true
+        asdf install python latest
+        asdf_pin_home python
+        ok "Python installed: $(python3 --version)"
+    else
+        # uv can fetch its own interpreter when `uv sync` runs.
+        warn "System Python >= 3.11 not found; uv will download one during 'uv sync'"
+    fi
 }
 
-# --- Check / Install Ollama ---
+# --- Ollama (opt-in) ---
+# The default config runs every tier on claude-cli:opus; Ollama is only needed
+# for `local:` models. Enable with NERV_SETUP_OLLAMA=1.
 check_ollama() {
     if command -v ollama &>/dev/null; then
         ok "Ollama: $(ollama --version 2>&1 || echo 'installed')"
     else
-        info "Ollama not found, installing..."
-        if [ "$OS" = "Darwin" ]; then
-            warn "Please install Ollama from https://ollama.ai/download"
-            warn "Or: brew install ollama"
-            return 1
-        else
-            curl -fsSL https://ollama.ai/install.sh | sh
-            ok "Ollama installed"
-        fi
+        warn "Ollama not found. Install it from https://ollama.com/download (or: brew install ollama), then re-run."
+        return 1
     fi
 }
 
-# --- Check / Pull Router Model ---
 check_model() {
     local model="qwen2.5:3b"
     if ollama list 2>/dev/null | grep -q "$model"; then
@@ -168,11 +158,14 @@ setup_python() {
 setup_config() {
     local config_file="$PROJECT_ROOT/config.yaml"
     if [ -f "$config_file" ]; then
-        ok "config.yaml already exists"
+        chmod 600 "$config_file"
+        ok "config.yaml already exists (mode set to 600)"
     else
         info "Creating config.yaml from default template..."
-        cp "$PROJECT_ROOT/core/config.default.yaml" "$config_file"
-        ok "config.yaml created — edit it to add your Telegram bot token and other settings"
+        # The file will hold the bot token: create it owner-only.
+        (umask 077 && cp "$PROJECT_ROOT/core/config.default.yaml" "$config_file")
+        chmod 600 "$config_file"
+        ok "config.yaml created (mode 600) — edit it to add your Telegram bot token and other settings"
     fi
 }
 
@@ -183,11 +176,14 @@ echo "║     🧠 Nerv — Environment Setup     ║"
 echo "╚══════════════════════════════════════╝"
 echo ""
 
-check_version_manager
 check_rust
 check_uv
 check_python
-check_ollama && check_model || warn "Skipping model pull (Ollama not available)"
+if [ "${NERV_SETUP_OLLAMA:-0}" = 1 ]; then
+    check_ollama && check_model || warn "Skipping model pull (Ollama not available)"
+else
+    info "Skipping Ollama (only needed for local: models; set NERV_SETUP_OLLAMA=1 to set it up)"
+fi
 build_rust
 setup_python
 setup_config
@@ -198,6 +194,6 @@ ok "Setup complete!"
 echo ""
 info "Next steps:"
 echo "  1. Edit config.yaml to add your Telegram bot token"
-echo "  2. Make sure Ollama is running: ollama serve"
-echo "  3. Start Nerv: cd core && cargo run"
+echo "  2. Start Nerv: cd core && cargo run"
+echo "  (Only if you switch models.tiers to local: models: run 'ollama serve' and re-run with NERV_SETUP_OLLAMA=1)"
 echo ""

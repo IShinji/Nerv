@@ -106,3 +106,16 @@ def get_workspace_root(project_root: Path) -> Path:
         if configured:
             return Path(configured).expanduser().resolve()
     return project_root.resolve()
+
+
+DEFAULT_MAX_TOOL_ITERATIONS = 20
+
+
+def get_max_tool_iterations(project_root: Path) -> int:
+    """Cap on native tool-loop rounds per turn (`orchestrator.max_tool_iterations`)."""
+    orch = load_project_config(project_root).get("orchestrator", {})
+    if isinstance(orch, dict):
+        value = orch.get("max_tool_iterations")
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return DEFAULT_MAX_TOOL_ITERATIONS

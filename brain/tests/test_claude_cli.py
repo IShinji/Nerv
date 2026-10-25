@@ -1,5 +1,7 @@
 """Tests for the claude-cli backend: retry, metadata, and message flattening."""
 
+import asyncio
+
 import pytest
 
 from nerv.llm import claude_cli
@@ -80,3 +82,46 @@ async def test_error_result_retried(monkeypatch) -> None:
         [{"role": "user", "content": "hi"}], model_name="opus"
     )
     assert result.content == "recovered"
+
+
+@pytest.mark.asyncio
+async def test_args_isolate_from_user_environment(monkeypatch) -> None:
+    seen: dict = {}
+
+    async def capture(args, conversation, timeout):
+        seen["args"] = args
+        return {"result": "ok"}
+
+    monkeypatch.setattr(claude_cli, "_invoke_once", capture)
+    await complete_claude_cli([{"role": "user", "content": "hi"}], model_name="opus")
+    args = seen["args"]
+    assert "--strict-mcp-config" in args
+    assert "--no-session-persistence" in args
+    assert args[args.index("--tools") + 1] == ""
+    assert args[args.index("--setting-sources") + 1] == ""
+    assert "--disallowedTools" not in args
+
+
+@pytest.mark.asyncio
+async def test_timeout_kills_child_process(monkeypatch) -> None:
+    killed = {"v": False}
+
+    class FakeProc:
+        returncode = None
+
+        async def communicate(self, data):
+            await asyncio.sleep(10)
+
+        def kill(self):
+            killed["v"] = True
+
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*a, **k):
+        return FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    with pytest.raises(RuntimeError, match="timed out"):
+        await claude_cli._invoke_once(["claude"], "hi", 0.05)
+    assert killed["v"]

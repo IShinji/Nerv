@@ -7,6 +7,7 @@ This is the central coordinator that:
 4. Returns the response
 """
 
+import asyncio
 import inspect
 import json
 import logging
@@ -17,9 +18,14 @@ from typing import Any
 
 import httpx
 
-from nerv.config import get_workspace_root
+from nerv.config import get_max_tool_iterations, get_workspace_root
 from nerv.memory.context import ContextManager
-from nerv.memory.manager import MemoryManager
+from nerv.memory.manager import (
+    DEFAULT_SCOPE,
+    MemoryManager,
+    scope_for,
+    use_scope,
+)
 from nerv.models import RouteResult
 from nerv.observability import new_trace_id, timed
 from nerv.orchestrator.registry import AgentDefinition, AgentRegistry
@@ -35,6 +41,7 @@ OLLAMA_TIMEOUT = 60.0
 
 CONFIRM_COMMANDS = {"confirm", "approve", "run", "yes", "y", "ok"}
 CANCEL_COMMANDS = {"cancel", "deny", "reject", "no", "n", "stop"}
+CASUAL_WORDS = {"yes", "y", "ok", "no", "n", "stop", "run"}
 
 
 class Orchestrator:
@@ -43,14 +50,24 @@ class Orchestrator:
     def __init__(self, project_root: Path) -> None:
         self._project_root = project_root
         self.registry = AgentRegistry(project_root)
+        # Default-scope memory, used by channel-less internal callers.
         self.memory = MemoryManager(project_root)
         self.context_manager = ContextManager(self.memory)
+        # Per-conversation memory, keyed by channel+sender, so two senders on
+        # the same instance never read each other's history.
+        self._memory_by_scope: dict[str, MemoryManager] = {DEFAULT_SCOPE: self.memory}
+        self._context_by_scope: dict[str, ContextManager] = {
+            DEFAULT_SCOPE: self.context_manager
+        }
         self.workflow_registry = WorkflowRegistry(project_root)
         self.skill_registry = SkillRegistry(project_root)
         self.review_queue = ReviewQueue(project_root)
         self.base_url = os.environ.get("NERV_OLLAMA_URL", DEFAULT_OLLAMA_URL)
         self._client = httpx.AsyncClient(timeout=OLLAMA_TIMEOUT)
         self._pending_notifications: list[str] = []
+        # Strong refs to fire-and-forget tasks; asyncio only holds weak ones,
+        # so without this the GC can cancel a summary mid-flight.
+        self._background_tasks: set[asyncio.Task[None]] = set()
         # File-backed so actions queued by the MCP server (a separate process)
         # are visible to this orchestrator's confirm/cancel flow.
         self._pending_store = PendingActionStore(project_root)
@@ -68,23 +85,83 @@ class Orchestrator:
         sender: str = "",
     ) -> str:
         """Dispatch a message to the appropriate agent and return the response."""
+        # Publish the scope for the duration of the turn: builtin memory tools
+        # are module-level and read it to stay inside this sender's history.
+        with use_scope(scope_for(channel, sender)):
+            response = await self._dispatch(message, route_result, channel, sender)
+            self._schedule_summary_backfill(channel, sender)
+            return response
+
+    async def dispatch_pending_command(
+        self, message: str, channel: str = "", sender: str = ""
+    ) -> str | None:
+        """Handle ``confirm <id>`` / ``cancel <id>`` without any routing.
+
+        Returns the reply, or None when ``message`` is not a pending-action
+        command for this scope (the caller then routes it normally).
+        """
+        with use_scope(scope_for(channel, sender)):
+            reply = await self._handle_pending_action_command(
+                message, sender=sender, channel=channel
+            )
+            if reply:
+                memory, _ = self._memory_for(channel, sender)
+                self._remember_turn(message, reply, memory)
+            return reply or None
+
+    def _schedule_summary_backfill(self, channel: str, sender: str) -> None:
+        """Kick off summarising any unsummarised past day, off the reply path.
+
+        Fire-and-forget on purpose: a summary is an optimisation for later
+        turns, so it must never add latency to this reply or fail it.
+        """
+        memory, _ = self._memory_for(channel, sender)
+        if not memory.days_needing_summary(limit=1):
+            return
+
+        from nerv.memory.summarizer import backfill_summaries
+
+        async def _run() -> None:
+            try:
+                await backfill_summaries(
+                    memory,
+                    model=self._select_model(0),
+                    project_root=self._project_root,
+                )
+            except Exception as e:
+                logger.warning("Summary backfill failed: %s", e)
+
+        task = asyncio.create_task(_run())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _dispatch(
+        self,
+        message: str,
+        route_result: RouteResult,
+        channel: str,
+        sender: str,
+    ) -> str:
+        """Run one turn. Callers go through :meth:`dispatch`, which binds scope."""
+        memory, context_manager = self._memory_for(channel, sender)
+
         pending_response = await self._handle_pending_action_command(
             message,
             sender=sender,
             channel=channel,
         )
         if pending_response:
-            self._remember_turn(message, pending_response)
+            self._remember_turn(message, pending_response, memory)
             return pending_response
 
         review_response = self._handle_review_queue_command(message)
         if review_response:
-            self._remember_turn(message, review_response)
+            self._remember_turn(message, review_response, memory)
             return review_response
 
         # If the router already provided a direct reply, use it
         if route_result.reply:
-            self._remember_turn(message, route_result.reply)
+            self._remember_turn(message, route_result.reply, memory)
             return route_result.reply
 
         # Find the matching agent, or manufacture one
@@ -96,8 +173,8 @@ class Orchestrator:
             route_result.model_tier,
         )
 
-        # 1. Save user's message to persistent memory
-        self.memory.append_message("user", message)
+        # 1. Save user's message to this conversation's persistent memory
+        memory.append_message("user", message)
 
         # Select model based on tier
         model = self._select_model(route_result.model_tier)
@@ -110,7 +187,7 @@ class Orchestrator:
                 agent, message, route_result.model_tier, model
             )
             if fallback_response is not None:
-                self.memory.append_message("assistant", fallback_response)
+                memory.append_message("assistant", fallback_response)
                 return fallback_response
 
         # 2. Build contextual messages (System + Facts + History + Current msg)
@@ -119,7 +196,7 @@ class Orchestrator:
             self.workflow_registry.render_catalog(agent),
             self.skill_registry.render_catalog(agent),
         ]
-        messages = self.context_manager.build_messages(
+        messages = context_manager.build_messages(
             agent,
             message,
             max_history_msg=10,
@@ -132,6 +209,10 @@ class Orchestrator:
             from nerv.capabilities import capability_registry
 
             tools_schemas = capability_registry.get_schemas(agent.tools)
+
+        # Actions already waiting before this turn; anything new afterwards was
+        # queued during it (possibly by the MCP server process).
+        known_pending = {a.id for a in self._visible_pending_actions(sender, channel)}
 
         # Call the model (traced for observability + reliability debugging)
         try:
@@ -153,8 +234,12 @@ class Orchestrator:
                     channel=channel,
                 )
 
+            response = self._append_new_pending(
+                response, known_pending, sender, channel
+            )
+
             # 3. Save assistant's reply to memory
-            self.memory.append_message("assistant", response)
+            memory.append_message("assistant", response)
 
             return response
         except Exception as e:
@@ -165,6 +250,29 @@ class Orchestrator:
                 "I hit a problem reaching the model and couldn't complete that "
                 "just now. Please try again in a moment."
             )
+
+    def _append_new_pending(
+        self, response: str, known_ids: set[int], sender: str, channel: str
+    ) -> str:
+        """Mention actions queued during the turn that the reply doesn't cover.
+
+        Under the claude-cli backend the MCP server (a separate process) queues
+        suspended actions in the shared store; the model may not mention them,
+        so the user would never learn that something awaits approval.
+        """
+        new_actions = [
+            a
+            for a in self._visible_pending_actions(sender, channel)
+            if a.id not in known_ids and f"#{a.id}" not in response
+        ]
+        if not new_actions:
+            return response
+        lines = ["", "Waiting for your confirmation:"]
+        for action in new_actions:
+            reason = f" — {action.reason}" if action.reason else ""
+            lines.append(f"- {self._format_pending_action(action)}{reason}")
+        lines.append('Reply "confirm <id>" to run one, or "cancel <id>" to discard it.')
+        return response + "\n".join(lines)
 
     async def _find_agent(
         self, route_result: RouteResult, message_hint: str
@@ -188,7 +296,7 @@ class Orchestrator:
 
         if new_agent:
             # Hot-reload the new agent into memory
-            self.registry.agents[new_agent.name] = new_agent
+            self.registry._agents[new_agent.name] = new_agent
             logger.info(
                 "Successfully birthed and registered new expert: '%s'", new_agent.name
             )
@@ -209,10 +317,66 @@ class Orchestrator:
         logger.debug("Selected model for tier %d: %s", tier, model)
         return model
 
-    def _remember_turn(self, user_message: str, assistant_message: str) -> None:
+    def _memory_for(
+        self, channel: str, sender: str
+    ) -> tuple[MemoryManager, ContextManager]:
+        """Return the memory and context manager for one conversation scope."""
+        scope = scope_for(channel, sender)
+        memory = self._memory_by_scope.get(scope)
+        if memory is None:
+            memory = MemoryManager(self._project_root, scope)
+            self._memory_by_scope[scope] = memory
+            self._context_by_scope[scope] = ContextManager(memory)
+        return memory, self._context_by_scope[scope]
+
+    def _remember_turn(
+        self,
+        user_message: str,
+        assistant_message: str,
+        memory: MemoryManager | None = None,
+    ) -> None:
         """Persist a direct user/assistant turn without invoking the model."""
-        self.memory.append_message("user", user_message)
-        self.memory.append_message("assistant", assistant_message)
+        target = memory or self.memory
+        target.append_message("user", user_message)
+        target.append_message("assistant", assistant_message)
+
+    async def _model_available(self, model: str) -> bool:
+        """Whether the provider-prefixed ``model`` can serve a request right now."""
+        import shutil
+
+        from nerv.llm.client import parse_model
+
+        provider, name = parse_model(model)
+        if provider == "claude-cli":
+            # Uses the logged-in subscription, not an API key.
+            from nerv.llm.claude_cli import CLAUDE_BIN
+
+            return shutil.which(CLAUDE_BIN) is not None
+        if provider == "local":
+            try:
+                resp = await self._client.post(
+                    f"{self.base_url}/api/show", json={"name": name}, timeout=5
+                )
+                return resp.status_code == 200
+            except Exception:
+                return False
+
+        # litellm: the API key depends on the vendor, which is either a
+        # "vendor/model" prefix or recognisable from the bare model name.
+        vendor = name.split("/", 1)[0].lower()
+        key_checks = {
+            "gemini": "GEMINI_API_KEY",
+            "claude": "ANTHROPIC_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "gpt": "OPENAI_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "o1": "OPENAI_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
+        }
+        for prefix, env_var in key_checks.items():
+            if vendor.startswith(prefix):
+                return bool(os.environ.get(env_var))
+        return False
 
     async def _try_workflow_fallback(
         self,
@@ -228,47 +392,7 @@ class Orchestrator:
         workflow in the user's workflow library and executes it instead.
         Returns None if no fallback is needed or available.
         """
-        is_local = selected_model.startswith("local:")
-        actual_model = selected_model[6:] if is_local else selected_model
-
-        model_available = False
-
-        if selected_model.startswith("claude-cli:"):
-            # The Claude Code backend is available whenever the CLI is on PATH;
-            # it uses the logged-in subscription, not an API key.
-            import shutil
-
-            from nerv.llm.claude_cli import CLAUDE_BIN
-
-            model_available = shutil.which(CLAUDE_BIN) is not None
-        elif is_local:
-            # Probe Ollama to confirm the model actually exists
-            try:
-                resp = await self._client.post(
-                    f"{self.base_url}/api/show",
-                    json={"name": actual_model},
-                    timeout=5,
-                )
-                model_available = resp.status_code == 200
-            except Exception:
-                model_available = False
-        else:
-            # For cloud models, check if relevant API key exists
-            import os
-
-            key_checks = {
-                "gemini": "GEMINI_API_KEY",
-                "claude": "ANTHROPIC_API_KEY",
-                "gpt": "OPENAI_API_KEY",
-                "o1": "OPENAI_API_KEY",
-                "deepseek": "DEEPSEEK_API_KEY",
-            }
-            for prefix, env_var in key_checks.items():
-                if actual_model.startswith(prefix) or selected_model.startswith(prefix):
-                    model_available = bool(os.environ.get(env_var))
-                    break
-            else:
-                model_available = False
+        model_available = await self._model_available(selected_model)
 
         if model_available:
             logger.debug(
@@ -342,7 +466,8 @@ class Orchestrator:
 
             load_dotenv(env_path)
 
-        while True:
+        max_rounds = get_max_tool_iterations(self._project_root)
+        for _round in range(max_rounds):
             result = await complete(
                 messages,
                 model=model,
@@ -383,7 +508,11 @@ class Orchestrator:
                     executable_name = resolution.provider_name
 
                     reason = confirmation_reason(
-                        executable_name, arguments, self._workspace_root
+                        executable_name,
+                        arguments,
+                        self._workspace_root,
+                        requires_confirmation=tool_def.requires_confirmation,
+                        project_root=self._project_root,
                     )
                     if reason:
                         pending_action = self._queue_pending_action(
@@ -429,6 +558,13 @@ class Orchestrator:
                 return "I received an empty response from the model."
             return content
 
+        logger.warning("Tool loop stopped after %d rounds", max_rounds)
+        return (
+            f"I stopped after {max_rounds} rounds of tool calls without reaching "
+            "a final answer. Try a narrower request, or raise "
+            "orchestrator.max_tool_iterations in the config."
+        )
+
     def _queue_pending_action(
         self,
         tool_name: str,
@@ -444,6 +580,7 @@ class Orchestrator:
             reason=reason,
             sender=sender,
             channel=channel,
+            scope=scope_for(channel, sender) if (sender or channel) else "",
         )
 
     def _format_pending_action(self, action: PendingRecord) -> str:
@@ -485,20 +622,27 @@ class Orchestrator:
     def _visible_pending_actions(
         self, sender: str, channel: str
     ) -> list[PendingRecord]:
-        """Return pending actions scoped to the current sender/channel.
+        """Return pending actions that belong to exactly this sender/channel.
 
-        Actions queued without a sender/channel (e.g. by the MCP server) are
-        unscoped and therefore visible to everyone.
+        An action is visible only to the scope that queued it. Unscoped actions
+        (no sender, channel, or scope) are visible only to an unscoped caller
+        such as the local CLI, never to a remote sender.
         """
         actions = self._pending_store.list()
-        if sender or channel:
-            return [
-                action
-                for action in actions
-                if (not sender or not action.sender or action.sender == sender)
-                and (not channel or not action.channel or action.channel == channel)
-            ]
-        return actions
+        if not (sender or channel):
+            return [a for a in actions if not (a.sender or a.channel or a.scope)]
+        wanted = scope_for(channel, sender)
+        return [
+            a
+            for a in actions
+            if (a.scope and a.scope == wanted)
+            or (
+                not a.scope
+                and (a.sender or a.channel)
+                and a.sender == sender
+                and a.channel == channel
+            )
+        ]
 
     async def _handle_pending_action_command(
         self,
@@ -524,6 +668,13 @@ class Orchestrator:
 
         command = command_match.group(1)
         action_id = command_match.group(2)
+
+        # Plain chat words ("yes", "ok", "no", "stop") must never run or cancel
+        # a queued action, and running one always names its id.
+        if command in CONFIRM_COMMANDS and not action_id:
+            return None
+        if command in CANCEL_COMMANDS and not action_id and command in CASUAL_WORDS:
+            return None
 
         if action_id:
             target = next(
@@ -563,7 +714,7 @@ class Orchestrator:
         if inspect.iscoroutinefunction(tool_def.func):
             result = await tool_def.func(**action.arguments)
         else:
-            result = tool_def.func(**action.arguments)
+            result = await asyncio.to_thread(tool_def.func, **action.arguments)
 
         status = "Executed" if not result.is_error else "Execution failed for"
         return (
@@ -637,5 +788,20 @@ class Orchestrator:
             logger.debug("Proactive monitor check failed", exc_info=True)
 
         if self._pending_notifications:
-            return self._pending_notifications.pop(0)
+            # Deliver everything queued in one batched reply; draining one per
+            # 30 s tick would lag far behind a chatty workflow.
+            batch, self._pending_notifications = self._pending_notifications, []
+            return "\n".join(batch)
         return None
+
+    async def aclose(self) -> None:
+        """Release the orchestrator's network resources.
+
+        Called on brain shutdown so the shared httpx client's connection pool
+        is closed instead of being reclaimed by the interpreter exiting.
+        """
+        if self._background_tasks:
+            # Let in-flight summaries finish rather than losing the work; they
+            # already swallow their own errors, so gather cannot raise here.
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        await self._client.aclose()

@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from nerv.mcp.client import McpServerConfig
+from nerv.mcp.client import DEFAULT_MCP_REQUEST_TIMEOUT, McpServerConfig
 
 ArgumentBuilder = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -200,4 +200,12 @@ def merge_preset_into_server_config(
         cwd=cwd,
         capabilities=capabilities,
         action_map=action_map,
+        request_timeout=_parse_timeout(raw_value.get("request_timeout")),
     )
+
+
+def _parse_timeout(value: Any) -> float:
+    """A positive number of seconds, else the default."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+        return float(value)
+    return DEFAULT_MCP_REQUEST_TIMEOUT

@@ -3,8 +3,8 @@
 import json
 from pathlib import Path
 
-from nerv.memory.context import ContextManager
-from nerv.memory.manager import MemoryManager
+from nerv.memory.context import ContextManager, estimate_tokens
+from nerv.memory.manager import DEFAULT_SCOPE, MemoryManager, scope_for
 from nerv.memory.models import ChatMessage, DailyConversation
 from nerv.orchestrator.registry import AgentDefinition
 from nerv.orchestrator.runtime_policy import build_system_prompt
@@ -24,13 +24,18 @@ def test_memory_manager_save_and_load(tmp_path: Path) -> None:
     )
     manager.save_conversation(conv)
 
-    # Check file exists and is parsable
+    # Check file exists and is parsable — one JSON object per line
     file_path = manager._get_daily_file("2026-04-11")
     assert file_path.exists()
 
-    with open(file_path, encoding="utf-8") as f:
-        data = json.load(f)
-        assert len(data["messages"]) == 2
+    lines = file_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["content"] == "hello"
+    assert json.loads(lines[1])["content"] == "hi there"
+
+    # And it round-trips back through the manager
+    reloaded = manager.load_conversation("2026-04-11")
+    assert [m.content for m in reloaded.messages] == ["hello", "hi there"]
 
 
 def test_memory_manager_load_recent(tmp_path: Path) -> None:
@@ -80,10 +85,15 @@ def test_context_manager_build_messages_limits(tmp_path: Path) -> None:
     user_msg = "hello"
     short_history = "short"
     oversized_history = "huge history message that does not fit at all"
-    base_tokens = len(build_system_prompt(agent))
-    lower_bound = (base_tokens + len(user_msg) + len(short_history)) / 0.9
+    base_tokens = estimate_tokens(build_system_prompt(agent))
+    lower_bound = (
+        base_tokens + estimate_tokens(user_msg) + estimate_tokens(short_history)
+    ) / 0.9
     upper_bound = (
-        base_tokens + len(user_msg) + len(short_history) + len(oversized_history)
+        base_tokens
+        + estimate_tokens(user_msg)
+        + estimate_tokens(short_history)
+        + estimate_tokens(oversized_history)
     ) / 0.9
     agent.max_context_tokens = int((lower_bound + upper_bound) / 2)
 
@@ -163,3 +173,105 @@ def test_context_manager_injects_extra_system_sections(tmp_path: Path) -> None:
     system_prompt = messages[0]["content"]
     assert "[Workflow Library]" in system_prompt
     assert "[Skill Library]" in system_prompt
+
+
+def _append_worker(root: str, tag: str) -> None:
+    """Top-level so it is importable by a spawned process."""
+    manager = MemoryManager(Path(root), "concurrent")
+    for i in range(20):
+        manager.append_message("user", f"{tag}-{i}")
+
+
+def test_scope_for_derives_stable_slug() -> None:
+    """Channel + sender collapse into one filesystem-safe scope."""
+    assert scope_for() == DEFAULT_SCOPE
+    assert scope_for("", "") == DEFAULT_SCOPE
+    assert scope_for("telegram", "12345") == "telegram-12345"
+    assert scope_for("Telegram", "user@example.com") == "telegram-user-example.com"
+    # Path separators must never survive into a directory name.
+    assert "/" not in scope_for("cli", "../../etc/passwd")
+
+
+def test_conversations_are_isolated_per_scope(tmp_path: Path) -> None:
+    """Two senders on the same instance must not read each other's history."""
+    alice = MemoryManager(tmp_path, scope_for("telegram", "alice"))
+    bob = MemoryManager(tmp_path, scope_for("telegram", "bob"))
+
+    alice.append_message("user", "my bank pin is 1234")
+    bob.append_message("user", "hello")
+
+    assert [m.content for m in alice.load_recent_messages()] == ["my bank pin is 1234"]
+    assert [m.content for m in bob.load_recent_messages()] == ["hello"]
+    assert alice.conv_dir != bob.conv_dir
+
+
+def test_default_scope_keeps_legacy_paths(tmp_path: Path) -> None:
+    """An existing install's conversations stay where they were."""
+    manager = MemoryManager(tmp_path)
+    assert manager.conv_dir == tmp_path / "personal" / "memory" / "conversations"
+
+
+def test_facts_are_shared_across_scopes(tmp_path: Path) -> None:
+    """Facts describe the owner, so they follow them across channels."""
+    cli = MemoryManager(tmp_path)
+    telegram = MemoryManager(tmp_path, scope_for("telegram", "owner"))
+
+    cli.append_fact("Owner prefers metric units.")
+    assert "metric units" in telegram.read_facts()
+
+
+def test_legacy_json_day_is_read_and_migrated(tmp_path: Path) -> None:
+    """Pre-JSONL day files still load, and fold in on the next append."""
+    manager = MemoryManager(tmp_path)
+    today = manager._get_today_str()
+    legacy = manager._legacy_daily_file(today)
+    legacy.write_text(
+        DailyConversation(
+            date=today,
+            messages=[ChatMessage(role="user", content="old turn")],
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    # Readable before any migration happens.
+    assert [m.content for m in manager.load_recent_messages()] == ["old turn"]
+
+    manager.append_message("assistant", "new turn")
+
+    assert not legacy.exists()
+    assert manager._get_daily_file(today).exists()
+    assert [m.content for m in manager.load_recent_messages()] == [
+        "old turn",
+        "new turn",
+    ]
+
+
+def test_append_is_durable_under_concurrent_processes(tmp_path: Path) -> None:
+    """Concurrent appends from separate processes must not lose messages."""
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    procs = [
+        ctx.Process(target=_append_worker, args=(str(tmp_path), tag))
+        for tag in ("a", "b", "c")
+    ]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join(timeout=60)
+        assert proc.exitcode == 0
+
+    manager = MemoryManager(tmp_path, "concurrent")
+    contents = {m.content for m in manager.load_recent_messages(limit=1000)}
+    assert len(contents) == 60
+
+
+def test_estimate_tokens_is_close_to_real_ratios() -> None:
+    """Latin text is ~4 chars/token; CJK is ~1 token/char."""
+    latin = "the quick brown fox jumps over the lazy dog"  # 43 chars
+    assert 10 <= estimate_tokens(latin) <= 16
+
+    cjk = "西雅图时间现在几点"  # 9 chars
+    assert estimate_tokens(cjk) == 9
+
+    assert estimate_tokens("") == 0

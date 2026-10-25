@@ -63,6 +63,10 @@ impl super::ChannelAdapter for CliAdapter {
         Ok(())
     }
 
+    async fn broadcast(&self, text: &str) {
+        println!("\n{text}\n");
+    }
+
     fn channel_type(&self) -> ChannelType {
         ChannelType::Cli
     }

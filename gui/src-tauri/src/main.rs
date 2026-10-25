@@ -1,107 +1,96 @@
 // Prevents an extra console window on Windows in release.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
+use nerv_shared::brain_client::{BrainClient, BrainSpawnConfig};
+use nerv_shared::config::NervConfig;
 use serde::Serialize;
 use tauri::State;
-
-/// A long-lived Python brain subprocess spoken to over newline-delimited JSON-RPC.
-struct Brain {
-    _child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-    next_id: u64,
-}
-
-impl Brain {
-    fn spawn(brain_dir: &PathBuf, project_root: &PathBuf) -> std::io::Result<Self> {
-        let mut child = Command::new("uv")
-            .args(["run", "python", "-m", "nerv"])
-            .current_dir(brain_dir)
-            .env("NERV_PROJECT_ROOT", project_root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-        let stdin = child.stdin.take().expect("brain stdin");
-        let stdout = BufReader::new(child.stdout.take().expect("brain stdout"));
-        Ok(Brain {
-            _child: child,
-            stdin,
-            stdout,
-            next_id: 1,
-        })
-    }
-
-    fn call(
-        &mut self,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
-        let id = self.next_id;
-        self.next_id += 1;
-
-        let req = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": id,
-        });
-        let line = serde_json::to_string(&req).map_err(|e| e.to_string())?;
-        self.stdin
-            .write_all(line.as_bytes())
-            .map_err(|e| e.to_string())?;
-        self.stdin.write_all(b"\n").map_err(|e| e.to_string())?;
-        self.stdin.flush().map_err(|e| e.to_string())?;
-
-        loop {
-            let mut buf = String::new();
-            let n = self.stdout.read_line(&mut buf).map_err(|e| e.to_string())?;
-            if n == 0 {
-                return Err("brain process closed".into());
-            }
-            let trimmed = buf.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let val: serde_json::Value = match serde_json::from_str(trimmed) {
-                Ok(v) => v,
-                Err(_) => continue, // ignore non-JSON log noise on stdout
-            };
-            if val.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                if let Some(err) = val.get("error") {
-                    return Err(err.to_string());
-                }
-                return Ok(val
-                    .get("result")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null));
-            }
-        }
-    }
-}
+use tokio::sync::Mutex;
 
 struct AppState {
-    brain: Mutex<Option<Brain>>,
-    brain_dir: PathBuf,
+    /// Spawned on first use and supervised from then on.
+    brain: Mutex<Option<Arc<BrainClient>>>,
     project_root: PathBuf,
 }
 
 impl AppState {
-    /// Lazily spawn the brain on first use, then run `f` against it.
-    fn with_brain<R>(&self, f: impl FnOnce(&mut Brain) -> Result<R, String>) -> Result<R, String> {
-        let mut guard = self.brain.lock().map_err(|e| e.to_string())?;
-        if guard.is_none() {
-            let brain =
-                Brain::spawn(&self.brain_dir, &self.project_root).map_err(|e| e.to_string())?;
-            *guard = Some(brain);
+    /// Return the running brain, starting it on first use.
+    async fn brain(&self) -> Result<Arc<BrainClient>, String> {
+        let mut guard = self.brain.lock().await;
+        if let Some(brain) = guard.as_ref() {
+            return Ok(brain.clone());
         }
-        f(guard.as_mut().expect("brain present"))
+
+        let brain = Arc::new(BrainClient::new(brain_spawn_config(&self.project_root)));
+        brain.start().await.map_err(|e| e.to_string())?;
+        *guard = Some(brain.clone());
+        Ok(brain)
     }
+
+    /// Ask the brain for a `reply` string.
+    async fn reply(&self, method: &str, params: serde_json::Value) -> Result<String, String> {
+        let brain = self.brain().await?;
+        let result = brain
+            .call(method, params)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(result
+            .get("reply")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
+    }
+}
+
+/// Build the brain spawn config from `config.yaml`, exactly like the gateway.
+///
+/// Reading the same config is the point: the GUI used to hardcode
+/// `uv run python -m nerv`, so a user who changed the interpreter or module in
+/// config got a different brain depending on which host launched it.
+fn brain_spawn_config(project_root: &Path) -> BrainSpawnConfig {
+    let spawn = brain_spawn_config_inner(project_root);
+    let path = child_path(
+        std::env::var("PATH").ok().as_deref(),
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+    );
+    spawn.with_env("PATH", path)
+}
+
+fn brain_spawn_config_inner(project_root: &Path) -> BrainSpawnConfig {
+    let brain_dir = project_root.join("brain");
+
+    let config = match NervConfig::load(project_root) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("[nerv-gui] falling back to default brain settings: {e}");
+            return BrainSpawnConfig::python("uv run python", "nerv", &brain_dir)
+                .with_env("NERV_PROJECT_ROOT", project_root.to_string_lossy());
+        }
+    };
+
+    for warning in config.startup_warnings(project_root) {
+        eprintln!("[nerv-gui] warning: {warning}");
+    }
+
+    BrainSpawnConfig::python(
+        &config.brain.python_command,
+        &config.brain.module,
+        &brain_dir,
+    )
+    .with_restart_max(config.brain.restart_max)
+    .with_call_timeout(Duration::from_secs(config.brain.call_timeout_secs))
+    .with_env("NERV_PROJECT_ROOT", project_root.to_string_lossy())
+    .with_env("NERV_ROUTER_MODEL", &config.models.router.model)
+    .with_env("NERV_OLLAMA_URL", &config.models.router.base_url)
+    .with_env("NERV_MODEL_TIER0", &config.models.tiers.tier0)
+    .with_env("NERV_MODEL_TIER1", &config.models.tiers.tier1)
+    .with_env("NERV_MODEL_TIER2", &config.models.tiers.tier2)
+    .with_env("NERV_MODEL_TIER3", &config.models.tiers.tier3)
 }
 
 #[derive(Serialize)]
@@ -111,34 +100,22 @@ struct Agent {
 }
 
 #[tauri::command]
-fn send_message(state: State<AppState>, text: String) -> Result<String, String> {
-    state.with_brain(|brain| {
-        let result = brain.call(
+async fn send_message(state: State<'_, AppState>, text: String) -> Result<String, String> {
+    state
+        .reply(
             "route",
             serde_json::json!({"message": text, "channel": "gui", "sender": "gui-user"}),
-        )?;
-        Ok(result
-            .get("reply")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string())
-    })
+        )
+        .await
 }
 
 #[tauri::command]
-fn check_heartbeat(state: State<AppState>) -> Result<String, String> {
-    state.with_brain(|brain| {
-        let result = brain.call("heartbeat", serde_json::json!({}))?;
-        Ok(result
-            .get("reply")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string())
-    })
+async fn check_heartbeat(state: State<'_, AppState>) -> Result<String, String> {
+    state.reply("heartbeat", serde_json::json!({})).await
 }
 
 #[tauri::command]
-fn list_agents(state: State<AppState>) -> Result<Vec<Agent>, String> {
+async fn list_agents(state: State<'_, AppState>) -> Result<Vec<Agent>, String> {
     let mut agents = Vec::new();
     for sub in ["agents", "personal/agents"] {
         let dir = state.project_root.join(sub);
@@ -180,9 +157,21 @@ fn extract_field(text: &str, key: &str) -> Option<String> {
     None
 }
 
-/// Walk up from the working directory to find the Nerv project root.
+/// Find the Nerv project root: `NERV_PROJECT_ROOT` wins (a packaged app
+/// launched from Finder has an unrelated cwd), otherwise walk up from the
+/// working directory.
 fn find_project_root() -> PathBuf {
-    if let Ok(cwd) = std::env::current_dir() {
+    resolve_project_root(
+        std::env::var_os("NERV_PROJECT_ROOT"),
+        std::env::current_dir().ok(),
+    )
+}
+
+fn resolve_project_root(env_root: Option<OsString>, cwd: Option<PathBuf>) -> PathBuf {
+    if let Some(root) = env_root.filter(|r| !r.is_empty()) {
+        return PathBuf::from(root);
+    }
+    if let Some(cwd) = cwd {
         for ancestor in cwd.ancestors() {
             if ancestor.join("brain").is_dir() && ancestor.join("core").is_dir() {
                 return ancestor.to_path_buf();
@@ -192,14 +181,33 @@ fn find_project_root() -> PathBuf {
     PathBuf::from("..")
 }
 
+/// PATH for the brain child. An app started from Finder inherits a minimal
+/// PATH, so `uv`/`python` installed by Homebrew, uv or rustup would not be
+/// found; prepend the usual user bin dirs (without duplicating entries).
+fn child_path(existing: Option<&str>, home: Option<&Path>) -> String {
+    let mut dirs: Vec<String> = vec!["/opt/homebrew/bin".into(), "/usr/local/bin".into()];
+    if let Some(home) = home {
+        dirs.push(home.join(".local/bin").to_string_lossy().into_owned());
+        dirs.push(home.join(".cargo/bin").to_string_lossy().into_owned());
+    }
+    let mut out: Vec<String> = Vec::new();
+    for dir in dirs
+        .into_iter()
+        .chain(existing.unwrap_or("").split(':').map(str::to_string))
+    {
+        if !dir.is_empty() && !out.contains(&dir) {
+            out.push(dir);
+        }
+    }
+    out.join(":")
+}
+
 fn main() {
     let project_root = find_project_root();
-    let brain_dir = project_root.join("brain");
 
     tauri::Builder::default()
         .manage(AppState {
             brain: Mutex::new(None),
-            brain_dir,
             project_root,
         })
         .invoke_handler(tauri::generate_handler![
@@ -209,4 +217,115 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Nerv GUI");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_root_prefers_env_override() {
+        let root = resolve_project_root(Some("/srv/nerv".into()), Some(PathBuf::from("/")));
+        assert_eq!(root, PathBuf::from("/srv/nerv"));
+    }
+
+    #[test]
+    fn project_root_ignores_empty_env_and_walks_up_from_cwd() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("brain")).unwrap();
+        std::fs::create_dir_all(dir.path().join("core")).unwrap();
+        let nested = dir.path().join("gui").join("src-tauri");
+        std::fs::create_dir_all(&nested).unwrap();
+        let root = resolve_project_root(Some("".into()), Some(nested));
+        assert_eq!(root, dir.path());
+    }
+
+    #[test]
+    fn child_path_prepends_common_bins_without_duplicates() {
+        let path = child_path(
+            Some("/usr/bin:/opt/homebrew/bin:/bin"),
+            Some(Path::new("/Users/me")),
+        );
+        assert_eq!(
+            path,
+            "/opt/homebrew/bin:/usr/local/bin:/Users/me/.local/bin:/Users/me/.cargo/bin:/usr/bin:/bin"
+        );
+    }
+
+    #[test]
+    fn child_path_works_with_minimal_environment() {
+        assert_eq!(child_path(None, None), "/opt/homebrew/bin:/usr/local/bin");
+    }
+
+    #[test]
+    fn spawn_config_sets_path_env() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let spawn = brain_spawn_config(dir.path());
+        assert!(spawn
+            .env
+            .iter()
+            .any(|(k, v)| k == "PATH" && v.starts_with("/opt/homebrew/bin")));
+    }
+
+    #[test]
+    fn extract_field_reads_a_quoted_value() {
+        let yaml = "name: \"Coder\"\ndescription: 'Writes code'\n";
+        assert_eq!(extract_field(yaml, "name").as_deref(), Some("Coder"));
+        assert_eq!(
+            extract_field(yaml, "description").as_deref(),
+            Some("Writes code")
+        );
+    }
+
+    #[test]
+    fn extract_field_ignores_missing_and_empty_values() {
+        assert_eq!(extract_field("name:\n", "name"), None);
+        assert_eq!(extract_field("other: 1\n", "name"), None);
+    }
+
+    #[test]
+    fn brain_spawn_config_falls_back_when_config_is_absent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let spawn = brain_spawn_config(dir.path());
+
+        assert_eq!(spawn.command, "uv run python");
+        assert_eq!(spawn.args, vec!["-m", "nerv"]);
+        assert_eq!(spawn.working_dir, dir.path().join("brain"));
+        assert!(spawn
+            .env
+            .iter()
+            .any(|(k, v)| k == "NERV_PROJECT_ROOT" && v == &dir.path().to_string_lossy()));
+    }
+
+    #[test]
+    fn brain_spawn_config_follows_the_shared_config_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("core")).unwrap();
+        std::fs::write(
+            dir.path().join("core").join("config.default.yaml"),
+            r#"
+channels:
+  cli:
+    enabled: true
+models:
+  router:
+    model: "claude-cli:opus"
+brain:
+  python_command: "python3"
+  module: "nerv"
+  call_timeout_secs: 42
+"#,
+        )
+        .unwrap();
+
+        let spawn = brain_spawn_config(dir.path());
+
+        // The GUI must honor the same interpreter the gateway would use.
+        assert_eq!(spawn.command, "python3");
+        assert_eq!(spawn.call_timeout, Duration::from_secs(42));
+        assert!(spawn
+            .env
+            .iter()
+            .any(|(k, v)| k == "NERV_MODEL_TIER0" && v == "claude-cli:opus"));
+    }
 }

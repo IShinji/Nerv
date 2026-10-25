@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from nerv.llm.client import CompletionResult
+from nerv.memory.manager import active_scope
 from nerv.observability import log_event
 
 logger = logging.getLogger(__name__)
@@ -24,24 +25,17 @@ logger = logging.getLogger(__name__)
 CLAUDE_BIN = os.environ.get("NERV_CLAUDE_BIN", "claude")
 MCP_SERVER_NAME = "nerv"
 
-# Claude Code's own built-in tools. We disable them so it behaves as a pure
-# model and only acts through Nerv's MCP-exposed tools.
-_CC_BUILTIN_TOOLS = [
-    "Bash",
-    "Edit",
-    "MultiEdit",
-    "Write",
-    "Read",
-    "Glob",
-    "Grep",
-    "LS",
-    "WebFetch",
-    "WebSearch",
-    "Task",
-    "TodoWrite",
-    "NotebookEdit",
-    "BashOutput",
-    "KillShell",
+# Flags that isolate `claude -p` from the user's personal Claude Code setup
+# (global CLAUDE.md, hooks, plugins, MCP servers, skills, built-in tools).
+# `--tools ""` removes every built-in tool; Nerv tools arrive only via MCP.
+_ISOLATION_ARGS = [
+    "--tools",
+    "",
+    "--setting-sources",
+    "",
+    "--strict-mcp-config",
+    "--no-session-persistence",
+    "--disable-slash-commands",
 ]
 
 
@@ -94,7 +88,12 @@ def _write_mcp_config(project_root: Path) -> Path:
                 "command": "uv",
                 "args": ["run", "python", "-m", "nerv.mcp_server"],
                 "cwd": str(project_root / "brain"),
-                "env": {"NERV_PROJECT_ROOT": str(project_root)},
+                "env": {
+                    "NERV_PROJECT_ROOT": str(project_root),
+                    # Memory tools in the MCP process must read this request's
+                    # scope, not the default one.
+                    "NERV_MEMORY_SCOPE": active_scope(),
+                },
             }
         }
     }
@@ -128,8 +127,7 @@ async def complete_claude_cli(
         model_name or "opus",
         "--output-format",
         "json",
-        "--disallowedTools",
-        *_CC_BUILTIN_TOOLS,
+        *_ISOLATION_ARGS,
     ]
     if system_prompt:
         args += ["--system-prompt", system_prompt]
@@ -142,7 +140,6 @@ async def complete_claude_cli(
         args += [
             "--mcp-config",
             str(mcp_config_path),
-            "--strict-mcp-config",
             "--allowedTools",
             *allowed,
         ]
@@ -211,18 +208,25 @@ async def _invoke_once(
     args: list[str], conversation: str, timeout: float
 ) -> dict[str, Any]:
     """Run the claude CLI once; raise RuntimeError on any transient failure."""
+    # Run from a scratch cwd so project/user CLAUDE.md files are not discovered.
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=tempfile.gettempdir(),
+    )
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(conversation.encode("utf-8")),
             timeout=timeout,
         )
-    except TimeoutError as exc:
+    except (TimeoutError, asyncio.CancelledError) as exc:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        if isinstance(exc, asyncio.CancelledError):
+            raise
         raise RuntimeError(f"claude CLI timed out after {timeout}s") from exc
 
     if proc.returncode != 0:

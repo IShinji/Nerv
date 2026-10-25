@@ -23,6 +23,66 @@ PATH_ARG_BY_TOOL: dict[str, str] = {
 }
 
 
+# Paths under the project root that hold secrets, config, or executable code.
+# Even inside the workspace they are never readable or writable by tools without
+# confirmation (writes) or at all (reads): writing code/config is privilege
+# escalation, and personal/ holds credentials.
+SECRET_RELATIVE_PATHS: tuple[str, ...] = ("config.yaml", "personal")
+CODE_RELATIVE_PATHS: tuple[str, ...] = (
+    "brain",
+    "core",
+    "gui",
+    "agents",
+    "scripts",
+    ".git",
+    ".github",
+)
+
+# Individual file names that are protected wherever they appear.
+PROTECTED_FILE_NAMES: frozenset[str] = frozenset(
+    {"config.yaml", "api_keys.env", "pending_actions.json", ".env"}
+)
+
+
+def _under_any(path: str, project_root: Path, relatives: tuple[str, ...]) -> bool:
+    """Return whether the resolved path is one of, or inside, ``relatives``."""
+    resolved = Path(path).expanduser().resolve()
+    root = project_root.resolve()
+    for rel in relatives:
+        guarded = root / rel
+        if resolved == guarded or guarded in resolved.parents:
+            return True
+    return False
+
+
+def is_secret_path(path: str, project_root: Path) -> bool:
+    """Return whether ``path`` holds credentials or config (never readable)."""
+    if not path:
+        return False
+    try:
+        resolved = Path(path).expanduser().resolve()
+        if resolved.name in PROTECTED_FILE_NAMES:
+            return True
+        nerv_home = Path.home() / ".nerv"
+        if resolved == nerv_home or nerv_home in resolved.parents:
+            return True
+        return _under_any(path, project_root, SECRET_RELATIVE_PATHS)
+    except (OSError, RuntimeError, ValueError):
+        return True
+
+
+def is_protected_path(path: str, project_root: Path) -> bool:
+    """Return whether ``path`` is a secret/config/code location (not writable)."""
+    if not path:
+        return False
+    if is_secret_path(path, project_root):
+        return True
+    try:
+        return _under_any(path, project_root, CODE_RELATIVE_PATHS)
+    except (OSError, RuntimeError, ValueError):
+        return True
+
+
 def is_within_sandbox(path: str, root: Path) -> bool:
     """Return whether ``path`` resolves to a location inside ``root``."""
     if not path:
@@ -40,9 +100,15 @@ def confirmation_reason(
     tool_name: str,
     arguments: dict,
     workspace_root: Path,
+    requires_confirmation: bool = False,
+    project_root: Path | None = None,
 ) -> str | None:
-    """Return a human reason if the call needs confirmation, else ``None``."""
-    if tool_name in ALWAYS_CONFIRM_TOOLS:
+    """Return a human reason if the call needs confirmation, else ``None``.
+
+    ``requires_confirmation`` is the tool's own registry flag; a tool that sets
+    it is always confirmed (default-deny for anything not explicitly safe).
+    """
+    if tool_name in ALWAYS_CONFIRM_TOOLS or requires_confirmation:
         return f"'{tool_name}' can affect resources outside the workspace sandbox"
 
     arg_name = PATH_ARG_BY_TOOL.get(tool_name)
@@ -50,5 +116,7 @@ def confirmation_reason(
         target = str(arguments.get(arg_name, "")).strip()
         if not is_within_sandbox(target, workspace_root):
             return f"target path '{target}' is outside the workspace sandbox"
+        if is_protected_path(target, project_root or workspace_root):
+            return f"target path '{target}' is a protected config/secret/code location"
 
     return None
