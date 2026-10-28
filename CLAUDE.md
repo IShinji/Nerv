@@ -28,6 +28,10 @@ Nerv is a personal AI operating system. Rust core (Gateway, hardware detection) 
   paths outside `security.workspace_root` (or `shell`/`desktop_control`) are suspended into
   the shared pending-action queue and require user `confirm <id>`.
 - Agent definitions are YAML files, not code
+- `brain.python_command` is run as a program by the gateway, so config loading rejects
+  an unknown launcher (anything but `uv`, `python`, `python3` or a path to one) unless
+  `NERV_ALLOW_CUSTOM_PYTHON_COMMAND=1` is set in the environment — a config-file write
+  alone cannot enable it
 - Config uses YAML with snake_case keys
 - Any channel with a remote sender must be gated by an allow-list in config, and
   it fails closed: an empty list authorizes nobody. The brain can run shell
