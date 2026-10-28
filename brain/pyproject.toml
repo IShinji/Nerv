@@ -15,7 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Dormant cloud backend (`litellm:<model>`); imported lazily in nerv/llm/client.py.
-litellm = ["litellm>=1.20"]
+litellm = ["litellm>=1.100.4"]
 
 [project.scripts]
 nerv-brain = "nerv.__main__:main"
