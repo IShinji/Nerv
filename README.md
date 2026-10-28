@@ -190,6 +190,22 @@ channels:
 An empty `allowed_users` authorizes nobody; the gateway logs an error and skips
 the adapter rather than exposing an open bot.
 
+### Keeping the config safe
+
+`config.yaml` holds the bot token and `allowed_users`, and `brain.python_command`
+is run as a program by the gateway. What protects it:
+
+- The agent tools cannot read `config.yaml`, `personal/` or `~/.nerv`, and writing
+  `config.yaml` or the code directories needs your `confirm <id>`.
+- `setup.sh` creates `config.yaml` as mode 600, and the gateway warns at startup if
+  it is group/world-accessible.
+- An unknown `python_command` launcher is refused unless
+  `NERV_ALLOW_CUSTOM_PYTHON_COMMAND=1` is set in the environment.
+
+Two habits worth keeping: read the target path before you `confirm` a write that
+touches config or code, and keep the file at mode 600. To move the config out of the
+project tree, point `NERV_CONFIG` at a file elsewhere (for example under `~/.nerv/`).
+
 ---
 
 ## Design Principles
