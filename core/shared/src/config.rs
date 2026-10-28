@@ -241,6 +241,16 @@ impl NervConfig {
     /// the project root, then `~/.nerv/config.yaml`. When present, it overrides
     /// only the keys it defines.
     pub fn load(project_root: &Path) -> Result<Self, ConfigError> {
+        let allow_custom =
+            std::env::var("NERV_ALLOW_CUSTOM_PYTHON_COMMAND").is_ok_and(|v| v == "1");
+        Self::load_with_options(project_root, allow_custom)
+    }
+
+    /// Like [`NervConfig::load`], with the custom-launcher opt-in passed explicitly.
+    pub fn load_with_options(
+        project_root: &Path,
+        allow_custom_python_command: bool,
+    ) -> Result<Self, ConfigError> {
         let default_path = project_root.join("core").join("config.default.yaml");
         let user_path = resolve_user_config_path(
             project_root,
@@ -266,7 +276,8 @@ impl NervConfig {
         }
 
         let config: NervConfig = serde_yaml::from_value(merged)?;
-        validate_python_command(&config.brain.python_command).map_err(ConfigError::Invalid)?;
+        validate_python_command(&config.brain.python_command, allow_custom_python_command)
+            .map_err(ConfigError::Invalid)?;
         Ok(config)
     }
 
@@ -297,10 +308,21 @@ impl NervConfig {
     }
 }
 
-/// Reject a `brain.python_command` that cannot name a program.
-pub fn validate_python_command(command: &str) -> Result<(), String> {
+/// Reject a `brain.python_command` that cannot name a program, or whose
+/// launcher is not a known one unless the operator opted in. The gateway runs
+/// this string as a program, so anyone who can edit the config file could
+/// otherwise run anything; the opt-in lives in the environment, which a file
+/// write cannot change.
+pub fn validate_python_command(command: &str, allow_custom: bool) -> Result<(), String> {
     if command.trim().is_empty() {
         return Err("brain.python_command must not be empty".to_string());
+    }
+    if !allow_custom && !is_known_launcher(command) {
+        return Err(format!(
+            "brain.python_command starts with an unrecognized launcher ({command:?}); \
+             expected uv, python, python3 or a path to one. \
+             Set NERV_ALLOW_CUSTOM_PYTHON_COMMAND=1 in the environment to allow it"
+        ));
     }
     Ok(())
 }
@@ -642,9 +664,39 @@ channels:
 
     #[test]
     fn empty_python_command_is_rejected() {
-        assert!(validate_python_command("").is_err());
-        assert!(validate_python_command("  \t ").is_err());
-        assert!(validate_python_command("uv run python").is_ok());
+        assert!(validate_python_command("", false).is_err());
+        assert!(validate_python_command("  \t ", true).is_err());
+        assert!(validate_python_command("uv run python", false).is_ok());
+    }
+
+    #[test]
+    fn unknown_launcher_is_rejected_unless_opted_in() {
+        for cmd in ["bash -c x", "sh", "/tmp/evil", "pythonista"] {
+            let err = validate_python_command(cmd, false).unwrap_err();
+            assert!(
+                err.contains("NERV_ALLOW_CUSTOM_PYTHON_COMMAND"),
+                "{cmd}: {err}"
+            );
+            assert!(validate_python_command(cmd, true).is_ok(), "{cmd}");
+        }
+        for cmd in ["uv run python", "python3 -u", "./.venv/bin/python"] {
+            assert!(validate_python_command(cmd, false).is_ok(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn load_rejects_unknown_launcher_by_default() {
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            "config.default.yaml",
+            "channels: {}\nmodels:\n  router: {}\nbrain:\n  python_command: \"bash -c x\"\n",
+        );
+        assert!(matches!(
+            NervConfig::load_with_options(dir.path(), false),
+            Err(ConfigError::Invalid(_))
+        ));
+        assert!(NervConfig::load_with_options(dir.path(), true).is_ok());
     }
 
     #[test]
