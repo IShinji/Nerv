@@ -205,6 +205,8 @@ is run as a program by the gateway. What protects it:
 Two habits worth keeping: read the target path before you `confirm` a write that
 touches config or code, and keep the file at mode 600. To move the config out of the
 project tree, point `NERV_CONFIG` at a file elsewhere (for example under `~/.nerv/`).
+Use an absolute path: the gateway and the brain both read that one file, but they run
+in different working directories.
 
 ---
 
