@@ -12,7 +12,9 @@ import asyncio
 import json
 import logging
 import os
+import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 CLAUDE_BIN = os.environ.get("NERV_CLAUDE_BIN", "claude")
 MCP_SERVER_NAME = "nerv"
+# Prefix of the temp MCP config written for each request (see _write_mcp_config).
+MCP_CONFIG_PREFIX = "nerv-mcp-"
+# A temp MCP config this old belongs to a brain that died before it could delete it;
+# no live request takes this long.
+STALE_MCP_CONFIG_SECONDS = 3600.0
 
 # Flags that isolate `claude -p` from the user's personal Claude Code setup
 # (global CLAUDE.md, hooks, plugins, MCP servers, skills, built-in tools).
@@ -238,3 +245,36 @@ async def _invoke_once(
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"claude CLI returned non-JSON output: {raw[:500]}") from exc
+
+
+def sweep_stale_mcp_configs(
+    directory: Path | None = None, *, now: float | None = None
+) -> int:
+    """Delete temp MCP configs left behind by a brain that was killed mid-request.
+
+    ``_write_mcp_config`` removes its file in a ``finally``, which does not run when
+    the brain is SIGKILLed (a restart kills its whole process group). Only our own
+    regular files with the Nerv prefix that are older than
+    ``STALE_MCP_CONFIG_SECONDS`` are removed, so a live request's file, a symlink or
+    anyone else's file is never touched. Returns how many were removed.
+    """
+    directory = directory or Path(tempfile.gettempdir())
+    cutoff = (time.time() if now is None else now) - STALE_MCP_CONFIG_SECONDS
+    removed = 0
+    try:
+        candidates = sorted(directory.glob(f"{MCP_CONFIG_PREFIX}*.json"))
+    except OSError:
+        return 0
+    for path in candidates:
+        try:
+            info = path.lstat()  # lstat: a symlink is judged as itself, never followed
+            if (
+                stat.S_ISREG(info.st_mode)
+                and info.st_uid == os.getuid()
+                and info.st_mtime < cutoff
+            ):
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue  # already gone, or not ours to remove
+    return removed
