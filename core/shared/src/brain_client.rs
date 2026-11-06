@@ -11,8 +11,11 @@
 //!   the pending map made a brain crash hang the caller forever.
 //! * **Supervision.** A transport failure or call timeout respawns the brain,
 //!   up to `restart_max` times per `restart_window`, with exponential backoff.
-//!   A request is only re-sent when it was never written to the dead process;
-//!   otherwise it may already have had side effects and the error is returned.
+//!   A request is only re-sent when it was never written to the dead process
+//!   (a write into the closed pipe of a brain that died idle counts as never
+//!   written); otherwise it may already have had side effects and the error is
+//!   returned. Once the budget is spent the failed brain is still stopped, and
+//!   later calls fail fast with `RestartsExhausted`.
 //! * **Bounded waits.** Every call has a timeout, so a wedged brain surfaces an
 //!   error (and gets replaced) instead of stalling the channel it came from.
 //! * **No orphans.** The brain runs in its own process group and the whole
@@ -289,11 +292,14 @@ impl BrainClient {
 
     /// Send a JSON-RPC request.
     ///
-    /// If the brain is down *before* the request was written, it is respawned
+    /// If the brain is down *before* the request was written (a write into the
+    /// closed pipe of a brain that crashed while idle counts), it is respawned
     /// and the request sent once more. If the request was already written, it
     /// is never re-sent (it may have had side effects): the brain is replaced
     /// for the next caller and the error is returned. A timeout likewise
-    /// replaces the wedged brain.
+    /// replaces the wedged brain. When no restarts are left the failed brain is
+    /// stopped anyway, and calls fail with `RestartsExhausted` until the
+    /// restart window has reset the count.
     pub async fn call(
         &self,
         method: &str,
@@ -351,7 +357,9 @@ impl BrainClient {
     }
 
     /// One request/response round trip, with no supervision or timeout.
-    /// `sent` is set once the request line has been fully written.
+    /// `sent` is set once the request line may have reached the brain; it stays
+    /// clear only if the brain could not have read it (not running, or a write
+    /// into a closed pipe).
     async fn call_once(
         &self,
         method: &str,
@@ -388,7 +396,10 @@ impl BrainClient {
                     .lock()
                     .expect("pending map poisoned")
                     .remove(&id);
-                return Err(e);
+                if write_never_delivered(&e) {
+                    sent.store(false, Ordering::Release);
+                }
+                return Err(BrainError::Transport(e.to_string()));
             }
         }
 
@@ -415,11 +426,26 @@ impl BrainClient {
             let mut state = self.restart_state.lock().expect("restart state poisoned");
             self.expire_window(&mut state);
             if state.used >= self.config.restart_max {
-                return Err(BrainError::RestartsExhausted(self.config.restart_max));
+                None
+            } else {
+                state.used += 1;
+                state.last_restart = Some(Instant::now());
+                Some(state.used)
             }
-            state.used += 1;
-            state.last_restart = Some(Instant::now());
-            state.used
+        };
+        let Some(used) = used else {
+            // No respawn is allowed, but the failed brain must not be kept:
+            // once python is dead or wedged, its group (uv, `claude -p`, the
+            // MCP server) would otherwise run on as orphans until their own
+            // call ended, spending the subscription for nothing. With the
+            // process gone, later calls fail at once on this same error rather
+            // than writing into a dead pipe or waiting out another timeout.
+            warn!(
+                "Brain restart budget ({}) is used up; stopping the failed brain",
+                self.config.restart_max
+            );
+            self.terminate().await;
+            return Err(BrainError::RestartsExhausted(self.config.restart_max));
         };
 
         // Exponential backoff: backoff, 2x, 4x ... capped at 30 s.
@@ -481,15 +507,19 @@ impl BrainClient {
     }
 }
 
-async fn write_line(stdin: &mut ChildStdin, line: &str) -> Result<(), BrainError> {
-    stdin
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|e| BrainError::Transport(e.to_string()))?;
-    stdin
-        .flush()
-        .await
-        .map_err(|e| BrainError::Transport(e.to_string()))
+async fn write_line(stdin: &mut ChildStdin, line: &str) -> std::io::Result<()> {
+    stdin.write_all(line.as_bytes()).await?;
+    stdin.flush().await
+}
+
+/// Whether a failed write proves the request was never delivered.
+///
+/// `BrokenPipe` means the pipe's read end is closed, i.e. the brain already
+/// died: a line the brain could not read was not acted on, so it is safe to
+/// replay on a replacement. Any other failure may have handed over part of the
+/// line, and the request counts as sent.
+fn write_never_delivered(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::BrokenPipe
 }
 
 /// Fail every waiting request with `reason`.
@@ -595,6 +625,7 @@ mod tests {
     /// * `boom` — exit without replying, but only for the first process that
     ///   sees it (a marker file survives the restart), so a retry can succeed.
     /// * `hang` — read the request and never reply.
+    /// * `bye`  — reply, then exit: a crash while nobody is talking to it.
     /// * `err`  — reply with a JSON-RPC error object.
     /// * anything else (including `ping`) — reply with a success result.
     fn fake_brain(marker: &Path) -> BrainSpawnConfig {
@@ -605,6 +636,9 @@ while IFS= read -r line; do
   case "$line" in
     *'"method":"boom"'*)
       if [ ! -f "{marker}" ]; then : > "{marker}"; exit 0; fi ;;
+    *'"method":"bye"'*)
+      printf '{{"jsonrpc":"2.0","result":{{"status":"ok","echo":%s}},"id":%s}}\n' "$id" "$id"
+      exit 0 ;;
     *'"method":"hang"'*)
       continue ;;
     *'"method":"err"'*)
@@ -629,6 +663,101 @@ done
             restart_backoff: Duration::from_millis(10),
             call_timeout: Duration::from_secs(5),
         }
+    }
+
+    /// How long a killed process may take to disappear from the process table.
+    /// Only a failing test ever waits this long.
+    #[cfg(unix)]
+    const REAP_GRACE: Duration = Duration::from_secs(5);
+
+    /// A fake brain that, like `uv run python` with `claude -p` underneath,
+    /// leaves a descendant in its process group. The pid is written to
+    /// `pid_file` on every (re)start.
+    ///
+    /// The `sleep` is detached from the pipes on purpose: if it kept the
+    /// brain's stdout open, its parent's death would never reach the reader as
+    /// EOF and the crash tests would degrade into timeouts. It also ends by
+    /// itself after a minute, so a regression strands it only briefly.
+    ///
+    /// * `boom` — exit without replying.
+    /// * `hang` — read the request and never reply.
+    /// * anything else (including `ping`) — reply with a success result.
+    #[cfg(unix)]
+    fn brain_with_grandchild(pid_file: &Path) -> BrainSpawnConfig {
+        let script = format!(
+            r#"
+sleep 60 </dev/null >/dev/null 2>&1 &
+echo $! > "{pid}"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"boom"'*) exit 0 ;;
+    *'"method":"hang"'*) continue ;;
+  esac
+  printf '{{"jsonrpc":"2.0","result":{{"status":"ok"}},"id":%s}}\n' "$id"
+done
+"#,
+            pid = pid_file.display()
+        );
+        BrainSpawnConfig {
+            command: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), script],
+            working_dir: std::env::temp_dir(),
+            env: Vec::new(),
+            restart_max: 0,
+            restart_window: Duration::from_secs(600),
+            restart_backoff: Duration::from_millis(10),
+            call_timeout: Duration::from_secs(5),
+        }
+    }
+
+    #[cfg(unix)]
+    fn read_pid(pid_file: &Path) -> i32 {
+        std::fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn pid_alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks that the pid exists.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    /// Whether `pid` disappears within `REAP_GRACE`.
+    #[cfg(unix)]
+    async fn gone_soon(pid: i32) -> bool {
+        let deadline = Instant::now() + REAP_GRACE;
+        while pid_alive(pid) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        true
+    }
+
+    /// Wait until the brain has really exited, not merely replied.
+    async fn wait_until_exited(client: &BrainClient) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while client.is_running().await {
+            assert!(Instant::now() < deadline, "the brain should have exited");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Whether a write to the brain's stdin now fails with a broken pipe, as it
+    /// does once the process on the other end has died. Nothing is written
+    /// when it does.
+    async fn stdin_is_broken(client: &BrainClient) -> bool {
+        let mut guard = client.process.lock().await;
+        let process = guard.as_mut().expect("the exited brain is still held");
+        matches!(
+            write_line(&mut process.stdin, "\n").await,
+            Err(e) if write_never_delivered(&e)
+        )
     }
 
     #[tokio::test]
@@ -883,5 +1012,174 @@ done
         assert_eq!(ids.len(), 16, "every caller got its own response");
 
         client.stop().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exhausted_restarts_still_kill_the_old_process_group_after_a_crash() {
+        let dir = TempDir::new().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
+        let client = BrainClient::new(brain_with_grandchild(&pid_file).with_restart_max(1));
+        client.start().await.unwrap();
+        let first = read_pid(&pid_file);
+
+        // Burn the single restart. Replacing a brain reaps its old group.
+        client
+            .call("boom", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(client.restarts_used(), 1);
+        assert!(
+            gone_soon(first).await,
+            "a normal restart reaps the old group"
+        );
+
+        // The replacement crashes too, with nothing left to spend. The dead
+        // brain's descendants (`claude -p` and its tools) would otherwise run
+        // on as orphans until their own call finished.
+        let second = read_pid(&pid_file);
+        assert!(pid_alive(second), "the replacement's grandchild is running");
+        let err = client
+            .call("boom", serde_json::json!({}))
+            .await
+            .expect_err("no restarts left");
+        assert!(
+            matches!(err, BrainError::RestartsExhausted(1)),
+            "unexpected error: {err}"
+        );
+        assert!(
+            gone_soon(second).await,
+            "the crashed brain's process group must not outlive an exhausted budget"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exhausted_restarts_still_kill_a_wedged_brains_process_group() {
+        let dir = TempDir::new().unwrap();
+        let pid_file = dir.path().join("grandchild.pid");
+        // restart_max is 0, so the timeout cannot be answered with a replacement.
+        let config = brain_with_grandchild(&pid_file).with_call_timeout(Duration::from_millis(200));
+        let client = BrainClient::new(config);
+        client.start().await.unwrap();
+        let pid = read_pid(&pid_file);
+        assert!(pid_alive(pid), "the grandchild is running");
+
+        let err = client
+            .call("hang", serde_json::json!({}))
+            .await
+            .expect_err("a silent brain must time out");
+        assert!(
+            matches!(err, BrainError::Timeout { .. }),
+            "unexpected error: {err}"
+        );
+        assert!(
+            gone_soon(pid).await,
+            "the wedged brain's process group must not outlive an exhausted budget"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn calls_after_exhaustion_fail_fast_with_the_budget_error() {
+        // The budget can be spent by a crash or by a wedge; both must end the
+        // same way.
+        for trigger in ["boom", "hang"] {
+            let dir = TempDir::new().unwrap();
+            let pid_file = dir.path().join("grandchild.pid");
+            let config =
+                brain_with_grandchild(&pid_file).with_call_timeout(Duration::from_millis(200));
+            let client = BrainClient::new(config);
+            client.start().await.unwrap();
+            let pid = read_pid(&pid_file);
+
+            client
+                .call(trigger, serde_json::json!({}))
+                .await
+                .unwrap_err();
+
+            for _ in 0..3 {
+                let err = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    client.call("route", serde_json::json!({})),
+                )
+                .await
+                .expect("a call after exhaustion must fail fast, not hang")
+                .expect_err("the restart budget is spent");
+                // This is the text users see: not a bare `Broken pipe`, a
+                // `brain process is not running` or another timeout.
+                assert!(
+                    matches!(err, BrainError::RestartsExhausted(0)),
+                    "after `{trigger}`: unexpected error: {err}"
+                );
+            }
+            assert!(!client.is_running().await);
+            assert_eq!(
+                read_pid(&pid_file),
+                pid,
+                "after `{trigger}`: no replacement may be spawned"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_closed_pipe_proves_a_line_was_never_delivered() {
+        use std::io::{Error, ErrorKind};
+
+        assert!(write_never_delivered(&Error::from(ErrorKind::BrokenPipe)));
+        // Anything else may have handed over part of the line, so the request
+        // still counts as sent and is not replayed.
+        for kind in [
+            ErrorKind::WriteZero,
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::TimedOut,
+            ErrorKind::Interrupted,
+            ErrorKind::PermissionDenied,
+            ErrorKind::UnexpectedEof,
+            ErrorKind::Other,
+        ] {
+            assert!(
+                !write_never_delivered(&Error::from(kind)),
+                "{kind:?} must not make a write replayable"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_after_an_idle_crash_is_retried_transparently() {
+        // Tests run on parallel threads, and on macOS std cannot create a pipe
+        // close-on-exec atomically, so a sibling test that forks while this
+        // brain is being spawned can inherit its stdin and hold it open after
+        // the brain dies (seen under heavy load). A write then succeeds into
+        // the void, which is not the situation under test: start over.
+        for _ in 0..5 {
+            let dir = TempDir::new().unwrap();
+            let config = fake_brain(&dir.path().join("marker")).with_restart_max(2);
+            let client = BrainClient::new(config);
+            client.start().await.unwrap();
+
+            // The brain answers, then dies while nobody is talking to it.
+            client.call("bye", serde_json::json!({})).await.unwrap();
+            wait_until_exited(&client).await;
+            if !stdin_is_broken(&client).await {
+                client.stop().await.unwrap();
+                continue;
+            }
+
+            // The write hits a closed pipe: the line never reached a live
+            // brain, so replaying it on the replacement is safe, and the
+            // caller must not have to ask twice.
+            let result = client
+                .call("route", serde_json::json!({}))
+                .await
+                .expect("an idle crash must not surface to the next caller");
+            assert_eq!(result["status"], "ok");
+            assert_eq!(client.restarts_used(), 1);
+
+            client.stop().await.unwrap();
+            return;
+        }
+        panic!("a sibling process kept the dead brain's stdin open on every attempt");
     }
 }
