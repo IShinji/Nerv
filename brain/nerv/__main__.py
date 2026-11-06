@@ -49,6 +49,14 @@ def main() -> None:
             for model_name in local_models:
                 check_and_pull_model(model_name)
 
+        # A brain killed mid-request cannot delete its temp MCP config; clear the
+        # ones that earlier brains left behind.
+        from nerv.llm.claude_cli import sweep_stale_mcp_configs
+
+        removed = sweep_stale_mcp_configs()
+        if removed:
+            logger.info("Removed %d stale MCP config file(s)", removed)
+
         asyncio.run(run_jsonrpc_loop())
     except KeyboardInterrupt:
         logger.info("Brain process interrupted")
