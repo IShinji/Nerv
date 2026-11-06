@@ -126,7 +126,9 @@ def propose_workflow(
     name="execute_workflow",
     description=(
         "Execute a named shared workflow. This delegates control to the Workflow Executor engine "
-        "which will sequentially perform the steps and return the final structurally extracted response."
+        "which will sequentially perform the steps and return the final structurally extracted response. "
+        "A workflow that drives the browser (or another tool that needs confirmation) is first "
+        "queued for the user's approval as a whole: tell the user to confirm it instead of retrying."
     ),
     requires_confirmation=False,
 )
@@ -135,7 +137,7 @@ async def execute_workflow(workflow_name: str, inputs: str) -> ToolResult:
     # We must fetch the orchestrator from ipc to inject it into the executor
     # To avoid circular import, we fetch it locally
     from nerv.ipc import _get_orchestrator
-    from nerv.workflows.executor import WorkflowExecutor
+    from nerv.workflows.executor import WorkflowExecutor, WorkflowNeedsApproval
     from nerv.workflows.registry import WorkflowRegistry
 
     registry_obj = WorkflowRegistry(_get_project_root())
@@ -159,8 +161,12 @@ async def execute_workflow(workflow_name: str, inputs: str) -> ToolResult:
     try:
         final_result = await executor.execute(workflow, inputs)
         return ToolResult(
-            content=f"Workflow executed successfully.\\nResult context:\\n{final_result}"
+            content=f"Workflow executed successfully.\nResult context:\n{final_result}"
         )
+    except WorkflowNeedsApproval as pending:
+        # Not a failure: the user has to approve first (or an earlier approval no
+        # longer matches the workflow, which is reported as an error).
+        return ToolResult(content=pending.message, is_error=pending.stale)
     except Exception as e:
         return ToolResult(content=f"Workflow execution failed: {e}", is_error=True)
 

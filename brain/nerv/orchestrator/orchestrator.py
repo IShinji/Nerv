@@ -30,7 +30,12 @@ from nerv.models import RouteResult
 from nerv.observability import new_trace_id, timed
 from nerv.orchestrator.registry import AgentDefinition, AgentRegistry
 from nerv.proactive import ProactiveMonitor
-from nerv.security import PendingActionStore, PendingRecord, confirmation_reason
+from nerv.security import (
+    PendingActionStore,
+    PendingRecord,
+    confirmation_reason,
+    executing_confirmed,
+)
 from nerv.skills.registry import SkillRegistry
 from nerv.workflows.registry import ReviewQueue, WorkflowRegistry
 
@@ -431,12 +436,16 @@ class Orchestrator:
 
         logger.info("Workflow fallback → '%s' for user request.", fallback_wf.name)
 
-        from nerv.workflows.executor import WorkflowExecutor
+        from nerv.workflows.executor import WorkflowExecutor, WorkflowNeedsApproval
 
         executor = WorkflowExecutor(self)
         try:
             result = await executor.execute(fallback_wf, user_message)
             return result
+        except WorkflowNeedsApproval as pending:
+            # The user has to approve first: ask, rather than quietly dropping to
+            # a weaker model.
+            return pending.user_message
         except Exception as e:
             logger.error("Fallback workflow '%s' failed: %s", fallback_wf.name, e)
             logger.info("Falling back to tier 0 model after workflow failure.")
@@ -603,6 +612,9 @@ class Orchestrator:
             summary = (
                 f"Pending action #{action.id}: screenshot -> save to {output_path}"
             )
+        elif action.tool_name == "execute_workflow":
+            name = str(action.arguments.get("workflow_name", "")).strip() or "?"
+            summary = f"Pending action #{action.id}: run workflow '{name}'"
         else:
             summary = (
                 f"Pending action #{action.id}: {action.tool_name} "
@@ -711,10 +723,13 @@ class Orchestrator:
                 f"{action.tool_name} is unavailable."
             )
 
-        if inspect.iscoroutinefunction(tool_def.func):
-            result = await tool_def.func(**action.arguments)
-        else:
-            result = await asyncio.to_thread(tool_def.func, **action.arguments)
+        # Run it as the action the user confirmed, so a tool that was approved as a
+        # whole (a workflow) can recognise that this is the call that was approved.
+        with executing_confirmed(action):
+            if inspect.iscoroutinefunction(tool_def.func):
+                result = await tool_def.func(**action.arguments)
+            else:
+                result = await asyncio.to_thread(tool_def.func, **action.arguments)
 
         status = "Executed" if not result.is_error else "Execution failed for"
         return (
