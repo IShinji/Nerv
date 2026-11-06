@@ -18,6 +18,8 @@ PENDING = "pending"
 RUNNING = "running"
 DONE = "done"
 FAILED = "failed"
+# Stopped on a step that was queued for the user's confirmation instead of run.
+SUSPENDED = "suspended"
 
 
 @dataclass

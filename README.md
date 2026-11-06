@@ -107,7 +107,7 @@ Nerv separates capability access from execution strategy:
 - **Capability Layer**: Core local actions stay as native tools (`shell`, files, memory, notifications). External apps and SaaS integrations should prefer MCP servers when available.
 - **MCP-first Browsering**: For interactive browser work, Nerv should prefer Chrome MCP (or another browser MCP server) over bespoke UI scripting. The current native `chrome_browser` path is an MVP fallback, not the long-term integration model.
 - **Skills**: Markdown guidelines that teach Agents *how* to think and evaluate (e.g., "How to review a resume").
-- **Workflows**: Hardcoded YAML steps executed by a native `WorkflowExecutor`. When an agent needs to perform a 10-step operational sequence, it delegates it to the Executor for predictability.
+- **Workflows**: Hardcoded YAML steps executed by a native `WorkflowExecutor`. When an agent needs to perform a 10-step operational sequence, it delegates it to the Executor for predictability. Steps that need confirmation and have fixed arguments (the browser verbs) are approved once for the whole run: Nerv lists them and you reply `confirm <id>`. A step whose arguments the model chooses while running stops the run until you confirm that step.
 - **Parsimony Rule**: Agents are instructed to prefer direct APIs and MCP-backed tools over heavy GUI automation. UI workflows are the fallback when lighter providers cannot complete the task.
 
 ### 💰 Brutal Token Efficiency
