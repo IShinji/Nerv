@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+# Names the user config file explicitly. Keep in step with the Rust loader
+# (core/shared/src/config.rs): the gateway and the brain must read the same file.
+USER_CONFIG_ENV = "NERV_CONFIG"
 
 
 def _merge_yaml(base: Any, override_value: Any) -> Any:
@@ -21,16 +27,47 @@ def _merge_yaml(base: Any, override_value: Any) -> Any:
     return override_value
 
 
+def resolve_user_config_path(
+    project_root: Path, environ: Mapping[str, str] | None = None
+) -> Path | None:
+    """Pick the user config file, with the same precedence as the Rust loader.
+
+    In order: the file named by ``NERV_CONFIG`` (returned as-is, even if it does
+    not exist, so a typo fails loudly when it is read), ``<project_root>/config.yaml``
+    and ``~/.nerv/config.yaml`` (these two only if they exist). Only one file is
+    used; it is not a merge of several. Mirrors ``resolve_user_config_path`` in
+    ``core/shared/src/config.rs``. A relative ``NERV_CONFIG`` resolves against this
+    process's working directory, which differs between the gateway and the brain,
+    so use an absolute path.
+    """
+    env = os.environ if environ is None else environ
+    override = env.get(USER_CONFIG_ENV, "")
+    if override:
+        return Path(override)
+    in_project = project_root / "config.yaml"
+    if in_project.exists():
+        return in_project
+    home = env.get("HOME", "")
+    if home:
+        in_home = Path(home) / ".nerv" / "config.yaml"
+        if in_home.exists():
+            return in_home
+    return None
+
+
 def load_project_config(project_root: Path) -> dict[str, Any]:
     """Load default and user config with the same merge semantics as Rust."""
     default_path = project_root / "core" / "config.default.yaml"
-    user_path = project_root / "config.yaml"
+    user_path = resolve_user_config_path(project_root)
 
     merged: dict[str, Any] = {}
     if default_path.exists():
         merged = yaml.safe_load(default_path.read_text(encoding="utf-8")) or {}
 
-    if user_path.exists():
+    if user_path is not None:
+        # An explicit NERV_CONFIG that is missing raises FileNotFoundError here,
+        # as the gateway refuses to start, rather than silently using defaults
+        # (which would loosen settings such as security.workspace_root).
         override_value = yaml.safe_load(user_path.read_text(encoding="utf-8")) or {}
         merged = _merge_yaml(merged, override_value)
 

@@ -16,6 +16,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from nerv.config import resolve_user_config_path
 from nerv.llm.client import CompletionResult
 from nerv.memory.manager import active_scope
 from nerv.observability import log_event
@@ -82,18 +83,26 @@ def _resolve_provider_names(tool_names: list[str]) -> list[str]:
 
 def _write_mcp_config(project_root: Path) -> Path:
     """Write a temp MCP config that points Claude at the Nerv tool server."""
+    env = {
+        "NERV_PROJECT_ROOT": str(project_root),
+        # Memory tools in the MCP process must read this request's
+        # scope, not the default one.
+        "NERV_MEMORY_SCOPE": active_scope(),
+    }
+    # The MCP server is a separate process with an explicit environment. Hand it
+    # the user config file this process resolved, so its sandbox settings
+    # (security.workspace_root) match the orchestrator's whatever its own HOME or
+    # NERV_CONFIG are.
+    user_config = resolve_user_config_path(project_root)
+    if user_config is not None:
+        env["NERV_CONFIG"] = str(user_config.resolve())
     config = {
         "mcpServers": {
             MCP_SERVER_NAME: {
                 "command": "uv",
                 "args": ["run", "python", "-m", "nerv.mcp_server"],
                 "cwd": str(project_root / "brain"),
-                "env": {
-                    "NERV_PROJECT_ROOT": str(project_root),
-                    # Memory tools in the MCP process must read this request's
-                    # scope, not the default one.
-                    "NERV_MEMORY_SCOPE": active_scope(),
-                },
+                "env": env,
             }
         }
     }
