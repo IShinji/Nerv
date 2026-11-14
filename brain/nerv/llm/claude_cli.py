@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import stat
 import tempfile
 import time
@@ -32,6 +33,8 @@ MCP_CONFIG_PREFIX = "nerv-mcp-"
 # A temp MCP config this old belongs to a brain that died before it could delete it;
 # no live request takes this long.
 STALE_MCP_CONFIG_SECONDS = 3600.0
+# Errors we cannot classify are retried once (the pre-classification default).
+UNKNOWN_ERROR_MAX_ATTEMPTS = 2
 
 # Flags that isolate `claude -p` from the user's personal Claude Code setup
 # (global CLAUDE.md, hooks, plugins, MCP servers, skills, built-in tools).
@@ -86,6 +89,96 @@ def _resolve_provider_names(tool_names: list[str]) -> list[str]:
             resolved.append(provider)
             seen.add(provider)
     return resolved
+
+
+class ClaudeCliError(RuntimeError):
+    """A classified `claude` CLI failure.
+
+    ``kind`` is ``"fatal"`` (retrying cannot help), ``"retry"`` (transient) or
+    ``"unknown"`` (retried once, like the pre-classification behaviour).
+    """
+
+    def __init__(self, message: str, kind: str = "unknown") -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+_QUOTA_MARKERS = (
+    "usage limit reached",  # observed text of subscription quota exhaustion
+    "reached your usage limit",
+    "credit balance is too low",  # Anthropic API billing text
+    "limit reached",
+)
+_AUTH_MARKERS = (
+    "not logged in",  # claude CLI with no session
+    "please run /login",
+    "invalid api key",
+    "authentication_error",
+    "oauth token has expired",
+)
+_TRANSIENT_MARKERS = (
+    "timed out",  # our own wait_for timeout
+    "overloaded",
+    "econnreset",
+    "etimedout",
+    "enotfound",
+    "econnrefused",
+    "network",
+    "temporarily unavailable",
+    "rate limit",
+)
+_TRANSIENT_ERROR_TYPES = ("overloaded_error", "rate_limit_error", "api_error")
+_FATAL_STATUSES = frozenset({400, 401, 402, 403, 404, 413, 422})
+_TRANSIENT_STATUSES = frozenset({408, 409, 429})
+
+
+def classify_failure(
+    *, status: int | None, error_type: str, text: str
+) -> tuple[str, str]:
+    """Classify a failed claude call into ``(kind, user_message)``.
+
+    Every rule names its evidence. Anything not matched is ``"unknown"`` and is
+    retried once, so a new error string never becomes a hard failure by accident.
+    ``status``/``error_type`` come from the JSON result (`api_error_status`,
+    `api_error_type`; observed: an unknown --model gives is_error=true,
+    api_error_status=404, api_error_type=not_found_error, exit code 1).
+    """
+    lowered = (text or "").lower()
+    detail = (text or "").strip()[:200]
+    # Quota first: a subscription limit can arrive as HTTP 429, which would
+    # otherwise look like a transient rate limit.
+    if status == 402 or any(m in lowered for m in _QUOTA_MARKERS):
+        return (
+            "fatal",
+            "Claude quota or subscription limit is exhausted; wait for the "
+            f"limit to reset or check the plan. ({detail})",
+        )
+    if (
+        status in (401, 403)
+        or error_type == "authentication_error"
+        or any(m in lowered for m in _AUTH_MARKERS)
+    ):
+        return (
+            "fatal",
+            "Claude CLI is not logged in or authentication failed; run `claude` "
+            f"in a terminal and log in first. ({detail})",
+        )
+    if status in _FATAL_STATUSES or error_type in (
+        "invalid_request_error",
+        "not_found_error",
+    ):
+        return (
+            "fatal",
+            f"Claude CLI rejected the request (HTTP {status}); check the "
+            f"configured model name. ({detail})",
+        )
+    if (
+        (status is not None and (status in _TRANSIENT_STATUSES or status >= 500))
+        or error_type in _TRANSIENT_ERROR_TYPES
+        or any(m in lowered for m in _TRANSIENT_MARKERS)
+    ):
+        return "retry", detail or "transient claude CLI failure"
+    return "unknown", detail or "unknown claude CLI failure"
 
 
 def _write_mcp_config(project_root: Path) -> Path:
@@ -164,26 +257,53 @@ async def complete_claude_cli(
     attempts = max(1, int(os.environ.get("NERV_CLAUDE_MAX_ATTEMPTS", "2")))
     last_error = "unknown error"
     try:
-        for attempt in range(1, attempts + 1):
+        attempt = 0
+        while attempt < attempts:
+            attempt += 1
             try:
                 data = await _invoke_once(args, conversation, timeout)
             except RuntimeError as exc:
                 last_error = str(exc)
+                if isinstance(exc, ClaudeCliError):
+                    kind = exc.kind
+                else:
+                    kind, _ = classify_failure(
+                        status=None, error_type="", text=last_error
+                    )
                 logger.warning(
-                    "claude CLI attempt %d/%d failed: %s", attempt, attempts, exc
+                    "claude CLI attempt %d/%d failed (%s): %s",
+                    attempt,
+                    attempts,
+                    kind,
+                    exc,
                 )
+                if kind == "fatal":
+                    raise
+                if kind == "unknown":
+                    attempts = min(attempts, UNKNOWN_ERROR_MAX_ATTEMPTS)
                 if attempt < attempts:
                     await asyncio.sleep(_backoff_seconds(attempt))
                 continue
 
-            if data.get("is_error") and attempt < attempts:
-                last_error = f"claude returned error result: {data.get('subtype')}"
+            if data.get("is_error"):
+                kind, message = classify_failure(
+                    status=data.get("api_error_status"),
+                    error_type=str(data.get("api_error_type") or ""),
+                    text=str(data.get("result") or data.get("subtype") or ""),
+                )
+                if kind == "fatal":
+                    raise ClaudeCliError(message, "fatal")
+                if kind == "unknown":
+                    attempts = min(attempts, UNKNOWN_ERROR_MAX_ATTEMPTS)
+                last_error = f"claude returned error result: {message}"
                 logger.warning(
-                    "claude CLI attempt %d/%d returned an error result",
+                    "claude CLI attempt %d/%d returned an error result (%s)",
                     attempt,
                     attempts,
+                    kind,
                 )
-                await asyncio.sleep(_backoff_seconds(attempt))
+                if attempt < attempts:
+                    await asyncio.sleep(_backoff_seconds(attempt))
                 continue
 
             log_event(
@@ -216,8 +336,9 @@ async def complete_claude_cli(
 
 
 def _backoff_seconds(attempt: int) -> float:
-    """Exponential backoff capped at 8s: 1s, 2s, 4s, 8s, ..."""
-    return float(min(2 ** (attempt - 1), 8))
+    """Exponential backoff capped at 8s (1s, 2s, 4s, 8s) with +/-10% jitter."""
+    base = float(min(2 ** (attempt - 1), 8))
+    return base * random.uniform(0.9, 1.1)
 
 
 async def _invoke_once(
@@ -243,13 +364,24 @@ async def _invoke_once(
             await proc.wait()
         if isinstance(exc, asyncio.CancelledError):
             raise
-        raise RuntimeError(f"claude CLI timed out after {timeout}s") from exc
-
-    if proc.returncode != 0:
-        err = stderr.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(f"claude CLI exited {proc.returncode}: {err[:500]}")
+        raise ClaudeCliError(f"claude CLI timed out after {timeout}s", "retry") from exc
 
     raw = stdout.decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0:
+        err = stderr.decode("utf-8", errors="replace").strip()
+        # A failing `claude -p --output-format json` usually still prints the
+        # error result as JSON on stdout (exit code 1), so classify from that.
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict) and parsed.get("is_error"):
+            return parsed
+        kind, _ = classify_failure(status=None, error_type="", text=err or raw)
+        raise ClaudeCliError(
+            f"claude CLI exited {proc.returncode}: {(err or raw)[:500]}", kind
+        )
+
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
