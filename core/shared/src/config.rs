@@ -243,13 +243,23 @@ impl NervConfig {
     pub fn load(project_root: &Path) -> Result<Self, ConfigError> {
         let allow_custom =
             std::env::var("NERV_ALLOW_CUSTOM_PYTHON_COMMAND").is_ok_and(|v| v == "1");
-        Self::load_with_options(project_root, allow_custom)
+        Self::load_with_policy(project_root, allow_custom, allow_insecure_config_from_env())
     }
 
     /// Like [`NervConfig::load`], with the custom-launcher opt-in passed explicitly.
     pub fn load_with_options(
         project_root: &Path,
         allow_custom_python_command: bool,
+    ) -> Result<Self, ConfigError> {
+        Self::load_with_policy(project_root, allow_custom_python_command, false)
+    }
+
+    /// Like [`NervConfig::load_with_options`], with the loose-file-mode opt-in
+    /// (`NERV_ALLOW_INSECURE_CONFIG`) passed explicitly too.
+    pub fn load_with_policy(
+        project_root: &Path,
+        allow_custom_python_command: bool,
+        allow_insecure_config: bool,
     ) -> Result<Self, ConfigError> {
         let default_path = project_root.join("core").join("config.default.yaml");
         let user_path = resolve_user_config_path(
@@ -266,6 +276,19 @@ impl NervConfig {
         let mut merged: serde_yaml::Value = serde_yaml::from_str(&default_content)?;
 
         if let Some(user_path) = user_path {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                // A missing file falls through to the read error below.
+                if let Ok(meta) = std::fs::metadata(&user_path) {
+                    check_config_file_mode(
+                        &user_path,
+                        meta.permissions().mode(),
+                        allow_insecure_config,
+                    )
+                    .map_err(ConfigError::Invalid)?;
+                }
+            }
             let user_content =
                 std::fs::read_to_string(&user_path).map_err(|e| ConfigError::ReadFile {
                     path: user_path.clone(),
@@ -297,7 +320,11 @@ impl NervConfig {
         if let Some(path) = user_path {
             use std::os::unix::fs::PermissionsExt;
             if let Ok(meta) = std::fs::metadata(&path) {
-                if let Some(w) = file_mode_warning(&path, meta.permissions().mode()) {
+                if let Ok(Some(w)) = check_config_file_mode(
+                    &path,
+                    meta.permissions().mode(),
+                    allow_insecure_config_from_env(),
+                ) {
                     warnings.push(w);
                 }
             }
@@ -378,6 +405,36 @@ pub fn file_mode_warning(path: &Path, mode: u32) -> Option<String> {
     ))
 }
 
+/// Whether `NERV_ALLOW_INSECURE_CONFIG=1` is set. Like the custom-launcher
+/// opt-in this is environment-only: a config-file write cannot switch off the
+/// check that protects the config file.
+fn allow_insecure_config_from_env() -> bool {
+    std::env::var("NERV_ALLOW_INSECURE_CONFIG").is_ok_and(|v| v == "1")
+}
+
+/// Decide what a config file's mode means. Access for group or others is an
+/// error (the file holds the bot token) unless `allow_insecure` is set, in
+/// which case it becomes a warning. `Ok(None)` means the mode is fine.
+pub fn check_config_file_mode(
+    path: &Path,
+    mode: u32,
+    allow_insecure: bool,
+) -> Result<Option<String>, String> {
+    let Some(warning) = file_mode_warning(path, mode) else {
+        return Ok(None);
+    };
+    if allow_insecure {
+        return Ok(Some(format!(
+            "{warning} (allowed by NERV_ALLOW_INSECURE_CONFIG=1)"
+        )));
+    }
+    Err(format!(
+        "refusing to start: {warning}. Fix it with `chmod 600 {}`, \
+         or set NERV_ALLOW_INSECURE_CONFIG=1 in the environment to start anyway",
+        path.display()
+    ))
+}
+
 /// Pick the user config file. An explicit override is returned as-is (so a
 /// typo fails loudly when it is read); the fallbacks only count if they exist.
 fn resolve_user_config_path(
@@ -425,8 +482,13 @@ mod tests {
         } else {
             core_dir.join(filename)
         };
-        let mut f = std::fs::File::create(path).unwrap();
+        let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(content.as_bytes()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
     }
 
     #[test]
@@ -727,6 +789,80 @@ channels:
         assert!(file_mode_warning(p, 0o100644).unwrap().contains("readable"));
         assert!(file_mode_warning(p, 0o100620).unwrap().contains("writable"));
         assert!(file_mode_warning(p, 0o100666).is_some());
+    }
+
+    #[test]
+    fn mode_policy_rejects_group_and_other_bits() {
+        let p = Path::new("config.yaml");
+        for mode in [0o100600, 0o100700, 0o100400] {
+            assert_eq!(check_config_file_mode(p, mode, false), Ok(None), "{mode:o}");
+        }
+        for mode in [0o100644, 0o100640, 0o100604, 0o100666] {
+            let err = check_config_file_mode(p, mode, false).unwrap_err();
+            assert!(err.contains("chmod 600 config.yaml"), "{mode:o}: {err}");
+            assert!(err.contains("NERV_ALLOW_INSECURE_CONFIG"), "{err}");
+        }
+    }
+
+    #[test]
+    fn mode_policy_downgrades_to_warning_when_allowed() {
+        let p = Path::new("config.yaml");
+        let warning = check_config_file_mode(p, 0o100644, true).unwrap().unwrap();
+        assert!(warning.contains("chmod 600"), "{warning}");
+        assert!(warning.contains("NERV_ALLOW_INSECURE_CONFIG"), "{warning}");
+        assert_eq!(check_config_file_mode(p, 0o100600, true), Ok(None));
+    }
+
+    #[cfg(unix)]
+    fn config_with_mode(dir: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        write_config(
+            dir,
+            "config.default.yaml",
+            "channels: {}\nmodels:\n  router: {}\n",
+        );
+        write_config(dir, "config.yaml", "logging:\n  level: debug\n");
+        std::fs::set_permissions(
+            dir.join("config.yaml"),
+            std::fs::Permissions::from_mode(mode),
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_refuses_loose_user_config_file() {
+        // NERV_CONFIG / HOME are not set by these tests; the project-root
+        // config.yaml is the file that gets picked unless the environment of
+        // the test runner overrides it.
+        if std::env::var_os("NERV_CONFIG").is_some() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        config_with_mode(dir.path(), 0o644);
+        let err = NervConfig::load_with_policy(dir.path(), false, false).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("chmod 600"), "{err}");
+        assert!(NervConfig::load_with_policy(dir.path(), false, true).is_ok());
+
+        let ok = TempDir::new().unwrap();
+        config_with_mode(ok.path(), 0o600);
+        assert!(NervConfig::load_with_policy(ok.path(), false, false).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_without_user_config_skips_mode_check() {
+        if std::env::var_os("NERV_CONFIG").is_some() {
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        write_config(
+            dir.path(),
+            "config.default.yaml",
+            "channels: {}\nmodels:\n  router: {}\n",
+        );
+        assert!(NervConfig::load_with_policy(dir.path(), false, false).is_ok());
     }
 
     #[test]
