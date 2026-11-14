@@ -22,6 +22,8 @@ from mcp.server.stdio import stdio_server
 from nerv.config import get_workspace_root
 from nerv.memory.manager import DEFAULT_SCOPE, use_scope
 from nerv.security import PendingActionStore, confirmation_reason
+from nerv.security.pending import clean_justification
+from nerv.security.sandbox import ALWAYS_CONFIRM_TOOLS, PATH_ARG_BY_TOOL
 from nerv.tools import builtins as _builtins  # noqa: F401  (registers core tools)
 from nerv.tools import (
     evolution_tools as _evolution_tools,  # noqa: F401  (agent evolution)
@@ -48,6 +50,25 @@ def _project_root() -> Path:
     return Path.cwd().resolve()
 
 
+JUSTIFICATION_PARAM = "justification"
+
+
+def _tool_properties(tool_def: Any) -> dict[str, Any]:
+    """The tool's own JSON-schema ``properties``."""
+    parameters = tool_def.schema.get("function", {}).get("parameters", {})
+    properties = parameters.get("properties", {})
+    return properties if isinstance(properties, dict) else {}
+
+
+def _may_need_confirmation(name: str, tool_def: Any) -> bool:
+    """Whether a call to this tool can be suspended for user confirmation."""
+    return (
+        tool_def.requires_confirmation
+        or name in ALWAYS_CONFIRM_TOOLS
+        or name in PATH_ARG_BY_TOOL
+    )
+
+
 async def execute_or_suspend(
     name: str,
     arguments: dict[str, Any],
@@ -59,10 +80,16 @@ async def execute_or_suspend(
     Returns the text the model should see. Out-of-sandbox / high-risk calls are
     enqueued in the shared store and reported as suspended rather than executed.
     """
-    arguments = arguments or {}
+    arguments = dict(arguments or {})
     tool_def = registry.get_tool(name)
     if tool_def is None:
         return f"Unknown tool: {name}"
+
+    # ``justification`` is an MCP-layer parameter, not part of the tool itself:
+    # take it out before the tool (or the sandbox policy) sees the arguments.
+    justification = ""
+    if JUSTIFICATION_PARAM not in _tool_properties(tool_def):
+        justification = clean_justification(arguments.pop(JUSTIFICATION_PARAM, ""))
 
     reason = confirmation_reason(
         name,
@@ -73,7 +100,11 @@ async def execute_or_suspend(
     )
     if reason:
         record = store.add(
-            name, arguments, reason=reason, scope=os.environ.get(SCOPE_ENV, "")
+            name,
+            arguments,
+            reason=reason,
+            scope=os.environ.get(SCOPE_ENV, ""),
+            justification=justification,
         )
         logger.info("Suspended %s (#%d): %s", name, record.id, reason)
         return (
@@ -109,6 +140,23 @@ def build_server(project_root: Path | None = None) -> Server:
             parameters = tool_def.schema.get("function", {}).get(
                 "parameters", {"type": "object", "properties": {}}
             )
+            if _may_need_confirmation(name, tool_def) and (
+                JUSTIFICATION_PARAM not in _tool_properties(tool_def)
+            ):
+                parameters = {
+                    **parameters,
+                    "properties": {
+                        **_tool_properties(tool_def),
+                        JUSTIFICATION_PARAM: {
+                            "type": "string",
+                            "description": (
+                                "Optional. One sentence saying why this action "
+                                "is needed; shown to the user if it must be "
+                                "confirmed."
+                            ),
+                        },
+                    },
+                }
             tools.append(
                 types.Tool(
                     name=name,
