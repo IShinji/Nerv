@@ -145,6 +145,17 @@ def get_workspace_root(project_root: Path) -> Path:
     return project_root.resolve()
 
 
+def get_shell_env_passthrough(project_root: Path) -> list[str]:
+    """Names of credential-shaped env vars the shell tool may still pass on."""
+    security = load_project_config(project_root).get("security", {})
+    if not isinstance(security, dict):
+        return []
+    names = security.get("shell_env_passthrough", [])
+    if not isinstance(names, list):
+        return []
+    return [str(name) for name in names]
+
+
 DEFAULT_MAX_TOOL_ITERATIONS = 20
 
 

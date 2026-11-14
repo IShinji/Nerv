@@ -6,6 +6,8 @@ import logging
 import subprocess
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from nerv.config import get_shell_env_passthrough
+from nerv.security.env import scrubbed_env
 from nerv.tools._helpers import (
     TIMEZONE_ALIASES,
     _get_project_root,
@@ -64,10 +66,14 @@ def current_time(timezone: str = "local") -> ToolResult:
 async def shell(command: str) -> ToolResult:
     """Run a shell command off the event loop, with a timeout and no stdin."""
     try:
+        # Children must not inherit provider keys the brain loaded from
+        # personal/api_keys.env; only names the user allow-listed pass through.
+        env = scrubbed_env(passthrough=get_shell_env_passthrough(_get_project_root()))
         result = await asyncio.to_thread(
             subprocess.run,
             command,
             shell=True,
+            env=env,
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,
