@@ -30,6 +30,12 @@ from nerv.models import RouteResult
 from nerv.observability import new_trace_id, timed
 from nerv.orchestrator.registry import AgentDefinition, AgentRegistry
 from nerv.proactive import ProactiveMonitor
+from nerv.request_trace import (
+    current_trace,
+    estimate_tokens,
+    request_trace,
+    write_trace,
+)
 from nerv.security import (
     PendingActionStore,
     PendingRecord,
@@ -92,9 +98,18 @@ class Orchestrator:
         """Dispatch a message to the appropriate agent and return the response."""
         # Publish the scope for the duration of the turn: builtin memory tools
         # are module-level and read it to stay inside this sender's history.
-        with use_scope(scope_for(channel, sender)):
-            response = await self._dispatch(message, route_result, channel, sender)
+        scope = scope_for(channel, sender)
+        with use_scope(scope), request_trace(channel, scope) as trace:
+            trace.tier = route_result.model_tier
+            try:
+                response = await self._dispatch(message, route_result, channel, sender)
+            except BaseException as exc:
+                trace.error = type(exc).__name__
+                write_trace(self._project_root, trace)
+                raise
             self._schedule_summary_backfill(channel, sender)
+            # Written after the reply is decided; failures are swallowed inside.
+            write_trace(self._project_root, trace)
             return response
 
     async def dispatch_pending_command(
@@ -105,13 +120,15 @@ class Orchestrator:
         Returns the reply, or None when ``message`` is not a pending-action
         command for this scope (the caller then routes it normally).
         """
-        with use_scope(scope_for(channel, sender)):
+        scope = scope_for(channel, sender)
+        with use_scope(scope), request_trace(channel, scope) as trace:
             reply = await self._handle_pending_action_command(
                 message, sender=sender, channel=channel
             )
             if reply:
                 memory, _ = self._memory_for(channel, sender)
                 self._remember_turn(message, reply, memory)
+                write_trace(self._project_root, trace)
             return reply or None
 
     def _schedule_summary_backfill(self, channel: str, sender: str) -> None:
@@ -183,6 +200,8 @@ class Orchestrator:
 
         # Select model based on tier
         model = self._select_model(route_result.model_tier)
+        if (trace := current_trace()) is not None:
+            trace.model = model
 
         # ── Fallback Workflow Gate ──
         # For tier >= 1: if the selected model is unavailable, attempt to
@@ -249,6 +268,8 @@ class Orchestrator:
             return response
         except Exception as e:
             logger.error("Model call failed: %s", e)
+            if (trace := current_trace()) is not None:
+                trace.error = type(e).__name__
             # Graceful degradation: surface a clean, user-facing message rather
             # than a stack trace, and record the failure for observability.
             return (
@@ -272,6 +293,8 @@ class Orchestrator:
         ]
         if not new_actions:
             return response
+        if (trace := current_trace()) is not None:
+            trace.pending_created = True
         lines = ["", "Waiting for your confirmation:"]
         for action in new_actions:
             reason = f" — {action.reason}" if action.reason else ""
@@ -476,6 +499,10 @@ class Orchestrator:
             load_dotenv(env_path)
 
         max_rounds = get_max_tool_iterations(self._project_root)
+        trace = current_trace()
+        if trace is not None:
+            trace.model = trace.model or model
+            trace.est_input_tokens = estimate_tokens(messages)
         for _round in range(max_rounds):
             result = await complete(
                 messages,
@@ -485,6 +512,11 @@ class Orchestrator:
                 project_root=self._project_root,
             )
             content = result.content
+            if trace is not None:
+                trace.provider = getattr(result, "provider", "") or trace.provider
+                cost = getattr(result, "cost_usd", None)
+                if cost is not None:
+                    trace.cost_usd = (trace.cost_usd or 0.0) + cost
 
             assistant_msg: dict[str, Any] = {"role": "assistant", "content": content}
             if result.tool_calls:
@@ -504,6 +536,8 @@ class Orchestrator:
                     func_details = tc.get("function", {})
                     func_name = func_details.get("name")
                     arguments = func_details.get("arguments", {})
+                    if trace is not None and isinstance(func_name, str):
+                        trace.tools_called.append(func_name)
 
                     resolution = capability_registry.resolve(func_name)
                     if not resolution:
@@ -583,6 +617,8 @@ class Orchestrator:
         channel: str = "",
     ) -> PendingRecord:
         """Store a suspended action for later confirmation."""
+        if (trace := current_trace()) is not None:
+            trace.pending_created = True
         return self._pending_store.add(
             tool_name,
             arguments,
