@@ -43,7 +43,12 @@ Nerv is a personal AI operating system. Rust core (Gateway, hardware detection) 
 - Retrieval over memory is keyword-based today. Multilingual retrieval
   (Chinese and English now, Japanese later) is a firm direction, so a hybrid of
   keyword search and **locally computed** embeddings is planned. Constraints
-  for it: conversation text never leaves the machine; it must respect the same
+  for it: embeddings are always computed on this machine and conversation text
+  never leaves it; the vector store is a configurable backend (local SQLite by
+  default, a third-party vector database only when explicitly enabled in config,
+  and then only vectors and message ids are sent, because vectors can leak the
+  meaning of the text); no language-specific code on the default path, so
+  adding a language means adding evaluation data, not code; it must respect the same
   sender+channel scope isolation as the keyword path; building the index must
   never add latency to a reply; and if the embedding service is unavailable it
   falls back to keyword search. The planned implementation is in Rust, so do
