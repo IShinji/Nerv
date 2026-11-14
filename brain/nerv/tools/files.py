@@ -4,6 +4,7 @@ import logging
 import pathlib
 import subprocess
 
+from nerv.security.env import scrubbed_env
 from nerv.security.sandbox import PROTECTED_FILE_NAMES, is_secret_path
 from nerv.tools._helpers import (
     _get_project_root,
@@ -166,6 +167,7 @@ def grep_search(search_path: str, query: str) -> ToolResult:
             text=True,
             stdin=subprocess.DEVNULL,
             timeout=GREP_TIMEOUT_SECONDS,
+            env=scrubbed_env(),
         )
 
         if result.returncode == 0:

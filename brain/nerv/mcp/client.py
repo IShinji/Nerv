@@ -6,10 +6,11 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from nerv.security.env import scrubbed_env
 
 #: Longest single line accepted from an MCP server (asyncio default is 64 KiB).
 MAX_LINE_BYTES = 64 * 1024 * 1024
@@ -85,7 +86,9 @@ class StdioMcpClient:
                 f"MCP server {self.config.name} is enabled but has no command configured."
             )
 
-        env = os.environ.copy()
+        # Explicit per-server env (below) is the supported way to hand a server
+        # its credentials; ambient credential-shaped names are not inherited.
+        env = scrubbed_env()
         env.update(self.config.env)
 
         cwd = self.project_root
