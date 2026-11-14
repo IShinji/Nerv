@@ -77,7 +77,8 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 | **GUI** — Tauri desktop shell | 🚧 Early | `gui/` |
 | **Agent evolution** — self-updating agent knowledge with version history and rollback | 🚧 Partial | `brain/nerv/evolution.py` |
 | **Agent Store** | 📋 Roadmap | — |
-| **Vector retrieval / RAG** | ❌ Not built — memory is file-backed and summary-based by design | — |
+| **Multilingual retrieval** (hybrid keyword + local embeddings; Chinese and English first, Japanese later) | 📋 Planned — memory is file-backed, summary-based and keyword-searched today | — |
+| **Rust brain** — migrating the Python brain into Rust one module at a time | 🚧 Direction decided; not started | — |
 
 **Size:** 8.8k lines of Python in `brain/nerv/`, 2.1k lines of Rust in `core/`, and 3.9k lines of Python tests. A CI workflow lives in `.github/workflows/ci.yml`; this README does not claim it is passing. Test counts (brain figure collected earlier; the Rust figures were re-run locally after the latest changes):
 
@@ -225,7 +226,7 @@ in different working directories.
 | Layer | Technology | Why |
 |-------|-----------|-----|
 | Core / Gateway | **Rust** | Zero-GC background daemon, native perf, IPC handling |
-| Brain / Agents | **Python** | AI ecosystem, ML integrations, dynamic typing |
+| Brain / Agents | **Python today, Rust next** | The brain uses no ML libraries (five small dependencies), so it is being migrated into Rust module by module for one process, one toolchain and stronger types around the security-sensitive code |
 | Local Models | **Ollama** | Dead simple local inference |
 
 ---
