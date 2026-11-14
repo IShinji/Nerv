@@ -41,6 +41,13 @@ models:
 # user-confirmation queue. Empty = the Nerv project root.
 security:
   workspace_root: ""
+  # Environment variables whose names look like credentials (KEY, TOKEN,
+  # SECRET, PASSWORD, PASSWD, CREDENTIAL) are stripped from the environment of
+  # shell commands and other child processes, so a confirmed command cannot
+  # read the brain's API keys. List exact, case-sensitive names here to pass
+  # one through anyway (e.g. [GITHUB_TOKEN]). Every name added exposes that
+  # secret to any shell command you confirm.
+  shell_env_passthrough: []
 
 # Proactive monitoring runs on the heartbeat (deterministic, no model calls).
 proactive:
