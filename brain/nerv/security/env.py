@@ -10,12 +10,12 @@ import re
 from collections.abc import Iterable, Mapping
 
 # Names containing any of these words are treated as credentials. KEY, TOKEN,
-# SECRET and PASSWORD are the core set; PASSWD, CREDENTIAL (AWS-style) and
-# AUTH (e.g. SSH_AUTH_SOCK, HTTP_AUTH) are added because they carry the same
-# kind of access. Matching is case-insensitive and substring-based, so it
+# SECRET and PASSWORD are the core set; PASSWD and CREDENTIAL (AWS-style) are
+# added because they carry the same kind of access. AUTH is deliberately not
+# matched, so SSH_AUTH_SOCK keeps git-over-ssh working. Matching is case-insensitive and substring-based, so it
 # over-matches (e.g. KEYBOARD_LAYOUT); users restore those via passthrough.
 SENSITIVE_ENV_PATTERN = re.compile(
-    r"KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH", re.IGNORECASE
+    r"KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL", re.IGNORECASE
 )
 
 
