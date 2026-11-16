@@ -270,7 +270,7 @@ class Orchestrator:
         claude-cli and local providers run in Rust. Python loads the user's
         personal API keys before calling cloud providers.
         """
-        with use_scope(scope or DEFAULT_SCOPE):
+        with use_scope(scope or "default"):
             env_path = self._project_root / "personal" / "api_keys.env"
             if env_path.exists():
                 from dotenv import load_dotenv
