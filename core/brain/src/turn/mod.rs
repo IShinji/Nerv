@@ -14,14 +14,14 @@
 //! python-side inside each handler.
 
 pub mod model_loop;
-mod pending;
+pub mod pending;
 mod trace;
 
 #[cfg(test)]
 mod tests;
 
 pub use model_loop::{ModelCaller, ProviderCaller};
-pub use pending::PendingRecord;
+pub use pending::{format_pending_action, PendingRecord};
 pub use trace::TraceRecord;
 
 use std::path::{Path, PathBuf};
@@ -289,6 +289,7 @@ impl TurnRunner {
                 sender,
                 channel,
                 scope,
+                project_root: &self.project_root,
                 memory: memory.clone(),
                 pending_notifications: Vec::new(),
             };

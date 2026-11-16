@@ -4,28 +4,7 @@
 //! python until the tools migrate; this side only renders what the python
 //! `run_tool` / `prepare_turn` RPCs report.
 
-use serde_json::Value;
-
-/// A suspended tool invocation awaiting user confirmation — the JSON shape of
-/// python's `PendingRecord` dataclass.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct PendingRecord {
-    pub id: i64,
-    pub tool_name: String,
-    pub arguments: Value,
-    #[serde(default)]
-    pub reason: String,
-    #[serde(default)]
-    pub sender: String,
-    #[serde(default)]
-    pub channel: String,
-    #[serde(default)]
-    pub scope: String,
-    #[serde(default)]
-    pub created_at: f64,
-    #[serde(default)]
-    pub justification: String,
-}
+pub use crate::tools::pending_store::PendingRecord;
 
 /// Render a user-facing summary of a pending action.
 pub fn format_pending_action(action: &PendingRecord) -> String {
@@ -96,7 +75,7 @@ pub fn format_pending_action(action: &PendingRecord) -> String {
             "Pending action #{id}: {tool} with arguments {args}",
             id = action.id,
             tool = action.tool_name,
-            args = serde_json::to_string(&action.arguments).unwrap_or_default()
+            args = crate::tools::pending_store::python_json_dumps(&action.arguments)
         ),
     };
     if !action.justification.is_empty() {

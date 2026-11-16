@@ -3,7 +3,7 @@
 //! the round cap. Port of `_call_model` in
 //! `brain/nerv/orchestrator/orchestrator.py`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -124,6 +124,7 @@ pub struct LoopContext<'a> {
     pub sender: &'a str,
     pub channel: &'a str,
     pub scope: &'a str,
+    pub project_root: &'a Path,
     /// Shared with the finish phase, which remembers the finalized reply.
     pub memory: std::sync::Arc<crate::memory::MemoryManager>,
     /// Background-alert lines accumulated during the turn (suspended actions
@@ -251,9 +252,10 @@ async fn loop_body(
     ))
 }
 
-/// Execute one round's tool calls through the python `run_tool` RPC and
-/// append one tool message per call. Returns the actions that were suspended
-/// for confirmation, if any.
+/// Execute one round's tool calls — natively for the tools the rust brain
+/// has, through the python `run_tool` RPC for the rest — and append one tool
+/// message per call. Returns the actions that were suspended for
+/// confirmation, if any.
 async fn execute_tool_calls(
     ctx: &mut LoopContext<'_>,
     messages: &mut Vec<ChatMessage>,
@@ -264,19 +266,24 @@ async fn execute_tool_calls(
         let func_name = tc.function.name.clone();
         ctx.trace.tools_called.push(func_name.clone());
 
-        let response = ctx
-            .brain
-            .call(
-                "run_tool",
-                json!({
-                    "name": func_name,
-                    "arguments": tc.function.arguments,
-                    "sender": ctx.sender,
-                    "channel": ctx.channel,
-                    "scope": ctx.scope,
-                }),
-            )
-            .await?;
+        let response = match native_run_tool(ctx, &func_name, &tc.function.arguments).await {
+            Ok(Some(response)) => response,
+            Err(e) => return Err(TurnError::Brain(e)),
+            Ok(None) => ctx
+                .brain
+                .call(
+                    "run_tool",
+                    json!({
+                        "name": func_name,
+                        "arguments": tc.function.arguments,
+                        "sender": ctx.sender,
+                        "channel": ctx.channel,
+                        "scope": ctx.scope,
+                    }),
+                )
+                .await
+                .map_err(TurnError::from)?,
+        };
 
         let suspended = response["suspended"].as_bool().unwrap_or(false);
         let content = response["content"].as_str().unwrap_or("").to_string();
@@ -295,6 +302,68 @@ async fn execute_tool_calls(
         messages.push(ChatMessage::tool(content));
     }
     Ok(queued)
+}
+
+/// Run a tool natively when the rust registry has it; `None` hands the call
+/// to python. The confirmation gate (sandbox policy) runs on both sides for
+/// their respective tools.
+async fn native_run_tool(
+    ctx: &LoopContext<'_>,
+    name: &str,
+    arguments: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, BrainError> {
+    let registry = crate::tools::ToolRegistry;
+    let Some(tool) = registry.get_tool(name) else {
+        return Ok(None);
+    };
+
+    let workspace_root = crate::tools::facade_workspace_root(ctx.project_root);
+    let Some(reason) = crate::tools::sandbox::confirmation_reason(
+        name,
+        arguments,
+        &workspace_root,
+        tool.requires_confirmation,
+        Some(ctx.project_root),
+    ) else {
+        // Execute natively.
+        let tool_ctx = crate::tools::ToolContext {
+            project_root: ctx.project_root.to_path_buf(),
+            workspace_root,
+        };
+        let result = (tool.func)(&tool_ctx, arguments).await;
+        return Ok(Some(json!({
+            "content": result.content,
+            "suspended": false,
+        })));
+    };
+
+    // Suspended: queue it in the shared file-backed store (the python
+    // confirm/cancel flow reads the same file).
+    let store = crate::tools::pending_store::PendingActionStore::new(ctx.project_root);
+    let record = match store.add(
+        tool.name,
+        arguments.clone(),
+        &reason,
+        ctx.sender,
+        ctx.channel,
+        ctx.scope,
+        "",
+    ) {
+        Ok(record) => record,
+        Err(e) => return Err(BrainError::Rpc(format!("pending store failed: {e}"))),
+    };
+    let summary = crate::tools::pending_store_format(&record);
+    let notification = format!(
+        "⚠️ [SYSTEM BACKGROUND ALERT] Pending action #{} ({}) is waiting for confirmation.",
+        record.id, record.tool_name
+    );
+    let response = json!({
+        "content": format!("[ACTION SUSPENDED] {summary}"),
+        "suspended": true,
+        "pending": serde_json::to_value(&record).expect("serializes"),
+        "notification": notification,
+    });
+    Ok(Some(response))
 }
 
 fn round1(value: f64) -> f64 {

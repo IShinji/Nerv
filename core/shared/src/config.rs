@@ -26,6 +26,43 @@ pub struct NervConfig {
     pub brain: BrainConfig,
     #[serde(default)]
     pub orchestrator: OrchestratorConfig,
+    #[serde(default)]
+    pub security: SecurityConfig,
+}
+
+/// Sandbox guards (`security.*`): the workspace root the tools may write in,
+/// and the env vars a scrubbed child may keep.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    #[serde(default)]
+    pub workspace_root: Option<String>,
+    #[serde(default)]
+    pub shell_env_passthrough: Vec<String>,
+}
+
+impl SecurityConfig {
+    /// The sandbox root: the configured one, else the project root.
+    pub fn workspace_root(&self, project_root: &Path) -> PathBuf {
+        self.workspace_root
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|configured| {
+                let expanded = if let Some(rest) = configured.strip_prefix("~/") {
+                    std::env::var_os("HOME")
+                        .map(|home| PathBuf::from(home).join(rest))
+                        .unwrap_or_else(|| PathBuf::from(configured))
+                } else {
+                    PathBuf::from(configured)
+                };
+                expanded.canonicalize().unwrap_or(expanded)
+            })
+            .unwrap_or_else(|| {
+                project_root
+                    .canonicalize()
+                    .unwrap_or(project_root.to_path_buf())
+            })
+    }
 }
 
 /// Cap on native tool-loop rounds per turn (`orchestrator.max_tool_iterations`).

@@ -227,20 +227,25 @@ async fn suspended_tool_calls_end_the_round_with_a_pending_reply() {
         "{captured}"
     );
     assert!(
-        captured.contains("Pending action #7: shell with arguments {}"),
+        // The capture file holds the raw json line (quotes escaped) — and
+        // `shell` is queued natively (rust registry), so the fake brain's
+        // run_tool response is never consulted.
+        captured.contains("Pending action #1: shell with arguments")
+            && captured.contains("rm -rf /"),
+        "{captured}"
+    );
+    assert!(
+        captured.contains("\\nReply with \\\"confirm <id>\\\""),
         "{captured}"
     );
     assert!(
         captured.contains("ALERT"),
         "notifications must reach finish_turn: {captured}"
     );
+    // `shell` is native: no run_tool RPC — the suspension happens in rust.
     assert_eq!(
         read_log(&methods).await,
-        vec!["prepare_turn", "run_tool", "finish_turn"]
-    );
-    assert_eq!(
-        read_log(&methods).await,
-        vec!["prepare_turn", "run_tool", "finish_turn"]
+        vec!["prepare_turn", "finish_turn"]
     );
 }
 
@@ -301,10 +306,14 @@ async fn the_loop_stops_after_the_round_cap() {
     let prepare = agent_prepare();
     let run_tool = serde_json::json!({"content": "tool output", "suspended": false});
     let (runner, _methods) = started_runner(dir.path(), prepare, &[run_tool]).await;
+    // Use an unknown tool so every round goes through the python run_tool
+    // RPC (a registry tool like `shell` would suspend on round one).
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(
-        std::iter::repeat_with(|| tool_calls_result(&[("shell", serde_json::json!({}))]))
-            .take(5)
-            .collect(),
+        std::iter::repeat_with(|| {
+            tool_calls_result(&[("bogus_round_tool", serde_json::json!({}))])
+        })
+        .take(5)
+        .collect(),
     ));
 
     let reply = runner
