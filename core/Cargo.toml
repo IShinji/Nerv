@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "shared",
     "gateway",
+    "brain",
 ]
 
 [workspace.package]

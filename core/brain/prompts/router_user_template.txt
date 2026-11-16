@@ -1,0 +1,5 @@
+Classify this message and return JSON:
+
+Message: {message}
+
+Return format: {"intent": "...", "complexity": "...", "model_tier": N, "agent_type": "...", "needs_capabilities": ["..."], "preferred_execution_mode": "...", "reply": "..."}
