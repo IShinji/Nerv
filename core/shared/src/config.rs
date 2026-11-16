@@ -437,7 +437,7 @@ pub fn check_config_file_mode(
 
 /// Pick the user config file. An explicit override is returned as-is (so a
 /// typo fails loudly when it is read); the fallbacks only count if they exist.
-fn resolve_user_config_path(
+pub fn resolve_user_config_path(
     project_root: &Path,
     env_override: Option<PathBuf>,
     home: Option<PathBuf>,

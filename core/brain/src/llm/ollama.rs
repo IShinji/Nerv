@@ -10,13 +10,14 @@ use std::time::Duration;
 use serde_json::json;
 use tracing::warn;
 
-use super::{truncate, ChatMessage, CompletionResult, LlmError, DEFAULT_OLLAMA_URL};
+use super::{truncate, ChatMessage, CompletionResult, LlmError, ToolCall, DEFAULT_OLLAMA_URL};
 
 pub async fn complete(
     messages: &[ChatMessage],
     model_name: &str,
     temperature: f64,
     json_mode: bool,
+    tools: Option<&[serde_json::Value]>,
     timeout: Duration,
 ) -> Result<CompletionResult, LlmError> {
     let base_url = env::var("NERV_OLLAMA_URL").unwrap_or_else(|_| DEFAULT_OLLAMA_URL.to_string());
@@ -29,6 +30,9 @@ pub async fn complete(
     });
     if json_mode {
         payload["format"] = json!("json");
+    }
+    if let Some(tools) = tools.filter(|t| !t.is_empty()) {
+        payload["tools"] = json!(tools);
     }
 
     let client = reqwest::Client::builder()
@@ -61,7 +65,23 @@ pub async fn complete(
         .as_str()
         .unwrap_or("")
         .to_string();
-    Ok(CompletionResult { content })
+    // Python: list(message_obj.get("tool_calls", []) or []) — items keep the
+    // {"function": {"name", "arguments"}} shape the loop expects.
+    let tool_calls: Vec<ToolCall> = data["message"]["tool_calls"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .filter_map(|tc| serde_json::from_value(tc.clone()).ok())
+        .collect();
+    Ok(CompletionResult {
+        content,
+        tool_calls,
+        runs_own_tool_loop: false,
+        provider: String::new(),
+        duration_ms: None,
+        cost_usd: None,
+        usage: None,
+    })
 }
 
 /// ollama_options from `nerv/hardware.py`: limit threads on Apple Silicon to
