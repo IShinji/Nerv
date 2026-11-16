@@ -2,6 +2,7 @@
 
 use super::pending_store::{clean_justification, PendingActionStore};
 use super::*;
+use crate::memory::{MemoryManager, StoredChatMessage};
 use serde_json::json;
 
 #[test]
@@ -152,6 +153,8 @@ fn native_tools_execute_without_confirmation_for_safe_paths() {
     let ctx = ToolContext {
         project_root: dir.path().to_path_buf(),
         workspace_root: dir.path().to_path_buf(),
+        scope: "test-scope".to_string(),
+        brain: None,
     };
     let result = tokio::runtime::Runtime::new()
         .unwrap()
@@ -167,6 +170,8 @@ fn file_tools_read_and_write_workspace_files() {
     let ctx = ToolContext {
         project_root: dir.path().to_path_buf(),
         workspace_root: dir.path().to_path_buf(),
+        scope: "test-scope".to_string(),
+        brain: None,
     };
     let write = registry.get_tool("write_file_full").unwrap();
     let target = dir.path().join("notes").join("todo.md");
@@ -187,4 +192,124 @@ fn file_tools_read_and_write_workspace_files() {
             &json!({"absolute_path": target.display().to_string()}),
         ));
     assert_eq!(result.content, "hi");
+}
+
+// ── desktop tools (apple script shaping, no real automation in tests) ───────
+
+use super::desktop::{build_hotkey_applescript, escape_applescript_text, normalize_modifiers};
+
+#[test]
+fn hotkey_applescript_covers_special_keys_and_modifiers() {
+    assert_eq!(
+        build_hotkey_applescript("Enter", "").unwrap(),
+        "tell application \"System Events\" to key code 36"
+    );
+    assert_eq!(
+        build_hotkey_applescript("a", "command+shift").unwrap(),
+        "tell application \"System Events\" to keystroke \"a\" using {command down, shift down}"
+    );
+    assert!(build_hotkey_applescript("fn", "").is_err());
+}
+
+#[test]
+fn applescript_text_is_escaped() {
+    assert_eq!(escape_applescript_text("say \"hi\""), "say \\\"hi\\\"");
+    assert_eq!(
+        normalize_modifiers("cmd+option"),
+        ["command down", "option down"]
+    );
+}
+
+#[tokio::test]
+async fn desktop_control_rejects_unknown_actions() {
+    let args = serde_json::json!({"action": "teleport"});
+    let result = super::desktop::desktop_control_impl(&args).await;
+    assert!(result.is_error, "{}", result.content);
+    assert!(
+        result
+            .content
+            .contains("Unsupported desktop_control action"),
+        "{}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn browser_arguments_are_validated() {
+    let (arguments, error) = super::desktop::normalize_arguments(
+        &serde_json::json!({"action": "open_url", "url": "example.com"}),
+    );
+    assert!(error.is_none());
+    assert_eq!(arguments.unwrap()["url"], "https://example.com");
+
+    let (_, error) =
+        super::desktop::normalize_arguments(&serde_json::json!({"action": "open_url"}));
+    assert!(error.unwrap().is_error);
+}
+
+// ── memory tools ────────────────────────────────────────────────────────────
+
+use super::memory;
+
+const FACTS: &str = "# Work\nShips the Nerv gateway.\nPrefers Rust for the core.\n\n# Travel\nBased in Seattle.\nFlies out of SEA.\n";
+
+#[test]
+fn search_memory_tool_reports_scoped_hits() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = MemoryManager::new(dir.path(), "test-scope");
+    manager.save_conversation(&crate::memory::DailyConversation {
+        date: "2026-03-01".to_string(),
+        messages: vec![StoredChatMessage::new(
+            "user",
+            "the vite upgrade broke the peer deps",
+        )],
+        summary: String::new(),
+    });
+
+    let ctx = ToolContext {
+        project_root: dir.path().to_path_buf(),
+        workspace_root: dir.path().to_path_buf(),
+        scope: "test-scope".to_string(),
+        brain: None,
+    };
+    let tool = memory::search_memory();
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on((tool.func)(&ctx, &json!({"query": "vite upgrade"})));
+    assert!(!result.is_error);
+    assert!(result.content.contains("2026-03-01"));
+    assert!(result.content.contains("peer deps"));
+}
+
+#[test]
+fn get_fact_section_tool_lists_and_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("personal").join("memory")).unwrap();
+    std::fs::write(
+        dir.path().join("personal").join("memory").join("facts.md"),
+        FACTS,
+    )
+    .unwrap();
+    let ctx = ToolContext {
+        project_root: dir.path().to_path_buf(),
+        workspace_root: dir.path().to_path_buf(),
+        scope: "test-scope".to_string(),
+        brain: None,
+    };
+    let tool = memory::get_fact_section();
+
+    let hit = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on((tool.func)(&ctx, &json!({"title": "Work"})));
+    assert!(!hit.is_error && hit.content.contains("Prefers Rust"));
+
+    let listing = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on((tool.func)(&ctx, &json!({})));
+    assert!(!listing.is_error && listing.content.contains("Travel"));
+
+    let miss = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on((tool.func)(&ctx, &json!({"title": "Hobbies"})));
+    assert!(miss.is_error && miss.content.contains("Work"));
 }

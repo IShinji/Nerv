@@ -47,10 +47,14 @@ pub struct ToolDefinition {
     >,
 }
 
-/// What a tool implementation gets: the project root and the workspace guard.
+/// What a tool implementation gets: the project root, the workspace guard,
+/// and (when running inside the turn loop) the brain client for python-side
+/// services like the MCP manager.
 pub struct ToolContext {
     pub project_root: PathBuf,
     pub workspace_root: PathBuf,
+    pub scope: String,
+    pub brain: Option<std::sync::Arc<nerv_shared::brain_client::BrainClient>>,
 }
 
 use std::path::PathBuf;
@@ -116,5 +120,11 @@ fn build_registry() -> Vec<ToolDefinition> {
         super::files::read_file(),
         super::files::write_file_full(),
         super::files::grep_search(),
+        super::desktop::browser_interactive(),
+        super::desktop::chrome_browser(),
+        super::desktop::screenshot(),
+        super::desktop::desktop_control(),
+        super::memory::search_memory(),
+        super::memory::get_fact_section(),
     ]
 }

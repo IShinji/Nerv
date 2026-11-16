@@ -3,8 +3,10 @@
 //! `brain/nerv/tools/` (which keeps running for the MCP server until that
 //! migrates too).
 
+pub mod desktop;
 pub mod files;
 pub mod helpers;
+pub mod memory;
 pub mod pending_store;
 pub mod registry;
 pub mod sandbox;

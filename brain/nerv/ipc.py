@@ -131,6 +131,14 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
             tools=params.get("tools") or None,
             scope=params.get("scope", ""),
         )
+    elif method == "browser_mcp_attempt":
+        if params is None:
+            raise ValueError("browser_mcp_attempt method requires params")
+        orchestrator = await _get_orchestrator()
+        return await orchestrator.browser_mcp_attempt(
+            params.get("action", ""),
+            params.get("arguments", {}),
+        )
     elif method == "heartbeat":
         orchestrator = await _get_orchestrator()
         reply = await orchestrator.check_background_tasks()
