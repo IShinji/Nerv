@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 
 from nerv.config import load_project_config
+from nerv.state_version import CURRENT_SCHEMA_VERSION, is_newer_schema
 from nerv.tasks import TaskRunStore
 
 logger = logging.getLogger(__name__)
@@ -109,15 +110,27 @@ class ProactiveMonitor:
             return set()
         try:
             data = json.loads(self._state_path.read_text(encoding="utf-8"))
+            if is_newer_schema(data, self._state_path):
+                return set()
             return set(data.get("notified", []))
         except (json.JSONDecodeError, OSError):
             return set()
 
     def _save_notified(self, notified: set[str]) -> None:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        if self._state_path.exists():
+            try:
+                existing = json.loads(self._state_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                existing = None
+            if is_newer_schema(existing, self._state_path):
+                return
         # Cap stored keys so the file can't grow without bound.
         trimmed = list(notified)[-500:]
         self._state_path.write_text(
-            json.dumps({"notified": trimmed}, ensure_ascii=False),
+            json.dumps(
+                {"schema_version": CURRENT_SCHEMA_VERSION, "notified": trimmed},
+                ensure_ascii=False,
+            ),
             encoding="utf-8",
         )

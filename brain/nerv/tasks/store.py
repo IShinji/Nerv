@@ -13,6 +13,8 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from nerv.state_version import CURRENT_SCHEMA_VERSION, is_newer_schema
+
 # Step / run status values.
 PENDING = "pending"
 RUNNING = "running"
@@ -44,6 +46,7 @@ class TaskRun:
     steps: list[StepState] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    schema_version: int = CURRENT_SCHEMA_VERSION
 
     def first_unfinished(self) -> StepState | None:
         """Return the earliest step that still needs to run."""
@@ -81,12 +84,26 @@ class TaskRunStore:
     def save(self, run: TaskRun) -> None:
         """Atomically persist the current run state."""
         run.updated_at = time.time()
+        run.schema_version = CURRENT_SCHEMA_VERSION
         self._dir.mkdir(parents=True, exist_ok=True)
+        if self._on_disk_is_newer(self._path(run.id)):
+            return
         tmp = self._path(run.id).with_suffix(".json.tmp")
         tmp.write_text(
             json.dumps(asdict(run), ensure_ascii=False, indent=2), encoding="utf-8"
         )
         tmp.replace(self._path(run.id))
+
+    @staticmethod
+    def _on_disk_is_newer(path: Path) -> bool:
+        """Whether an existing file was written by a newer version (keep it)."""
+        if not path.exists():
+            return False
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False
+        return is_newer_schema(data, path)
 
     def get(self, run_id: str) -> TaskRun | None:
         """Load a run by id, or ``None`` if absent/corrupt."""
@@ -96,6 +113,8 @@ class TaskRunStore:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
+            return None
+        if is_newer_schema(data, path):
             return None
         data["steps"] = [StepState(**s) for s in data.get("steps", [])]
         return TaskRun(**data)

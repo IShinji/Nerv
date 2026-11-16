@@ -620,6 +620,8 @@ class Orchestrator:
                 f"Pending action #{action.id}: {action.tool_name} "
                 f"with arguments {json.dumps(action.arguments, ensure_ascii=False)}"
             )
+        if action.justification:
+            summary += f"\n  Justification: {action.justification}"
         return summary
 
     def _build_pending_action_reply(self, actions: list[PendingRecord]) -> str:
