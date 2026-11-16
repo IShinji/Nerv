@@ -5,7 +5,6 @@ use adapter::cli::CliAdapter;
 use adapter::{ChannelAdapter, IncomingMessage};
 use anyhow::{Context, Result};
 use nerv_brain::handle::BrainHandle;
-use nerv_brain::router::Router;
 use nerv_shared::brain_client::{find_brain_dir, BrainClient, BrainSpawnConfig};
 use nerv_shared::config::NervConfig;
 use nerv_shared::message::Message;
@@ -108,8 +107,8 @@ async fn main() -> Result<()> {
     // classifies locally, the python sidecar handles pending/execute.
     let brain = Arc::new(BrainClient::new(brain_spawn_config(&config, &project_root)));
     brain.start().await?;
-    let router = Router::new(&project_root).context("loading the router prompts")?;
-    let brain_handle = Arc::new(BrainHandle::with_router(brain.clone(), router));
+    let brain_handle =
+        Arc::new(BrainHandle::new(brain.clone(), &project_root).context("loading the router prompts")?);
 
     // Create the gateway message channel
     let (gateway_tx, mut gateway_rx) = mpsc::channel::<IncomingMessage>(32);

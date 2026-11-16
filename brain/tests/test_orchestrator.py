@@ -160,9 +160,8 @@ async def test_confirm_pending_action_executes_tool(tmp_path: Path) -> None:
             channel="telegram",
         )
 
-        response = await orchestrator.dispatch(
+        response = await orchestrator.dispatch_pending_command(
             f"confirm {queued.id}",
-            RouteResult(intent="general"),
             channel="telegram",
             sender="user-1",
         )
@@ -185,9 +184,8 @@ async def test_cancel_pending_action_discards_it(tmp_path: Path) -> None:
         channel="telegram",
     )
 
-    response = await orchestrator.dispatch(
+    response = await orchestrator.dispatch_pending_command(
         f"cancel {queued.id}",
-        RouteResult(intent="general"),
         channel="telegram",
         sender="user-1",
     )
@@ -215,10 +213,10 @@ async def test_approve_workflow_review_publishes_shared_workflow(
         proposed_by="general",
     )
 
-    response = await orchestrator.dispatch(
-        f"approve workflow {item.review_id}",
-        RouteResult(intent="general"),
+    result = await orchestrator.prepare_turn(
+        f"approve workflow {item.review_id}", RouteResult(intent="general")
     )
+    response = result["reply"]
 
     assert "Approved workflow review" in response
     assert orchestrator.workflow_registry.find("DraftFlow") is not None

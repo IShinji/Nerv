@@ -5,9 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# The turn loop's model-caller is a trait object (tests inject a fake).
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
 # The facade drives the python sidecar through the shared JSON-RPC client.
 nerv-shared = { path = "../shared", features = ["brain-client"] }
 regex = "1"
+uuid = { version = "1", features = ["v4"] }
 # HTTP for the local Ollama backend only (localhost, plain http://), so TLS
 # stays disabled to keep the dependency footprint small.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
@@ -26,3 +30,6 @@ tracing = "0.1"
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

@@ -24,6 +24,27 @@ pub struct NervConfig {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub brain: BrainConfig,
+    #[serde(default)]
+    pub orchestrator: OrchestratorConfig,
+}
+
+/// Cap on native tool-loop rounds per turn (`orchestrator.max_tool_iterations`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestratorConfig {
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: u32,
+}
+
+impl Default for OrchestratorConfig {
+    fn default() -> Self {
+        Self {
+            max_tool_iterations: default_max_tool_iterations(),
+        }
+    }
+}
+
+fn default_max_tool_iterations() -> u32 {
+    20
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

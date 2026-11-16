@@ -42,40 +42,41 @@ pub enum LlmError {
 
 /// One chat message. Roles mirror the Python client: `system`, `user`,
 /// `assistant`, `tool` (any unknown role is treated as `user` by the
-/// claude-cli flattener, like Python).
-#[derive(Debug, Clone, Serialize)]
+/// claude-cli flattener, like Python). `tool_calls` is set on an assistant
+/// message that requested tool executions (the ollama/litellm loop).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+}
+
+impl ChatMessage {
+    fn new(role: &str, content: impl Into<String>) -> Self {
+        Self {
+            role: role.to_string(),
+            content: content.into(),
+            tool_calls: None,
+        }
+    }
 }
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self {
-            role: "system".to_string(),
-            content: content.into(),
-        }
+        Self::new("system", content)
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: "user".to_string(),
-            content: content.into(),
-        }
+        Self::new("user", content)
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self {
-            role: "assistant".to_string(),
-            content: content.into(),
-        }
+        Self::new("assistant", content)
     }
 
     pub fn tool(content: impl Into<String>) -> Self {
-        Self {
-            role: "tool".to_string(),
-            content: content.into(),
-        }
+        Self::new("tool", content)
     }
 }
 

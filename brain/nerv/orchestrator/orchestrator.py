@@ -13,12 +13,13 @@ import json
 import logging
 import os
 import re
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from nerv.config import get_max_tool_iterations, get_workspace_root
+from nerv.config import get_workspace_root
 from nerv.memory.context import ContextManager
 from nerv.memory.manager import (
     DEFAULT_SCOPE,
@@ -27,15 +28,8 @@ from nerv.memory.manager import (
     use_scope,
 )
 from nerv.models import RouteResult
-from nerv.observability import new_trace_id, timed
 from nerv.orchestrator.registry import AgentDefinition, AgentRegistry
 from nerv.proactive import ProactiveMonitor
-from nerv.request_trace import (
-    current_trace,
-    estimate_tokens,
-    request_trace,
-    write_trace,
-)
 from nerv.security import (
     PendingActionStore,
     PendingRecord,
@@ -88,47 +82,23 @@ class Orchestrator:
             "Orchestrator initialized with %d agents", len(self.registry.list_agents())
         )
 
-    async def dispatch(
-        self,
-        message: str,
-        route_result: RouteResult,
-        channel: str = "",
-        sender: str = "",
-    ) -> str:
-        """Dispatch a message to the appropriate agent and return the response."""
-        # Publish the scope for the duration of the turn: builtin memory tools
-        # are module-level and read it to stay inside this sender's history.
-        scope = scope_for(channel, sender)
-        with use_scope(scope), request_trace(channel, scope) as trace:
-            trace.tier = route_result.model_tier
-            try:
-                response = await self._dispatch(message, route_result, channel, sender)
-            except BaseException as exc:
-                trace.error = type(exc).__name__
-                write_trace(self._project_root, trace)
-                raise
-            self._schedule_summary_backfill(channel, sender)
-            # Written after the reply is decided; failures are swallowed inside.
-            write_trace(self._project_root, trace)
-            return response
-
     async def dispatch_pending_command(
         self, message: str, channel: str = "", sender: str = ""
     ) -> str | None:
         """Handle ``confirm <id>`` / ``cancel <id>`` without any routing.
 
         Returns the reply, or None when ``message`` is not a pending-action
-        command for this scope (the caller then routes it normally).
+        command for this scope (the caller then routes it normally). The
+        trace line is written by the Rust facade, which owns the timing.
         """
         scope = scope_for(channel, sender)
-        with use_scope(scope), request_trace(channel, scope) as trace:
+        with use_scope(scope):
             reply = await self._handle_pending_action_command(
                 message, sender=sender, channel=channel
             )
             if reply:
                 memory, _ = self._memory_for(channel, sender)
                 self._remember_turn(message, reply, memory)
-                write_trace(self._project_root, trace)
             return reply or None
 
     def _schedule_summary_backfill(self, channel: str, sender: str) -> None:
@@ -157,134 +127,244 @@ class Orchestrator:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-    async def _dispatch(
+    async def prepare_turn(
         self,
         message: str,
         route_result: RouteResult,
-        channel: str,
-        sender: str,
-    ) -> str:
-        """Run one turn. Callers go through :meth:`dispatch`, which binds scope."""
-        memory, context_manager = self._memory_for(channel, sender)
+        channel: str = "",
+        sender: str = "",
+    ) -> dict[str, Any]:
+        """Everything before the model call, for the Rust turn loop.
 
-        pending_response = await self._handle_pending_action_command(
-            message,
-            sender=sender,
-            channel=channel,
-        )
-        if pending_response:
-            self._remember_turn(message, pending_response, memory)
-            return pending_response
-
-        review_response = self._handle_review_queue_command(message)
-        if review_response:
-            self._remember_turn(message, review_response, memory)
-            return review_response
-
-        # If the router already provided a direct reply, use it
-        if route_result.reply:
-            self._remember_turn(message, route_result.reply, memory)
-            return route_result.reply
-
-        # Find the matching agent, or manufacture one
-        agent = await self._find_agent(route_result, message)
-        logger.info(
-            "Dispatching to agent '%s' (intent=%s, tier=%d)",
-            agent.name,
-            route_result.intent,
-            route_result.model_tier,
-        )
-
-        # 1. Save user's message to this conversation's persistent memory
-        memory.append_message("user", message)
-
-        # Select model based on tier
-        model = self._select_model(route_result.model_tier)
-        if (trace := current_trace()) is not None:
-            trace.model = model
-
-        # ── Fallback Workflow Gate ──
-        # For tier >= 1: if the selected model is unavailable, attempt to
-        # fulfil the request via a user-configured fallback workflow.
-        if route_result.model_tier >= 1:
-            fallback_response = await self._try_workflow_fallback(
-                agent, message, route_result.model_tier, model
+        Returns a status dict: pending/review/direct/workflow_fallback carry a
+        reply (no model call); "agent" carries the agent, model, assembled
+        messages, tool schemas and the pending-action snapshot so the Rust
+        loop drives the model call itself.
+        """
+        scope = scope_for(channel, sender)
+        with use_scope(scope):
+            # confirm/cancel and review commands never reach a model call; a
+            # late confirm is caught here too (one may have been queued by the
+            # MCP server since check_pending ran).
+            pending_response = await self._handle_pending_action_command(
+                message, sender=sender, channel=channel
             )
-            if fallback_response is not None:
-                memory.append_message("assistant", fallback_response)
-                return fallback_response
+            if pending_response:
+                memory, _ = self._memory_for(channel, sender)
+                self._remember_turn(message, pending_response, memory)
+                return {"status": "pending", "reply": pending_response}
 
-        # 2. Build contextual messages (System + Facts + History + Current msg)
-        # Note: the current user_msg is passed in separately for context bounds
-        extra_sections = [
-            self.workflow_registry.render_catalog(agent),
-            self.skill_registry.render_catalog(agent),
-        ]
-        messages = context_manager.build_messages(
-            agent,
-            message,
-            max_history_msg=10,
-            extra_system_sections=extra_sections,
-        )
+            review_response = self._handle_review_queue_command(message)
+            if review_response:
+                memory, _ = self._memory_for(channel, sender)
+                self._remember_turn(message, review_response, memory)
+                return {"status": "review", "reply": review_response}
 
-        # Build tools payload if agent has any
-        tools_schemas = None
-        if agent.tools:
-            from nerv.capabilities import capability_registry
+            # If the router already provided a direct reply, use it
+            if route_result.reply:
+                memory, _ = self._memory_for(channel, sender)
+                self._remember_turn(message, route_result.reply, memory)
+                return {"status": "direct", "reply": route_result.reply}
 
-            tools_schemas = capability_registry.get_schemas(agent.tools)
+            # Find the matching agent, or manufacture one
+            agent = await self._find_agent(route_result, message)
+            logger.info(
+                "Dispatching to agent '%s' (intent=%s, tier=%d)",
+                agent.name,
+                route_result.intent,
+                route_result.model_tier,
+            )
 
-        # Actions already waiting before this turn; anything new afterwards was
-        # queued during it (possibly by the MCP server process).
-        known_pending = {a.id for a in self._visible_pending_actions(sender, channel)}
+            # 1. Save user's message to this conversation's persistent memory
+            memory, context_manager = self._memory_for(channel, sender)
+            memory.append_message("user", message)
 
-        # Call the model (traced for observability + reliability debugging)
-        try:
-            with timed(
-                "turn",
-                trace_id=new_trace_id(),
-                channel=channel,
-                intent=route_result.intent,
-                agent=agent.name,
-                tier=route_result.model_tier,
-                model=model,
-            ):
-                response = await self._call_model(
-                    model,
-                    messages,
-                    tools_schemas,
-                    agent_tools=agent.tools,
-                    sender=sender,
-                    channel=channel,
+            # Select model based on tier
+            model = self._select_model(route_result.model_tier)
+
+            # ── Fallback Workflow Gate ──
+            # For tier >= 1: if the selected model is unavailable, attempt to
+            # fulfil the request via a user-configured fallback workflow.
+            if route_result.model_tier >= 1:
+                fallback_response = await self._try_workflow_fallback(
+                    agent, message, route_result.model_tier, model
                 )
+                if fallback_response is not None:
+                    memory.append_message("assistant", fallback_response)
+                    return {
+                        "status": "workflow_fallback",
+                        "reply": fallback_response,
+                    }
 
-            response = self._append_new_pending(
-                response, known_pending, sender, channel
+            # 2. Build contextual messages (System + Facts + History + Current msg)
+            # Note: the current user_msg is passed in separately for context bounds
+            extra_sections = [
+                self.workflow_registry.render_catalog(agent),
+                self.skill_registry.render_catalog(agent),
+            ]
+            messages = context_manager.build_messages(
+                agent,
+                message,
+                max_history_msg=10,
+                extra_system_sections=extra_sections,
+            )
+
+            # Build tools payload if agent has any
+            tools_schemas = None
+            if agent.tools:
+                from nerv.capabilities import capability_registry
+
+                tools_schemas = capability_registry.get_schemas(agent.tools)
+
+            # Actions already waiting before this turn; anything new afterwards
+            # was queued during it (possibly by the MCP server process).
+            known_pending = [
+                asdict(a) for a in self._visible_pending_actions(sender, channel)
+            ]
+
+            return {
+                "status": "agent",
+                "agent": {"name": agent.name, "tools": list(agent.tools)},
+                "model": model,
+                "messages": messages,
+                "tools_schemas": tools_schemas,
+                "known_pending": known_pending,
+            }
+
+    async def run_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        sender: str = "",
+        channel: str = "",
+    ) -> dict[str, Any]:
+        """One tool call for the Rust loop: resolve, gate, execute or suspend.
+
+        Mirrors the per-tool-call block of the old `_call_model`.
+        """
+        from nerv.capabilities import capability_registry
+
+        resolution = capability_registry.resolve(name)
+        if not resolution:
+            # Agent hallucinated a tool
+            return {"content": f"Unknown tool: {name}", "suspended": False}
+
+        tool_def = resolution.tool_def
+        executable_name = resolution.provider_name
+
+        reason = confirmation_reason(
+            executable_name,
+            arguments,
+            self._workspace_root,
+            requires_confirmation=tool_def.requires_confirmation,
+            project_root=self._project_root,
+        )
+        if reason:
+            pending_action = self._queue_pending_action(
+                executable_name,
+                arguments,
+                reason=reason,
+                sender=sender,
+                channel=channel,
+            )
+            notification = (
+                "⚠️ [SYSTEM BACKGROUND ALERT] "
+                f"Pending action #{pending_action.id} ({executable_name}) is "
+                "waiting for confirmation."
+            )
+            self._pending_notifications.append(notification)
+            logger.warning(
+                "Tool %s suspended for confirmation: %s", executable_name, reason
+            )
+            return {
+                "content": (
+                    "[ACTION SUSPENDED] " + self._format_pending_action(pending_action)
+                ),
+                "suspended": True,
+                "pending": asdict(pending_action),
+                "notification": notification,
+            }
+
+        logger.debug("Executing tool %s with args %s", executable_name, arguments)
+        if inspect.iscoroutinefunction(tool_def.func):
+            tool_result = await tool_def.func(**arguments)
+        else:
+            tool_result = tool_def.func(**arguments)
+        return {"content": tool_result.content, "suspended": False}
+
+    async def finish_turn(
+        self,
+        message: str,
+        reply: str,
+        channel: str = "",
+        sender: str = "",
+        known_pending: list[dict[str, Any]] | None = None,
+        notifications: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Finalize a turn for the Rust loop: surface pendings queued during
+        it, remember the assistant reply, merge background alerts, schedule
+        the summary backfill."""
+        scope = scope_for(channel, sender)
+        with use_scope(scope):
+            memory, _ = self._memory_for(channel, sender)
+            known_ids = {
+                int(item["id"]) for item in (known_pending or []) if "id" in item
+            }
+            final_reply, pending_created = self._append_new_pending(
+                reply, known_ids, sender, channel
             )
 
             # 3. Save assistant's reply to memory
-            memory.append_message("assistant", response)
+            memory.append_message("assistant", final_reply)
 
-            return response
-        except Exception as e:
-            logger.error("Model call failed: %s", e)
-            if (trace := current_trace()) is not None:
-                trace.error = type(e).__name__
-            # Graceful degradation: surface a clean, user-facing message rather
-            # than a stack trace, and record the failure for observability.
-            return (
-                "I hit a problem reaching the model and couldn't complete that "
-                "just now. Please try again in a moment."
-            )
+            if notifications:
+                self._pending_notifications.extend(notifications)
+
+            self._schedule_summary_backfill(channel, sender)
+            return {"reply": final_reply, "pending_created": pending_created}
+
+    async def complete_turn(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """One python llm call for backends the rust client doesn't serve.
+
+        Only the litellm path routes here (a python-only dependency); the
+        claude-cli and local providers run in Rust. Python loads the user's
+        personal API keys before calling cloud providers.
+        """
+        env_path = self._project_root / "personal" / "api_keys.env"
+        if env_path.exists():
+            from dotenv import load_dotenv
+
+            load_dotenv(env_path)
+
+        from nerv.llm import complete
+
+        result = await complete(
+            messages, model=model, tools=tools, project_root=self._project_root
+        )
+        return {
+            "content": result.content,
+            "tool_calls": result.tool_calls,
+            "runs_own_tool_loop": result.runs_own_tool_loop,
+            "provider": result.provider,
+            "duration_ms": result.duration_ms,
+            "cost_usd": result.cost_usd,
+            "usage": result.usage,
+        }
 
     def _append_new_pending(
         self, response: str, known_ids: set[int], sender: str, channel: str
-    ) -> str:
+    ) -> tuple[str, bool]:
         """Mention actions queued during the turn that the reply doesn't cover.
 
         Under the claude-cli backend the MCP server (a separate process) queues
         suspended actions in the shared store; the model may not mention them,
-        so the user would never learn that something awaits approval.
+        so the user would never learn that something awaits approval. Returns
+        the (possibly extended) reply and whether anything new was surfaced.
         """
         new_actions = [
             a
@@ -292,15 +372,13 @@ class Orchestrator:
             if a.id not in known_ids and f"#{a.id}" not in response
         ]
         if not new_actions:
-            return response
-        if (trace := current_trace()) is not None:
-            trace.pending_created = True
+            return response, False
         lines = ["", "Waiting for your confirmation:"]
         for action in new_actions:
             reason = f" — {action.reason}" if action.reason else ""
             lines.append(f"- {self._format_pending_action(action)}{reason}")
         lines.append('Reply "confirm <id>" to run one, or "cancel <id>" to discard it.')
-        return response + "\n".join(lines)
+        return response + "\n".join(lines), True
 
     async def _find_agent(
         self, route_result: RouteResult, message_hint: str
@@ -474,140 +552,6 @@ class Orchestrator:
             logger.info("Falling back to tier 0 model after workflow failure.")
             return None
 
-    async def _call_model(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools_schemas: list[dict[str, Any]] | None = None,
-        agent_tools: list[str] | None = None,
-        sender: str = "",
-        channel: str = "",
-    ) -> str:
-        """Run the model turn loop, executing native tool calls along the way.
-
-        For the claude-cli backend, Claude Code drives its own tool loop (Nerv
-        tools exposed via MCP), so one call returns the final answer. For the
-        ollama / litellm backends, Nerv drives the function-calling loop here.
-        """
-        from nerv.llm import complete
-
-        # Map personal secrets for any API-backed (litellm) provider.
-        env_path = self._project_root / "personal" / "api_keys.env"
-        if env_path.exists():
-            from dotenv import load_dotenv
-
-            load_dotenv(env_path)
-
-        max_rounds = get_max_tool_iterations(self._project_root)
-        trace = current_trace()
-        if trace is not None:
-            trace.model = trace.model or model
-            trace.est_input_tokens = estimate_tokens(messages)
-        for _round in range(max_rounds):
-            result = await complete(
-                messages,
-                model=model,
-                tools=tools_schemas,
-                tool_names=agent_tools,
-                project_root=self._project_root,
-            )
-            content = result.content
-            if trace is not None:
-                trace.provider = getattr(result, "provider", "") or trace.provider
-                cost = getattr(result, "cost_usd", None)
-                if cost is not None:
-                    trace.cost_usd = (trace.cost_usd or 0.0) + cost
-
-            assistant_msg: dict[str, Any] = {"role": "assistant", "content": content}
-            if result.tool_calls:
-                assistant_msg["tool_calls"] = result.tool_calls
-            messages.append(assistant_msg)
-
-            # claude-cli already executed any tools internally via MCP.
-            if result.runs_own_tool_loop:
-                return content or "I received an empty response from the model."
-
-            if result.tool_calls:
-                logger.info("Model requested %d tool calls", len(result.tool_calls))
-                from nerv.capabilities import capability_registry
-
-                queued_actions: list[PendingRecord] = []
-                for tc in result.tool_calls:
-                    func_details = tc.get("function", {})
-                    func_name = func_details.get("name")
-                    arguments = func_details.get("arguments", {})
-                    if trace is not None and isinstance(func_name, str):
-                        trace.tools_called.append(func_name)
-
-                    resolution = capability_registry.resolve(func_name)
-                    if not resolution:
-                        # Agent hallucinated a tool
-                        messages.append(
-                            {"role": "tool", "content": f"Unknown tool: {func_name}"}
-                        )
-                        continue
-
-                    tool_def = resolution.tool_def
-                    executable_name = resolution.provider_name
-
-                    reason = confirmation_reason(
-                        executable_name,
-                        arguments,
-                        self._workspace_root,
-                        requires_confirmation=tool_def.requires_confirmation,
-                        project_root=self._project_root,
-                    )
-                    if reason:
-                        pending_action = self._queue_pending_action(
-                            executable_name,
-                            arguments,
-                            reason=reason,
-                            sender=sender,
-                            channel=channel,
-                        )
-                        queued_actions.append(pending_action)
-                        tool_result_content = (
-                            "[ACTION SUSPENDED] "
-                            + self._format_pending_action(pending_action)
-                        )
-                        self._pending_notifications.append(
-                            "⚠️ [SYSTEM BACKGROUND ALERT] "
-                            f"Pending action #{pending_action.id} ({executable_name}) is waiting for confirmation."
-                        )
-                        logger.warning(
-                            "Tool %s suspended for confirmation: %s",
-                            executable_name,
-                            reason,
-                        )
-                    else:
-                        logger.debug(
-                            "Executing tool %s with args %s", executable_name, arguments
-                        )
-                        if inspect.iscoroutinefunction(tool_def.func):
-                            tool_result = await tool_def.func(**arguments)
-                        else:
-                            tool_result = tool_def.func(**arguments)
-                        tool_result_content = tool_result.content
-
-                    messages.append({"role": "tool", "content": tool_result_content})
-
-                if queued_actions:
-                    return self._build_pending_action_reply(queued_actions)
-
-                # Loop continues, querying the model with the new tool context.
-                continue
-
-            if not content:
-                return "I received an empty response from the model."
-            return content
-
-        logger.warning("Tool loop stopped after %d rounds", max_rounds)
-        return (
-            f"I stopped after {max_rounds} rounds of tool calls without reaching "
-            "a final answer. Try a narrower request, or raise "
-            "orchestrator.max_tool_iterations in the config."
-        )
-
     def _queue_pending_action(
         self,
         tool_name: str,
@@ -617,8 +561,6 @@ class Orchestrator:
         channel: str = "",
     ) -> PendingRecord:
         """Store a suspended action for later confirmation."""
-        if (trace := current_trace()) is not None:
-            trace.pending_created = True
         return self._pending_store.add(
             tool_name,
             arguments,
@@ -659,15 +601,6 @@ class Orchestrator:
         if action.justification:
             summary += f"\n  Justification: {action.justification}"
         return summary
-
-    def _build_pending_action_reply(self, actions: list[PendingRecord]) -> str:
-        """Create a deterministic user reply for queued high-risk actions."""
-        lines = ["I queued the following high-risk action(s) for confirmation:"]
-        lines.extend(f"- {self._format_pending_action(action)}" for action in actions)
-        lines.append(
-            'Reply with "confirm <id>" to run one, or "cancel <id>" to discard it.'
-        )
-        return "\n".join(lines)
 
     def _visible_pending_actions(
         self, sender: str, channel: str

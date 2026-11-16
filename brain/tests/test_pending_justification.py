@@ -90,8 +90,8 @@ def test_display_shows_justification_only_when_present(tmp_path: Path) -> None:
     shown = orch._format_pending_action(with_why)
     assert "Justification: list the folder" in shown
     assert "Justification" not in orch._format_pending_action(plain)
-    # The same text appears in the confirmation prompt built for the user.
-    assert "list the folder" in orch._build_pending_action_reply([with_why])
+    # The confirmation prompt assembled by the rust loop renders the same
+    # summary (pinned in core/brain/src/turn).
 
 
 async def test_mcp_justification_reaches_user_listing(tmp_path: Path) -> None:
@@ -104,6 +104,6 @@ async def test_mcp_justification_reaches_user_listing(tmp_path: Path) -> None:
     )
     orch = Orchestrator(tmp_path)
     [action] = orch._visible_pending_actions("", "")
-    text = orch._append_new_pending("done", set(), "", "")
+    text, _created = orch._append_new_pending("done", set(), "", "")
     assert "Justification: check the build output" in text
     assert action.justification == "check the build output"
