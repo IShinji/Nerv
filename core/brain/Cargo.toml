@@ -8,6 +8,7 @@ license.workspace = true
 # The turn loop's model-caller is a trait object (tests inject a fake).
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 # The facade drives the python sidecar through the shared JSON-RPC client.
 nerv-shared = { path = "../shared", features = ["brain-client"] }
 regex = "1"
