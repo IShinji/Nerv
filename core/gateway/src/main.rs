@@ -107,8 +107,9 @@ async fn main() -> Result<()> {
     // classifies locally, the python sidecar handles pending/execute.
     let brain = Arc::new(BrainClient::new(brain_spawn_config(&config, &project_root)));
     brain.start().await?;
-    let brain_handle =
-        Arc::new(BrainHandle::new(brain.clone(), &project_root).context("loading the router prompts")?);
+    let brain_handle = Arc::new(
+        BrainHandle::new(brain.clone(), &project_root).context("loading the router prompts")?,
+    );
 
     // Create the gateway message channel
     let (gateway_tx, mut gateway_rx) = mpsc::channel::<IncomingMessage>(32);
