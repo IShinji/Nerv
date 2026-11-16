@@ -11,6 +11,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # Same supervised brain client and config loader the gateway uses, so both
 # hosts spawn the brain identically instead of diverging.
+nerv-brain = { path = "../../core/brain" }
 nerv-shared = { path = "../../core/shared", features = ["brain-client"] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }

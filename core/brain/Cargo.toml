@@ -5,7 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-nerv-shared = { path = "../shared" }
+# The facade drives the python sidecar through the shared JSON-RPC client.
+nerv-shared = { path = "../shared", features = ["brain-client"] }
 regex = "1"
 # HTTP for the local Ollama backend only (localhost, plain http://), so TLS
 # stays disabled to keep the dependency footprint small.

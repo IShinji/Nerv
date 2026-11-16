@@ -9,6 +9,7 @@ name = "nerv"
 path = "src/main.rs"
 
 [dependencies]
+nerv-brain = { path = "../brain" }
 nerv-shared = { path = "../shared", features = ["brain-client"] }
 anyhow = "1"
 async-trait = "0.1"

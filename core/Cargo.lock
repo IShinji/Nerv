@@ -1004,6 +1004,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "nerv-brain",
  "nerv-shared",
  "serde",
  "serde_json",

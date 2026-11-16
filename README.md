@@ -61,7 +61,7 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 
 | Subsystem | Status | Where |
 |---|---|---|
-| **Router** — intent classification + model tier selection from a small dedicated prompt, with an offline eval harness | ✅ Built | `brain/nerv/router/`, `brain/nerv/eval.py` |
+| **Router** — intent classification + model tier selection from a small dedicated prompt, with an offline eval harness | ✅ Built (migrated to Rust) | `core/brain/src/router.rs` |
 | **Orchestrator + Agent Factory** — task dispatch, runtime policy injection, on-demand specialist agent creation | ✅ Built | `brain/nerv/orchestrator/` |
 | **Tool / function calling** — decorator-based registry that derives JSON schemas from Python signatures; **33 registered tools** | ✅ Built | `brain/nerv/tools/` |
 | **MCP client** — connect to external MCP servers, with builtin presets (e.g. Chrome DevTools) and a diagnostics tool | ✅ Built | `brain/nerv/mcp/` |
@@ -78,14 +78,14 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 | **Agent evolution** — self-updating agent knowledge with version history and rollback | 🚧 Partial | `brain/nerv/evolution.py` |
 | **Agent Store** | 📋 Roadmap | — |
 | **Multilingual retrieval** (hybrid keyword + local embeddings; Chinese and English first, Japanese later) | 📋 Planned — memory is file-backed, summary-based and keyword-searched today | — |
-| **Rust brain** — migrating the Python brain into Rust one module at a time | 🚧 Direction decided; not started | — |
+| **Rust brain** — migrating the Python brain into Rust one module at a time | 🚧 In progress — router migrated; orchestrator, memory, tools still Python | `core/brain/` |
 
 **Size:** 8.8k lines of Python in `brain/nerv/`, 2.1k lines of Rust in `core/`, and 3.9k lines of Python tests. A CI workflow lives in `.github/workflows/ci.yml`; this README does not claim it is passing. Test counts (brain figure collected earlier; the Rust figures were re-run locally after the latest changes):
 
 | Suite | Command | Tests |
 |---|---|---|
-| Brain | `cd brain && uv run pytest` | 205 |
-| Core (Rust) | `cd core && cargo test --workspace` | 61 |
+| Brain | `cd brain && uv run pytest` | 264 |
+| Core (Rust) | `cd core && cargo test --workspace` | 110 |
 | GUI (Rust) | `cd gui/src-tauri && cargo test` | 9 |
 
 CI also enforces `ruff check`, `ruff format --check`, `cargo fmt --check`, and
@@ -167,7 +167,7 @@ cd Nerv
 cd brain
 uv sync                 # add `--extra litellm` only if you use the dormant litellm: backend
 
-# Run the test suite (205 tests, ~2s)
+# Run the test suite (264 tests, ~3s)
 uv run pytest
 
 # Run the gateway

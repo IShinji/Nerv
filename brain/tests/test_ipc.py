@@ -172,9 +172,8 @@ async def test_concurrency_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_ping_does_not_build_the_orchestrator() -> None:
-    """Readiness probes must stay cheap — no router, no orchestrator."""
+    """Readiness probes must stay cheap — no orchestrator."""
     assert await ipc.handle_request("ping", None) == {"status": "ok"}
-    assert ipc._router is None
     assert ipc._orchestrator is None
 
 
