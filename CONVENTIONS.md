@@ -21,7 +21,7 @@ nerv/
 │   ├── gateway/       # Channel adapters, message routing
 │   ├── detector/      # Hardware detection
 │   └── shared/        # Shared types, config, IPC protocol
-├── brain/             # Python — Router, orchestrator, agents, memory
+├── brain/             # Python — Router, orchestrator, agents, memory (being migrated to Rust; bug fixes only)
 │   ├── pyproject.toml # Project config (use uv or poetry)
 │   ├── nerv/          # Main package
 │   │   ├── router/
@@ -80,6 +80,8 @@ mod telegram_adapter;
 - 锁定版本：提交 `Cargo.lock`
 
 ## 4. Python 规范
+
+> **维护模式（2026-11-14 起）：** 大脑正在逐模块迁移到 Rust。Python 代码只接受 bug 修复和小而独立的加固；新功能写 Rust。迁移规则见 `CLAUDE.md` 的 "Rust migration rules"。以下规范在 Python 代码被删除之前继续适用。
 
 ### 风格
 - Formatter: `ruff format`（兼容 black 风格）
@@ -152,6 +154,8 @@ class RouterResult:
 - 每条消息占一行（newline-delimited JSON）
 - stderr 保留给日志输出，不用于 IPC
 - Python 进程由 Rust 启动和管理（sidecar 模式）
+- 迁移期间这个协议保持不变；最后一个 Python 模块被迁走后，本节和 Python sidecar 一起删除
+- 计划中（尚未实现）：大脑通过 `notify`（无 `id` 的单向消息）带上 `channel` 和 `sender` 通知网关，网关只发给对应的人，不再对所有白名单用户广播。目前网关收到 `notify` 只写日志
 
 ## 6. 配置文件规范
 

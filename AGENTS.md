@@ -6,6 +6,8 @@ Read and follow `CONVENTIONS.md` for all code style, naming, and project structu
 
 Nerv is a personal AI operating system. Architecture: Rust core + Python brain + Tauri GUI (later).
 
+Direction (decided 2026-11-14): the brain is being unified into Rust, one module at a time. Until a module is migrated its Python implementation stays. New features are written in Rust; the Python brain only gets bug fixes. See "Rust migration rules" in `CLAUDE.md`.
+
 - `core/` — Rust: Gateway (channel adapters), hardware detection, process management
 - `brain/` — Python: Router, Orchestrator, Agent Factory, Context Manager, Memory, Tools
 - `agents/` — YAML agent definitions

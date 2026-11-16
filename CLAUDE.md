@@ -8,6 +8,8 @@ Read `NERV-PRD.md` for the full product requirements (if present in project root
 
 Nerv is a personal AI operating system. Rust core (Gateway, hardware detection) + Python brain (Router, Orchestrator, Agents) + Tauri GUI (Phase 2).
 
+**Direction (decided 2026-11-14): the brain is being unified into Rust**, one module at a time. Until a module is migrated its Python implementation stays and keeps working.
+
 ## Key Architecture Decisions
 
 - Rust and Python communicate via JSON-RPC 2.0 over stdin/stdout (newline-delimited)
@@ -38,9 +40,19 @@ Nerv is a personal AI operating system. Rust core (Gateway, hardware detection) 
   commands, so an unauthenticated channel is a remote shell
 - Conversation memory is scoped per sender+channel (`nerv/memory/manager.py`);
   `facts.md` is deliberately shared across a single owner's channels
-- Retrieval over memory is keyword-based, not vector-based, and that is a
-  deliberate choice for a single owner's corpus — do not add an embedding
-  index without evidence that keyword search is missing real recalls
+- Retrieval over memory is keyword-based today. Multilingual retrieval
+  (Chinese and English now, Japanese later) is a firm direction, so a hybrid of
+  keyword search and **locally computed** embeddings is planned. Constraints
+  for it: embeddings are always computed on this machine and conversation text
+  never leaves it; the vector store is a configurable backend (local SQLite by
+  default, a third-party vector database only when explicitly enabled in config,
+  and then only vectors and message ids are sent, because vectors can leak the
+  meaning of the text); no language-specific code on the default path, so
+  adding a language means adding evaluation data, not code; it must respect the same
+  sender+channel scope isolation as the keyword path; building the index must
+  never add latency to a reply; and if the embedding service is unavailable it
+  falls back to keyword search. The planned implementation is in Rust, so do
+  not extend the Python keyword search beyond bug fixes.
 - Memory tools (`nerv/tools/memory.py`) read the scope the orchestrator binds
   via `use_scope`; it fails closed to the default scope, so a tool can never
   read another sender's history. Anything reaching memory from a new entry
@@ -48,6 +60,23 @@ Nerv is a personal AI operating system. Rust core (Gateway, hardware detection) 
 - Past days outside the recency window survive as rolling summaries generated
   off the reply path (`nerv/memory/summarizer.py`). Summarizing must never add
   latency to a reply or fail it
+
+## Rust migration rules
+
+- **Migrate module by module, never all at once.** The JSON-RPC boundary stays
+  until the last Python module is gone. Port a module's Python tests to Rust
+  first; delete the Python implementation only after they pass.
+- **New features are written in Rust.** Long-running or proactive features
+  (background jobs, addressed notifications, schedulers) live in the gateway,
+  not in the brain, so a brain restart cannot lose them.
+- **The Python brain only receives bug fixes and small, self-contained
+  hardening** (for example scrubbing credential-like environment variables).
+  Do not add features to it unless the feature is blocked on a module that has
+  not been migrated yet; say so in the PR.
+- **Prompts and agent definitions stay data files** (YAML / markdown), not Rust
+  source, so they can be iterated on without a compile.
+- Behaviour must not change during a migration. Where practical, compare old
+  and new output on the same inputs.
 
 ## When Writing Code
 
