@@ -66,10 +66,13 @@ async def _get_orchestrator() -> Orchestrator:
 async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
     """Dispatch a JSON-RPC method call to the appropriate handler.
 
-    Since the router migrated to Rust (``core/brain``), the old ``route``
-    method is split: the host classifies locally and drives this brain with
-    ``check_pending`` (confirm/cancel <id>, before any model call) and
-    ``execute`` (orchestrator dispatch with the routing decision attached).
+    Since the router and the turn loop migrated to Rust (``core/brain``),
+    the old ``route`` method is split: the host classifies locally and drives
+    this brain with ``check_pending`` (confirm/cancel <id>, before any model
+    call) and the turn's leaf operations — ``prepare_turn`` (agent selection,
+    context assembly), ``run_tool`` (capability gate + execution),
+    ``complete_turn`` (python-only backends), ``finish_turn`` (memory append,
+    pending surfacing, summaries).
     """
     if method == "check_pending":
         if params is None:
@@ -85,25 +88,48 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
             message, channel=channel, sender=sender
         )
         return {"pending": pending_reply is not None, "reply": pending_reply or ""}
-    elif method == "execute":
+    elif method == "prepare_turn":
         if params is None:
-            raise ValueError("execute method requires params")
+            raise ValueError("prepare_turn method requires params")
         message = params.get("message", "")
         channel = params.get("channel", "")
         sender = params.get("sender", "")
         route_result = RouteResult(**(params.get("route_result") or {}))
         orchestrator = await _get_orchestrator()
-
-        reply = await orchestrator.dispatch(
-            message,
-            route_result,
-            channel=channel,
-            sender=sender,
+        return await orchestrator.prepare_turn(
+            message, route_result, channel=channel, sender=sender
         )
-
-        result = route_result.model_dump()
-        result["reply"] = reply
-        return result
+    elif method == "run_tool":
+        if params is None:
+            raise ValueError("run_tool method requires params")
+        orchestrator = await _get_orchestrator()
+        return await orchestrator.run_tool(
+            params.get("name", ""),
+            params.get("arguments", {}),
+            sender=params.get("sender", ""),
+            channel=params.get("channel", ""),
+        )
+    elif method == "finish_turn":
+        if params is None:
+            raise ValueError("finish_turn method requires params")
+        orchestrator = await _get_orchestrator()
+        return await orchestrator.finish_turn(
+            params.get("message", ""),
+            params.get("reply", ""),
+            channel=params.get("channel", ""),
+            sender=params.get("sender", ""),
+            known_pending=params.get("known_pending") or [],
+            notifications=params.get("notifications") or [],
+        )
+    elif method == "complete_turn":
+        if params is None:
+            raise ValueError("complete_turn method requires params")
+        orchestrator = await _get_orchestrator()
+        return await orchestrator.complete_turn(
+            params.get("messages", []),
+            params.get("model", ""),
+            tools=params.get("tools") or None,
+        )
     elif method == "heartbeat":
         orchestrator = await _get_orchestrator()
         reply = await orchestrator.check_background_tasks()

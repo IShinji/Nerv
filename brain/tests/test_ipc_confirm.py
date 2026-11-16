@@ -53,19 +53,32 @@ async def test_check_pending_reports_miss_for_normal_messages(
     assert result == {"pending": False, "reply": ""}
 
 
-async def test_execute_dispatches_with_the_rust_routing_decision(
+async def test_finish_turn_passes_loop_output_to_the_orchestrator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``execute`` carries the host's routing decision into the orchestrator."""
+    """``finish_turn`` hands the loop's reply to the orchestrator and returns
+    its finalized response verbatim."""
     received: dict[str, Any] = {}
 
     class FakeOrchestrator:
-        async def dispatch(self, message, route_result, channel="", sender=""):
-            received["message"] = message
-            received["route_result"] = route_result
-            received["channel"] = channel
-            received["sender"] = sender
-            return "agent reply"
+        async def finish_turn(
+            self,
+            message,
+            reply,
+            channel="",
+            sender="",
+            known_pending=None,
+            notifications=None,
+        ):
+            received.update(
+                message=message,
+                reply=reply,
+                channel=channel,
+                sender=sender,
+                known_pending=known_pending,
+                notifications=notifications,
+            )
+            return {"reply": "final reply", "pending_created": True}
 
     async def get_orch() -> Any:
         return FakeOrchestrator()
@@ -73,19 +86,18 @@ async def test_execute_dispatches_with_the_rust_routing_decision(
     monkeypatch.setattr(ipc, "_get_orchestrator", get_orch)
 
     result = await ipc.handle_request(
-        "execute",
+        "finish_turn",
         {
-            "message": "help me debug this python function",
+            "message": "rm it",
+            "reply": "I tried to run it.",
             "channel": "cli",
             "sender": "dev",
-            "route_result": {
-                "intent": "code_generation",
-                "agent_type": "coder",
-                "model_tier": 1,
-            },
+            "known_pending": [{"id": 3}],
+            "notifications": ["alert"],
         },
     )
-    assert result["reply"] == "agent reply"
-    assert result["intent"] == "code_generation"
-    assert result["model_tier"] == 1  # pydantic default filled in
-    assert received["route_result"].agent_type == "coder"
+    assert result == {"reply": "final reply", "pending_created": True}
+    assert received["message"] == "rm it"
+    assert received["reply"] == "I tried to run it."
+    assert received["known_pending"] == [{"id": 3}]
+    assert received["notifications"] == ["alert"]

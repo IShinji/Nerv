@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from nerv.config import get_max_tool_iterations, get_workspace_root, load_project_config
+from nerv.config import get_workspace_root, load_project_config
 
 
 def _write(path: Path, body: str = "") -> Path:
@@ -67,7 +67,6 @@ def test_config_in_home_dir_is_honored(
     monkeypatch.setenv("HOME", str(home))
 
     assert get_workspace_root(root) == workspace.resolve()
-    assert get_max_tool_iterations(root) == 3
 
 
 def test_nerv_config_env_is_honored(
@@ -80,7 +79,6 @@ def test_nerv_config_env_is_honored(
     monkeypatch.setenv("NERV_CONFIG", str(cfg))
 
     assert get_workspace_root(root) == workspace.resolve()
-    assert get_max_tool_iterations(root) == 4
 
 
 def test_nerv_config_replaces_the_project_config(
@@ -94,7 +92,6 @@ def test_nerv_config_replaces_the_project_config(
     cfg = _write(tmp_path / "nerv.yaml", "orchestrator:\n  max_tool_iterations: 4\n")
     monkeypatch.setenv("NERV_CONFIG", str(cfg))
 
-    assert get_max_tool_iterations(root) == 4
     assert get_workspace_root(root) == root.resolve()
 
 
