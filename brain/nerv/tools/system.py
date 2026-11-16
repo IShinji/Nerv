@@ -92,7 +92,7 @@ async def shell(command: str) -> ToolResult:
         output += f"\n[stderr]:\n{result.stderr}"
 
     return ToolResult(
-        content=f"Command executed. Exit code: {result.returncode}\nOutput:\n{_truncate(output)}",
+        content=f"Command executed. Exit code: {result.returncode}\nOutput:\n{_truncate(output, tool_name='shell')}",
         is_error=result.returncode != 0,
     )
 

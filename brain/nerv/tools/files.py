@@ -9,6 +9,7 @@ from nerv.security.sandbox import PROTECTED_FILE_NAMES, is_secret_path
 from nerv.tools._helpers import (
     _get_project_root,
     _resolve_path,
+    _truncate,
 )
 from nerv.tools.registry import ToolResult, registry
 
@@ -171,9 +172,7 @@ def grep_search(search_path: str, query: str) -> ToolResult:
         )
 
         if result.returncode == 0:
-            out = result.stdout
-            if len(out) > 5000:
-                out = out[:5000] + "\\n...[truncated because it's too long]"
+            out = _truncate(result.stdout, tool_name="grep_search")
             return ToolResult(content=f"Found matches:\\n{out}")
         elif result.returncode == 1:
             return ToolResult(content="No matches found.")

@@ -17,3 +17,11 @@ def _isolate_user_config(
     """
     monkeypatch.delenv("NERV_CONFIG", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_spill_dir(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep spilled tool output out of the real temp directory."""
+    monkeypatch.setenv("NERV_SPILL_DIR", str(tmp_path_factory.mktemp("spill") / "d"))
