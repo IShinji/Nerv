@@ -6,11 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from nerv.memory.context import ContextManager
-from nerv.memory.manager import MemoryManager
 from nerv.orchestrator.factory import AgentFactory, normalize_role_name
 from nerv.orchestrator.orchestrator import Orchestrator
-from nerv.orchestrator.registry import AgentDefinition
 from nerv.security import PendingActionStore
 from nerv.security.sandbox import confirmation_reason, is_protected_path
 from nerv.tools import builtins  # noqa: F401  (registers tools)
@@ -268,14 +265,3 @@ async def test_mcp_call_binds_scope(tmp_path: Path, monkeypatch) -> None:
     finally:
         tool_def.func = original
     assert seen["scope"] == "telegram-u1"
-
-
-def test_user_message_not_duplicated_in_prompt(tmp_path: Path) -> None:
-    manager = MemoryManager(tmp_path)
-    manager.append_message("user", "earlier")
-    manager.append_message("assistant", "reply")
-    manager.append_message("user", "hello now")  # persisted before build
-    agent = AgentDefinition(name="A", description="d", system_prompt="s")
-    messages = ContextManager(manager).build_messages(agent, "hello now")
-    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
-    assert [m["content"] for m in messages].count("hello now") == 1

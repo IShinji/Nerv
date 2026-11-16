@@ -104,13 +104,7 @@ impl BrainHandle {
 
         let runner = TurnRunner::new(self.brain.clone(), &self.project_root);
         let reply = runner
-            .run_turn(
-                message,
-                &route_result,
-                channel,
-                sender,
-                self.caller.as_ref(),
-            )
+            .run_turn(message, &route_result, channel, sender, self.caller.clone())
             .await?;
 
         let mut result = serde_json::to_value(&route_result).expect("serializes");

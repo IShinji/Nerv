@@ -157,10 +157,12 @@ fn route_result() -> RouteResult {
 async fn agent_turn_runs_prepare_then_finish_around_the_model() {
     let dir = tempfile::tempdir().unwrap();
     let (runner, methods) = started_runner(dir.path(), agent_prepare(), &[]).await;
-    let caller = model_loop::testing::FakeModelCaller::new(vec![final_result("agent answer")]);
+    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
+        final_result("agent answer"),
+    ]));
 
     let reply = runner
-        .run_turn("hello", &route_result(), "cli", "", &caller)
+        .run_turn("hello", &route_result(), "cli", "", caller.clone())
         .await
         .expect("turn succeeds");
 
@@ -176,10 +178,10 @@ async fn direct_reply_skips_the_model_caller() {
     let dir = tempfile::tempdir().unwrap();
     let prepare = serde_json::json!({"status": "direct", "reply": "hi there"});
     let (runner, methods) = started_runner(dir.path(), prepare, &[]).await;
-    let caller = model_loop::testing::FakeModelCaller::new(vec![]);
+    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![]));
 
     let reply = runner
-        .run_turn("你好", &route_result(), "cli", "", &caller)
+        .run_turn("你好", &route_result(), "cli", "", caller.clone())
         .await
         .expect("turn succeeds");
 
@@ -209,13 +211,12 @@ async fn suspended_tool_calls_end_the_round_with_a_pending_reply() {
         "notification": "⚠️ [SYSTEM BACKGROUND ALERT] Pending action #7 (shell) is waiting for confirmation."
     });
     let (runner, methods) = started_runner(dir.path(), prepare, &[run_tool]).await;
-    let caller = model_loop::testing::FakeModelCaller::new(vec![tool_calls_result(&[(
-        "shell",
-        serde_json::json!({"command": "rm -rf /"}),
-    )])]);
+    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
+        tool_calls_result(&[("shell", serde_json::json!({"command": "rm -rf /"}))]),
+    ]));
 
     let reply = runner
-        .run_turn("rm it", &route_result(), "cli", "", &caller)
+        .run_turn("rm it", &route_result(), "cli", "", caller.clone())
         .await
         .expect("turn succeeds");
 
@@ -249,13 +250,13 @@ async fn executed_tool_results_feed_back_into_the_next_round() {
     let prepare = agent_prepare();
     let run_tool = serde_json::json!({"content": "tool output", "suspended": false});
     let (runner, _methods) = started_runner(dir.path(), prepare, &[run_tool]).await;
-    let caller = model_loop::testing::FakeModelCaller::new(vec![
+    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
         tool_calls_result(&[("web_search", serde_json::json!({"query": "x"}))]),
         final_result("answer with tools"),
-    ]);
+    ]));
 
     let reply = runner
-        .run_turn("hello", &route_result(), "cli", "", &caller)
+        .run_turn("hello", &route_result(), "cli", "", caller.clone())
         .await
         .expect("turn succeeds");
 
@@ -278,13 +279,13 @@ async fn unknown_tools_report_back_to_the_model() {
     let prepare = agent_prepare();
     let run_tool = serde_json::json!({"content": "Unknown tool: bogus_tool", "suspended": false});
     let (runner, _methods) = started_runner(dir.path(), prepare, &[run_tool]).await;
-    let caller = model_loop::testing::FakeModelCaller::new(vec![
+    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
         tool_calls_result(&[("bogus_tool", serde_json::json!({}))]),
         final_result("recovered"),
-    ]);
+    ]));
 
     let reply = runner
-        .run_turn("hello", &route_result(), "cli", "", &caller)
+        .run_turn("hello", &route_result(), "cli", "", caller.clone())
         .await
         .expect("turn succeeds");
     assert_eq!(reply, "finished");
@@ -300,14 +301,14 @@ async fn the_loop_stops_after_the_round_cap() {
     let prepare = agent_prepare();
     let run_tool = serde_json::json!({"content": "tool output", "suspended": false});
     let (runner, _methods) = started_runner(dir.path(), prepare, &[run_tool]).await;
-    let caller = model_loop::testing::FakeModelCaller::new(
+    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(
         std::iter::repeat_with(|| tool_calls_result(&[("shell", serde_json::json!({}))]))
             .take(5)
             .collect(),
-    );
+    ));
 
     let reply = runner
-        .run_turn("hello", &route_result(), "cli", "", &caller)
+        .run_turn("hello", &route_result(), "cli", "", caller.clone())
         .await
         .expect("turn succeeds");
     assert_eq!(reply, "finished");
@@ -346,10 +347,10 @@ done
     }));
     brain.start().await.expect("brain starts");
     let runner = TurnRunner::with_max_rounds(brain, dir.path(), 3);
-    let caller = model_loop::testing::FakeModelCaller::new(vec![]);
+    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![]));
 
     let err = runner
-        .run_turn("hello", &route_result(), "cli", "", &caller)
+        .run_turn("hello", &route_result(), "cli", "", caller.clone())
         .await
         .expect_err("prepare fails");
 
@@ -366,10 +367,12 @@ done
 async fn successful_turns_write_a_trace_line_with_the_routing_fields() {
     let dir = tempfile::tempdir().unwrap();
     let (runner, _methods) = started_runner(dir.path(), agent_prepare(), &[]).await;
-    let caller = model_loop::testing::FakeModelCaller::new(vec![final_result("ok")]);
+    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
+        final_result("ok"),
+    ]));
 
     runner
-        .run_turn("hello", &route_result(), "telegram", "42", &caller)
+        .run_turn("hello", &route_result(), "telegram", "42", caller.clone())
         .await
         .expect("turn succeeds");
 

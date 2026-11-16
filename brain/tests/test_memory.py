@@ -1,13 +1,16 @@
-"""Tests for the Memory and Context Manager modules."""
+"""Tests for the python MemoryManager (the MCP server's memory tools use it).
+
+The context assembly, the search scoring, the facts outline and the
+summarizer migrated to rust (core/brain/src/memory — their tests live
+there); the manager's file layer stays python for the MCP tools and is
+pinned here.
+"""
 
 import json
 from pathlib import Path
 
-from nerv.memory.context import ContextManager, estimate_tokens
 from nerv.memory.manager import DEFAULT_SCOPE, MemoryManager, scope_for
 from nerv.memory.models import ChatMessage, DailyConversation
-from nerv.orchestrator.registry import AgentDefinition
-from nerv.orchestrator.runtime_policy import build_system_prompt
 
 
 def test_memory_manager_save_and_load(tmp_path: Path) -> None:
@@ -67,112 +70,6 @@ def test_memory_manager_load_recent(tmp_path: Path) -> None:
     assert len(recent) == 2
     assert recent[0].content == "day 1 msg 2"
     assert recent[1].content == "day 2 msg 1"
-
-
-def test_context_manager_build_messages_limits(tmp_path: Path) -> None:
-    """Test building context bounds the messages correctly."""
-    manager = MemoryManager(tmp_path)
-    manager._ensure_directories()
-    context = ContextManager(manager)
-
-    # Keep the context small enough to force truncation while still fitting
-    # the shared runtime policy, current user message, and one short history entry.
-    agent = AgentDefinition(
-        name="Test",
-        description="test",
-        system_prompt="SYS",
-    )
-    user_msg = "hello"
-    short_history = "short"
-    oversized_history = "huge history message that does not fit at all"
-    base_tokens = estimate_tokens(build_system_prompt(agent))
-    lower_bound = (
-        base_tokens + estimate_tokens(user_msg) + estimate_tokens(short_history)
-    ) / 0.9
-    upper_bound = (
-        base_tokens
-        + estimate_tokens(user_msg)
-        + estimate_tokens(short_history)
-        + estimate_tokens(oversized_history)
-    ) / 0.9
-    agent.max_context_tokens = int((lower_bound + upper_bound) / 2)
-
-    manager.append_message("user", oversized_history)
-    manager.append_message("assistant", short_history)
-
-    messages = context.build_messages(agent, user_msg)
-    # Should contain System, "short" (because it fits), and "hello".
-    # "huge history message..." should have been dropped.
-    assert len(messages) == 3
-    assert messages[0]["role"] == "system"
-    assert "SYS" in messages[0]["content"]
-    assert messages[1]["role"] == "assistant"
-    assert messages[1]["content"] == "short"
-    assert messages[2]["role"] == "user"
-    assert messages[2]["content"] == "hello"
-
-
-def test_context_manager_facts_injected(tmp_path: Path) -> None:
-    """Test that facts are injected into system prompt."""
-    manager = MemoryManager(tmp_path)
-    manager._ensure_directories()
-    manager.append_fact("User is a developer.")
-
-    context = ContextManager(manager)
-    agent = AgentDefinition(
-        name="Test", description="test", system_prompt="You are an AI."
-    )
-
-    messages = context.build_messages(agent, "hello")
-    assert "User is a developer." in messages[0]["content"]
-    assert "You are an AI." in messages[0]["content"]
-
-
-def test_context_manager_injects_runtime_policy(tmp_path: Path) -> None:
-    """Test that shared runtime rules are injected automatically."""
-    manager = MemoryManager(tmp_path)
-    manager._ensure_directories()
-    context = ContextManager(manager)
-    agent = AgentDefinition(
-        name="General",
-        description="test",
-        system_prompt="You are an AI.",
-        tools=["current_time", "chrome_browser"],
-    )
-
-    messages = context.build_messages(agent, "西雅图时间现在几点")
-    system_prompt = messages[0]["content"]
-
-    assert "[Runtime Policy]" in system_prompt
-    assert "Reply in the same language as the user's latest message" in system_prompt
-    assert "[Tool Policy]" in system_prompt
-    assert "Use current_time for questions about the current time" in system_prompt
-    assert "prefer a configured MCP browser provider" in system_prompt
-
-
-def test_context_manager_injects_extra_system_sections(tmp_path: Path) -> None:
-    """Extra workflow/skill sections should be appended to the system prompt."""
-    manager = MemoryManager(tmp_path)
-    manager._ensure_directories()
-    context = ContextManager(manager)
-    agent = AgentDefinition(
-        name="General",
-        description="test",
-        system_prompt="You are an AI.",
-    )
-
-    messages = context.build_messages(
-        agent,
-        "hello",
-        extra_system_sections=[
-            "[Workflow Library]\n- Demo",
-            "[Skill Library]\n- Skill",
-        ],
-    )
-
-    system_prompt = messages[0]["content"]
-    assert "[Workflow Library]" in system_prompt
-    assert "[Skill Library]" in system_prompt
 
 
 def _append_worker(root: str, tag: str) -> None:
@@ -264,14 +161,3 @@ def test_append_is_durable_under_concurrent_processes(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path, "concurrent")
     contents = {m.content for m in manager.load_recent_messages(limit=1000)}
     assert len(contents) == 60
-
-
-def test_estimate_tokens_is_close_to_real_ratios() -> None:
-    """Latin text is ~4 chars/token; CJK is ~1 token/char."""
-    latin = "the quick brown fox jumps over the lazy dog"  # 43 chars
-    assert 10 <= estimate_tokens(latin) <= 16
-
-    cjk = "西雅图时间现在几点"  # 9 chars
-    assert estimate_tokens(cjk) == 9
-
-    assert estimate_tokens("") == 0

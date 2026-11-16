@@ -9,5 +9,6 @@
 
 pub mod handle;
 pub mod llm;
+pub mod memory;
 pub mod router;
 pub mod turn;

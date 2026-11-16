@@ -108,13 +108,13 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
             params.get("arguments", {}),
             sender=params.get("sender", ""),
             channel=params.get("channel", ""),
+            scope=params.get("scope", ""),
         )
     elif method == "finish_turn":
         if params is None:
             raise ValueError("finish_turn method requires params")
         orchestrator = await _get_orchestrator()
         return await orchestrator.finish_turn(
-            params.get("message", ""),
             params.get("reply", ""),
             channel=params.get("channel", ""),
             sender=params.get("sender", ""),
@@ -129,6 +129,7 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
             params.get("messages", []),
             params.get("model", ""),
             tools=params.get("tools") or None,
+            scope=params.get("scope", ""),
         )
     elif method == "heartbeat":
         orchestrator = await _get_orchestrator()

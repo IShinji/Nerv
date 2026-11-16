@@ -58,7 +58,10 @@ impl ModelCaller for ProviderCaller {
             // router); until a rust equivalent lands, those models keep
             // running through the python client so the dormant path behaves
             // exactly as before — including its `personal/api_keys.env` load.
-            "litellm" => self.complete_via_python(messages, model, tools).await,
+            "litellm" => {
+                self.complete_via_python(messages, model, tools, scope)
+                    .await
+            }
             _ => {
                 llm::complete(
                     messages,
@@ -85,6 +88,7 @@ impl ProviderCaller {
         messages: &[ChatMessage],
         model: &str,
         tools: Option<&[serde_json::Value]>,
+        scope: &str,
     ) -> Result<CompletionResult, LlmError> {
         let result = self
             .brain
@@ -94,6 +98,7 @@ impl ProviderCaller {
                     "messages": messages,
                     "model": model,
                     "tools": tools.unwrap_or(&[]),
+                    "scope": scope,
                 }),
             )
             .await
@@ -119,6 +124,8 @@ pub struct LoopContext<'a> {
     pub sender: &'a str,
     pub channel: &'a str,
     pub scope: &'a str,
+    /// Shared with the finish phase, which remembers the finalized reply.
+    pub memory: std::sync::Arc<crate::memory::MemoryManager>,
     /// Background-alert lines accumulated during the turn (suspended actions
     /// queued by the MCP server); drained by the heartbeat afterwards.
     pub pending_notifications: Vec<String>,
@@ -266,6 +273,7 @@ async fn execute_tool_calls(
                     "arguments": tc.function.arguments,
                     "sender": ctx.sender,
                     "channel": ctx.channel,
+                    "scope": ctx.scope,
                 }),
             )
             .await?;

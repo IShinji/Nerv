@@ -33,7 +33,6 @@ async def test_finish_turn_mentions_actions_queued_by_mcp_during_turn(
     )
 
     result = await orch.finish_turn(
-        "clean the build dir",
         "I tried to run it.",
         channel="telegram",
         sender="alice",
@@ -66,7 +65,6 @@ async def test_finish_turn_stays_quiet_when_actions_were_already_known(
     known = [{"id": a.id} for a in orch._visible_pending_actions("alice", "telegram")]
 
     result = await orch.finish_turn(
-        "clean the build dir",
         "I tried to run it.",
         channel="telegram",
         sender="alice",
