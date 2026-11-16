@@ -21,7 +21,6 @@ from typing import Any
 
 from nerv.models import RouteResult
 from nerv.orchestrator.orchestrator import Orchestrator
-from nerv.router.router import Router
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +30,6 @@ MAX_LINE_BYTES = 64 * 1024 * 1024
 #: Upper bound on requests being handled at once.
 MAX_CONCURRENT_REQUESTS = 8
 
-_router: Router | None = None
 _orchestrator: Orchestrator | None = None
 _init_lock: asyncio.Lock | None = None
 _stdout_lock: asyncio.Lock | None = None
@@ -55,16 +53,6 @@ def _get_init_lock() -> asyncio.Lock:
     return _init_lock
 
 
-async def _get_router() -> Router:
-    """Return the shared Router, constructing it once even under concurrency."""
-    global _router
-    if _router is None:
-        async with _get_init_lock():
-            if _router is None:
-                _router = Router(project_root=_get_project_root())
-    return _router
-
-
 async def _get_orchestrator() -> Orchestrator:
     """Return the shared Orchestrator, constructing it once even under concurrency."""
     global _orchestrator
@@ -76,10 +64,16 @@ async def _get_orchestrator() -> Orchestrator:
 
 
 async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
-    """Dispatch a JSON-RPC method call to the appropriate handler."""
-    if method == "route":
+    """Dispatch a JSON-RPC method call to the appropriate handler.
+
+    Since the router migrated to Rust (``core/brain``), the old ``route``
+    method is split: the host classifies locally and drives this brain with
+    ``check_pending`` (confirm/cancel <id>, before any model call) and
+    ``execute`` (orchestrator dispatch with the routing decision attached).
+    """
+    if method == "check_pending":
         if params is None:
-            raise ValueError("route method requires params")
+            raise ValueError("check_pending method requires params")
         message = params.get("message", "")
         channel = params.get("channel", "")
         sender = params.get("sender", "")
@@ -90,14 +84,16 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
         pending_reply = await orchestrator.dispatch_pending_command(
             message, channel=channel, sender=sender
         )
-        if pending_reply is not None:
-            result = RouteResult(intent="pending_action", reply=pending_reply)
-            return result.model_dump()
+        return {"pending": pending_reply is not None, "reply": pending_reply or ""}
+    elif method == "execute":
+        if params is None:
+            raise ValueError("execute method requires params")
+        message = params.get("message", "")
+        channel = params.get("channel", "")
+        sender = params.get("sender", "")
+        route_result = RouteResult(**(params.get("route_result") or {}))
+        orchestrator = await _get_orchestrator()
 
-        router = await _get_router()
-        route_result = await router.classify(message)
-
-        # Dispatch to orchestrator for actual agent response
         reply = await orchestrator.dispatch(
             message,
             route_result,

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use nerv_brain::handle::BrainHandle;
 use nerv_shared::brain_client::{BrainClient, BrainSpawnConfig};
 use nerv_shared::config::NervConfig;
 use serde::Serialize;
@@ -15,6 +16,9 @@ use tokio::sync::Mutex;
 struct AppState {
     /// Spawned on first use and supervised from then on.
     brain: Mutex<Option<Arc<BrainClient>>>,
+    /// The Rust brain facade (router + pending/execute protocol), built once
+    /// after the brain starts.
+    handle: Mutex<Option<Arc<BrainHandle>>>,
     project_root: PathBuf,
 }
 
@@ -32,7 +36,7 @@ impl AppState {
         Ok(brain)
     }
 
-    /// Ask the brain for a `reply` string.
+    /// Ask the brain for a `reply` string (raw JSON-RPC, used by heartbeat).
     async fn reply(&self, method: &str, params: serde_json::Value) -> Result<String, String> {
         let brain = self.brain().await?;
         let result = brain
@@ -44,6 +48,19 @@ impl AppState {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string())
+    }
+
+    /// Return the Rust brain facade, building it once after the brain starts.
+    async fn handle(&self) -> Result<Arc<BrainHandle>, String> {
+        let brain = self.brain().await?;
+        let mut guard = self.handle.lock().await;
+        if let Some(handle) = guard.as_ref() {
+            return Ok(handle.clone());
+        }
+        let handle =
+            Arc::new(BrainHandle::new(brain, &self.project_root).map_err(|e| e.to_string())?);
+        *guard = Some(handle.clone());
+        Ok(handle)
     }
 }
 
@@ -85,7 +102,6 @@ fn brain_spawn_config_inner(project_root: &Path) -> BrainSpawnConfig {
     .with_restart_max(config.brain.restart_max)
     .with_call_timeout(Duration::from_secs(config.brain.call_timeout_secs))
     .with_env("NERV_PROJECT_ROOT", project_root.to_string_lossy())
-    .with_env("NERV_ROUTER_MODEL", &config.models.router.model)
     .with_env("NERV_OLLAMA_URL", &config.models.router.base_url)
     .with_env("NERV_MODEL_TIER0", &config.models.tiers.tier0)
     .with_env("NERV_MODEL_TIER1", &config.models.tiers.tier1)
@@ -101,12 +117,17 @@ struct Agent {
 
 #[tauri::command]
 async fn send_message(state: State<'_, AppState>, text: String) -> Result<String, String> {
-    state
-        .reply(
-            "route",
-            serde_json::json!({"message": text, "channel": "gui", "sender": "gui-user"}),
-        )
+    let result = state
+        .handle()
+        .await?
+        .reply(&text, "gui", "gui-user")
         .await
+        .map_err(|e| e.to_string())?;
+    Ok(result
+        .get("reply")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string())
 }
 
 #[tauri::command]
@@ -208,6 +229,7 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState {
             brain: Mutex::new(None),
+            handle: Mutex::new(None),
             project_root,
         })
         .invoke_handler(tauri::generate_handler![

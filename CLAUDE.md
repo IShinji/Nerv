@@ -6,7 +6,7 @@ Read `NERV-PRD.md` for the full product requirements (if present in project root
 
 ## Project Overview
 
-Nerv is a personal AI operating system. Rust core (Gateway, hardware detection) + Python brain (Router, Orchestrator, Agents) + Tauri GUI (Phase 2).
+Nerv is a personal AI operating system. Rust core (Gateway, hardware detection) + Rust router (`core/brain`, migrated 2026-11-16) + Python brain (Orchestrator, Agents, Memory, Tools) + Tauri GUI (Phase 2).
 
 **Direction (decided 2026-11-14): the brain is being unified into Rust**, one module at a time. Until a module is migrated its Python implementation stays and keeps working.
 
@@ -77,6 +77,25 @@ Nerv is a personal AI operating system. Rust core (Gateway, hardware detection) 
   source, so they can be iterated on without a compile.
 - Behaviour must not change during a migration. Where practical, compare old
   and new output on the same inputs.
+
+### Transition mechanics (the per-module pattern)
+
+The JSON-RPC method surface is not frozen: when a module migrates, the old
+method that used it is split, and the host-side facade drives the new flow.
+The router is the worked example — the old `route` method became:
+
+1. `check_pending` (Python): resolve `confirm <id>` / `cancel <id>` from the
+   pending queue. Must stay first — an approval never depends on a model call.
+2. The migrated module runs in-process in Rust (no round trip).
+3. Thin Python RPC methods for what remains (`execute` = orchestrator
+   dispatch). Responses keep the old wire shape so hosts render unchanged.
+
+- The facade lives in `core/brain/src/handle.rs` and is the single host entry:
+  the gateway and the GUI both call it — do not duplicate the split logic in a
+  second host
+- Prompts of migrated modules live as data files under `core/brain/prompts/`
+- Follow the same pattern for every later module (memory, tools, orchestrator,
+  …), splitting methods until the Python sidecar is gone
 
 ## When Writing Code
 

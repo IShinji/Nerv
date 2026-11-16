@@ -7,5 +7,6 @@
 //! migrated modules run in-process, Python-only stages are reached through
 //! `nerv_shared::brain_client` JSON-RPC calls.
 
+pub mod handle;
 pub mod llm;
 pub mod router;

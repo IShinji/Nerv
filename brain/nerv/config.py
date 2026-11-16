@@ -80,7 +80,9 @@ def load_project_config(project_root: Path) -> dict[str, Any]:
 #     "claude-cli:<alias>"  → local Claude Code CLI (uses your Claude subscription)
 #     "local:<ollama-model>" → local Ollama HTTP (reserved; dormant)
 #     "litellm:<model>" / bare cloud name → litellm cloud API (reserved)
-DEFAULT_ROUTER_MODEL = "claude-cli:opus"
+# The router model lives in `models.router.model` and is resolved by the Rust
+# brain (core/brain/src/router.rs); the tiers are still resolved here for the
+# orchestrator's model selection.
 DEFAULT_TIER_MODELS: dict[int, str] = {
     0: "claude-cli:opus",
     1: "claude-cli:opus",
@@ -97,7 +99,11 @@ def get_models_config(project_root: Path) -> dict[str, Any]:
 
 
 def get_router_model(project_root: Path) -> str:
-    """Resolve the router model string from config (env override wins)."""
+    """Resolve the router model string from config (env override wins).
+
+    Only used at startup to warm up a configured local model; the routing
+    itself reads the same config on the Rust side.
+    """
     import os
 
     override = os.environ.get("NERV_ROUTER_MODEL")
@@ -108,7 +114,7 @@ def get_router_model(project_root: Path) -> str:
         model = str(router.get("model", "")).strip()
         if model:
             return model
-    return DEFAULT_ROUTER_MODEL
+    return "claude-cli:opus"
 
 
 def get_tier_models(project_root: Path) -> dict[int, str]:

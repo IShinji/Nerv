@@ -4,6 +4,8 @@ mod ollama;
 use adapter::cli::CliAdapter;
 use adapter::{ChannelAdapter, IncomingMessage};
 use anyhow::{Context, Result};
+use nerv_brain::handle::BrainHandle;
+use nerv_brain::router::Router;
 use nerv_shared::brain_client::{find_brain_dir, BrainClient, BrainSpawnConfig};
 use nerv_shared::config::NervConfig;
 use nerv_shared::message::Message;
@@ -62,7 +64,6 @@ fn brain_spawn_config(config: &NervConfig, project_root: &std::path::Path) -> Br
     .with_restart_max(config.brain.restart_max)
     .with_call_timeout(Duration::from_secs(config.brain.call_timeout_secs))
     .with_env("NERV_PROJECT_ROOT", project_root.to_string_lossy())
-    .with_env("NERV_ROUTER_MODEL", &config.models.router.model)
     .with_env("NERV_OLLAMA_URL", &config.models.router.base_url)
     .with_env("NERV_MODEL_TIER0", &config.models.tiers.tier0)
     .with_env("NERV_MODEL_TIER1", &config.models.tiers.tier1)
@@ -103,9 +104,12 @@ async fn main() -> Result<()> {
     }
     ollama::ensure_ollama_ready(&config).await?;
 
-    // Start the Python brain process
+    // Start the Python brain process, then the Rust brain facade: the router
+    // classifies locally, the python sidecar handles pending/execute.
     let brain = Arc::new(BrainClient::new(brain_spawn_config(&config, &project_root)));
     brain.start().await?;
+    let router = Router::new(&project_root).context("loading the router prompts")?;
+    let brain_handle = Arc::new(BrainHandle::with_router(brain.clone(), router));
 
     // Create the gateway message channel
     let (gateway_tx, mut gateway_rx) = mpsc::channel::<IncomingMessage>(32);
@@ -113,13 +117,13 @@ async fn main() -> Result<()> {
     // Spawn the message processing loop. Each message gets its own task: the
     // brain multiplexes requests by id, so a slow reply on one channel must not
     // stall every other channel behind it.
-    let brain_clone = brain.clone();
     let processor = tokio::spawn(async move {
         while let Some(incoming) = gateway_rx.recv().await {
-            let brain = brain_clone.clone();
+            let brain_handle = brain_handle.clone();
             tokio::spawn(async move {
                 let text = incoming.message.text().unwrap_or("").to_string();
                 let channel = incoming.message.channel;
+                let sender = incoming.message.sender.clone();
 
                 // Message bodies are private: log only the channel and size.
                 info!(
@@ -127,13 +131,10 @@ async fn main() -> Result<()> {
                     text.chars().count()
                 );
 
-                let params = serde_json::json!({
-                    "message": text,
-                    "channel": channel.to_string(),
-                    "sender": incoming.message.sender,
-                });
-
-                let response_text = match brain.call("route", params).await {
+                let response_text = match brain_handle
+                    .reply(&text, &channel.to_string(), &sender)
+                    .await
+                {
                     Ok(result) => {
                         let reply = format_brain_response(&result);
                         info!(
