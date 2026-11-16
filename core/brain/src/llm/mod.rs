@@ -1,21 +1,31 @@
 //! Unified LLM client — one model call, dispatched by model-string prefix.
 //!
-//! Seed port of `brain/nerv/llm/` covering what the Router needs: one plain
-//! text/json completion turn. Tool loops, MCP bridging, usage/cost metadata
-//! and the litellm cloud backend stay in Python until that module migrates.
+//! Port of `brain/nerv/llm/` (client.py + claude_cli.py + the ollama half).
+//! `complete()` performs exactly ONE assistant turn and returns its content
+//! plus any tool calls. The orchestrator owns the tool-execution loop for the
+//! ollama/litellm providers; the claude-cli provider runs Claude Code's own
+//! agentic loop internally (tools exposed via MCP), so it returns the final
+//! answer and sets `runs_own_tool_loop` to tell the caller not to loop again.
 //!
 //! Model string scheme (the single switch point for swapping providers):
 //!   "claude-cli:<alias>"   -> local Claude Code CLI (uses your subscription)
 //!   "local:<ollama-model>" -> local Ollama HTTP (reserved; dormant)
-//!   "litellm:<model>"      -> litellm cloud API (reserved, not ported yet)
+//!   "litellm:<model>"      -> litellm cloud API (reserved, not ported yet —
+//!                             there is no litellm library in Rust; when a
+//!                             caller needs it this becomes a thin
+//!                             OpenAI-compatible client per vendor)
 //!   bare cloud name        -> treated as litellm
 
 pub mod claude_cli;
 pub mod ollama;
 
+#[cfg(test)]
+mod tests;
+
+use std::path::Path;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
@@ -53,19 +63,82 @@ impl ChatMessage {
             content: content.into(),
         }
     }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.into(),
+        }
+    }
+
+    pub fn tool(content: impl Into<String>) -> Self {
+        Self {
+            role: "tool".to_string(),
+            content: content.into(),
+        }
+    }
 }
 
-/// The outcome of a single model turn. Seed version: text content only —
-/// tool calls and observability metadata arrive when the full llm module
-/// migrates.
+/// A function call the model requested (`{"function": {"name", "arguments"}}`
+/// on the wire, exactly like the Python client's dict shape).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub function: FunctionCall,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FunctionCall {
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+/// The outcome of a single model turn — the full field set of the Python
+/// `CompletionResult`.
 #[derive(Debug, Clone)]
 pub struct CompletionResult {
     pub content: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub runs_own_tool_loop: bool,
+    /// Optional observability metadata (populated by backends that expose it).
+    pub provider: String,
+    pub duration_ms: Option<f64>,
+    pub cost_usd: Option<f64>,
+    pub usage: Option<serde_json::Value>,
 }
 
-/// Cut a string to `max_chars` characters (used to bound error text).
-pub(crate) fn truncate(text: &str, max_chars: usize) -> String {
-    text.chars().take(max_chars).collect()
+/// Everything one `complete()` call needs beyond the messages.
+#[derive(Debug, Clone)]
+pub struct CompleteOptions<'a> {
+    pub model: &'a str,
+    /// Function-call schemas for the ollama/litellm tool loop.
+    pub tools: Option<&'a [serde_json::Value]>,
+    /// Resolved native tool names to expose to claude-cli via MCP.
+    pub tool_names: &'a [String],
+    pub temperature: f64,
+    /// Hint the model to emit strict JSON (used by the router).
+    pub json_mode: bool,
+    /// Project root, required for the claude-cli MCP bridge.
+    pub project_root: Option<&'a Path>,
+    /// The conversation scope, forwarded to the MCP server's memory tools
+    /// (Python reads the same value from its `active_scope` contextvar).
+    pub scope: &'a str,
+    /// Per-call timeout.
+    pub timeout: Duration,
+}
+
+impl Default for CompleteOptions<'_> {
+    fn default() -> Self {
+        Self {
+            model: "",
+            tools: None,
+            tool_names: &[],
+            temperature: 0.2,
+            json_mode: false,
+            project_root: None,
+            scope: "",
+            timeout: Duration::from_secs(120),
+        }
+    }
 }
 
 /// Split a model string into (provider, model_name) — port of
@@ -86,43 +159,45 @@ pub fn parse_model(model: &str) -> (&str, &str) {
 }
 
 /// Run one assistant turn against the configured backend.
-///
-/// `timeout` bounds the whole call (per-call timeout, like Python).
 pub async fn complete(
     messages: &[ChatMessage],
-    model: &str,
-    temperature: f64,
-    json_mode: bool,
-    timeout: Duration,
+    opts: &CompleteOptions<'_>,
 ) -> Result<CompletionResult, LlmError> {
-    let (provider, model_name) = parse_model(model);
+    let (provider, model_name) = parse_model(opts.model);
     match provider {
-        "claude-cli" => claude_cli::complete(messages, model_name, json_mode, timeout).await,
-        "local" => ollama::complete(messages, model_name, temperature, json_mode, timeout).await,
+        "claude-cli" => {
+            let request = claude_cli::ClaudeCliRequest {
+                model_name,
+                json_mode: opts.json_mode,
+                tool_names: opts.tool_names,
+                project_root: opts.project_root,
+                scope: opts.scope,
+            };
+            claude_cli::complete(messages, &request, opts.timeout).await
+        }
+        "local" => {
+            ollama::complete(
+                messages,
+                model_name,
+                opts.temperature,
+                opts.json_mode,
+                opts.tools,
+                opts.timeout,
+            )
+            .await
+        }
         // Reserved backend, not ported yet. Callers treat this like any
-        // backend failure (the Router falls back to keywords).
+        // backend failure (the router falls back to keywords; the
+        // orchestrator's graceful degradation catches it).
         _ => Err(LlmError::Unsupported(format!(
             "the litellm backend is not implemented in the Rust brain yet; \
-             configure a claude-cli: or local: model instead (got {model:?})"
+             configure a claude-cli: or local: model instead (got {:?})",
+            opts.model
         ))),
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_model_splits_all_prefixes() {
-        assert_eq!(parse_model("claude-cli:opus"), ("claude-cli", "opus"));
-        assert_eq!(parse_model("local:qwen2.5:1.5b"), ("local", "qwen2.5:1.5b"));
-        assert_eq!(
-            parse_model("litellm:claude-opus-4-8"),
-            ("litellm", "claude-opus-4-8")
-        );
-        assert_eq!(
-            parse_model("claude-opus-4-8"),
-            ("litellm", "claude-opus-4-8")
-        );
-    }
+/// Cut a string to `max_chars` characters (used to bound error text).
+pub(crate) fn truncate(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
 }

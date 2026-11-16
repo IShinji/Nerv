@@ -272,6 +272,15 @@ async def test_agent_factory_creates_new_agent():
 - 使用 Arrange-Act-Assert 结构
 - Mock 外部依赖（Ollama API、Telegram API）
 
+### Rust 文件组织（core/brain 及后续 Rust 模块）
+
+- 单个源文件（不含测试）超过 ~350 行就拆：一个文件一个关注点
+- 测试放同级 `tests.rs` 子模块（`#[cfg(test)] mod tests;`），不让测试把
+  源文件撑爆；小模块（<100 行）可以内联
+- 移植 Python 模块时按职责拆成子模块，而不是 1:1 复刻单文件
+  （例：`llm/claude_cli/` 拆为 `mod.rs`（重试循环）、`classify.rs`（失败
+  分类）、`invoke.rs`（子进程）、`mcp.rs`（MCP 配置））
+
 ## 10. 安全规范
 
 - API keys 永远不进代码仓库（用 `.env` + `.gitignore`）
