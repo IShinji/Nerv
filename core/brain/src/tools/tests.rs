@@ -220,6 +220,9 @@ fn applescript_text_is_escaped() {
     );
 }
 
+// desktop_control is macOS-only (the platform guard is the documented
+// behavior), so the action validation is only exercised on darwin runners.
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn desktop_control_rejects_unknown_actions() {
     let args = serde_json::json!({"action": "teleport"});
