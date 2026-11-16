@@ -20,6 +20,7 @@ import tempfile
 import time
 from urllib.parse import urlparse
 
+from nerv.security.env import scrubbed_env
 from nerv.tools._helpers import (
     _ensure_url,
     _get_project_root,
@@ -57,7 +58,7 @@ APPLE_MODIFIERS = {
 
 def _run_subprocess(args: list[str]) -> subprocess.CompletedProcess[str]:
     """Run a subprocess and capture UTF-8 output."""
-    return subprocess.run(args, capture_output=True, text=True)
+    return subprocess.run(args, capture_output=True, text=True, env=scrubbed_env())
 
 
 def _run_applescript(lines: list[str]) -> subprocess.CompletedProcess[str]:
@@ -274,6 +275,7 @@ def _ensure_chrome_applescript_enabled() -> None:
         ],
         capture_output=True,
         timeout=5,
+        env=scrubbed_env(),
     )
 
 
