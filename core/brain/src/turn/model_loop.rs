@@ -117,7 +117,7 @@ impl ProviderCaller {
 
 /// Everything one turn's model loop needs from its host.
 pub struct LoopContext<'a> {
-    pub brain: &'a BrainClient,
+    pub brain: &'a std::sync::Arc<BrainClient>,
     pub caller: &'a dyn ModelCaller,
     pub trace: &'a mut TraceRecord,
     pub max_rounds: u32,
@@ -329,6 +329,8 @@ async fn native_run_tool(
         let tool_ctx = crate::tools::ToolContext {
             project_root: ctx.project_root.to_path_buf(),
             workspace_root,
+            scope: ctx.scope.to_string(),
+            brain: Some(ctx.brain.clone()),
         };
         let result = (tool.func)(&tool_ctx, arguments).await;
         return Ok(Some(json!({
