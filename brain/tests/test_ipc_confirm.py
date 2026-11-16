@@ -63,7 +63,6 @@ async def test_finish_turn_passes_loop_output_to_the_orchestrator(
     class FakeOrchestrator:
         async def finish_turn(
             self,
-            message,
             reply,
             channel="",
             sender="",
@@ -71,7 +70,6 @@ async def test_finish_turn_passes_loop_output_to_the_orchestrator(
             notifications=None,
         ):
             received.update(
-                message=message,
                 reply=reply,
                 channel=channel,
                 sender=sender,
@@ -88,7 +86,6 @@ async def test_finish_turn_passes_loop_output_to_the_orchestrator(
     result = await ipc.handle_request(
         "finish_turn",
         {
-            "message": "rm it",
             "reply": "I tried to run it.",
             "channel": "cli",
             "sender": "dev",
@@ -97,7 +94,6 @@ async def test_finish_turn_passes_loop_output_to_the_orchestrator(
         },
     )
     assert result == {"reply": "final reply", "pending_created": True}
-    assert received["message"] == "rm it"
     assert received["reply"] == "I tried to run it."
     assert received["known_pending"] == [{"id": 3}]
     assert received["notifications"] == ["alert"]

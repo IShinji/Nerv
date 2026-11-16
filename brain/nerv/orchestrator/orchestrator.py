@@ -20,15 +20,10 @@ from typing import Any
 import httpx
 
 from nerv.config import get_workspace_root
-from nerv.memory.context import ContextManager
-from nerv.memory.manager import (
-    DEFAULT_SCOPE,
-    MemoryManager,
-    scope_for,
-    use_scope,
-)
+from nerv.memory.manager import scope_for, use_scope
 from nerv.models import RouteResult
 from nerv.orchestrator.registry import AgentDefinition, AgentRegistry
+from nerv.orchestrator.runtime_policy import build_system_prompt
 from nerv.proactive import ProactiveMonitor
 from nerv.security import (
     PendingActionStore,
@@ -55,15 +50,6 @@ class Orchestrator:
     def __init__(self, project_root: Path) -> None:
         self._project_root = project_root
         self.registry = AgentRegistry(project_root)
-        # Default-scope memory, used by channel-less internal callers.
-        self.memory = MemoryManager(project_root)
-        self.context_manager = ContextManager(self.memory)
-        # Per-conversation memory, keyed by channel+sender, so two senders on
-        # the same instance never read each other's history.
-        self._memory_by_scope: dict[str, MemoryManager] = {DEFAULT_SCOPE: self.memory}
-        self._context_by_scope: dict[str, ContextManager] = {
-            DEFAULT_SCOPE: self.context_manager
-        }
         self.workflow_registry = WorkflowRegistry(project_root)
         self.skill_registry = SkillRegistry(project_root)
         self.review_queue = ReviewQueue(project_root)
@@ -96,36 +82,7 @@ class Orchestrator:
             reply = await self._handle_pending_action_command(
                 message, sender=sender, channel=channel
             )
-            if reply:
-                memory, _ = self._memory_for(channel, sender)
-                self._remember_turn(message, reply, memory)
             return reply or None
-
-    def _schedule_summary_backfill(self, channel: str, sender: str) -> None:
-        """Kick off summarising any unsummarised past day, off the reply path.
-
-        Fire-and-forget on purpose: a summary is an optimisation for later
-        turns, so it must never add latency to this reply or fail it.
-        """
-        memory, _ = self._memory_for(channel, sender)
-        if not memory.days_needing_summary(limit=1):
-            return
-
-        from nerv.memory.summarizer import backfill_summaries
-
-        async def _run() -> None:
-            try:
-                await backfill_summaries(
-                    memory,
-                    model=self._select_model(0),
-                    project_root=self._project_root,
-                )
-            except Exception as e:
-                logger.warning("Summary backfill failed: %s", e)
-
-        task = asyncio.create_task(_run())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
 
     async def prepare_turn(
         self,
@@ -150,20 +107,15 @@ class Orchestrator:
                 message, sender=sender, channel=channel
             )
             if pending_response:
-                memory, _ = self._memory_for(channel, sender)
-                self._remember_turn(message, pending_response, memory)
+                # The facade remembers the turn (memory is rust-owned now).
                 return {"status": "pending", "reply": pending_response}
 
             review_response = self._handle_review_queue_command(message)
             if review_response:
-                memory, _ = self._memory_for(channel, sender)
-                self._remember_turn(message, review_response, memory)
                 return {"status": "review", "reply": review_response}
 
             # If the router already provided a direct reply, use it
             if route_result.reply:
-                memory, _ = self._memory_for(channel, sender)
-                self._remember_turn(message, route_result.reply, memory)
                 return {"status": "direct", "reply": route_result.reply}
 
             # Find the matching agent, or manufacture one
@@ -174,10 +126,6 @@ class Orchestrator:
                 route_result.intent,
                 route_result.model_tier,
             )
-
-            # 1. Save user's message to this conversation's persistent memory
-            memory, context_manager = self._memory_for(channel, sender)
-            memory.append_message("user", message)
 
             # Select model based on tier
             model = self._select_model(route_result.model_tier)
@@ -190,24 +138,10 @@ class Orchestrator:
                     agent, message, route_result.model_tier, model
                 )
                 if fallback_response is not None:
-                    memory.append_message("assistant", fallback_response)
                     return {
                         "status": "workflow_fallback",
                         "reply": fallback_response,
                     }
-
-            # 2. Build contextual messages (System + Facts + History + Current msg)
-            # Note: the current user_msg is passed in separately for context bounds
-            extra_sections = [
-                self.workflow_registry.render_catalog(agent),
-                self.skill_registry.render_catalog(agent),
-            ]
-            messages = context_manager.build_messages(
-                agent,
-                message,
-                max_history_msg=10,
-                extra_system_sections=extra_sections,
-            )
 
             # Build tools payload if agent has any
             tools_schemas = None
@@ -222,11 +156,22 @@ class Orchestrator:
                 asdict(a) for a in self._visible_pending_actions(sender, channel)
             ]
 
+            # Memory lives in Rust now: the facade persists the user message,
+            # assembles the prompt window (facts, summaries, budgeted history)
+            # and needs the prompt parts from here.
             return {
                 "status": "agent",
-                "agent": {"name": agent.name, "tools": list(agent.tools)},
+                "agent": {
+                    "name": agent.name,
+                    "tools": list(agent.tools),
+                    "system_prompt": build_system_prompt(agent),
+                    "max_context_tokens": agent.max_context_tokens,
+                },
                 "model": model,
-                "messages": messages,
+                "catalogs": [
+                    self.workflow_registry.render_catalog(agent),
+                    self.skill_registry.render_catalog(agent),
+                ],
                 "tools_schemas": tools_schemas,
                 "known_pending": known_pending,
             }
@@ -237,6 +182,7 @@ class Orchestrator:
         arguments: dict[str, Any],
         sender: str = "",
         channel: str = "",
+        scope: str = "",
     ) -> dict[str, Any]:
         """One tool call for the Rust loop: resolve, gate, execute or suspend.
 
@@ -294,7 +240,6 @@ class Orchestrator:
 
     async def finish_turn(
         self,
-        message: str,
         reply: str,
         channel: str = "",
         sender: str = "",
@@ -302,32 +247,22 @@ class Orchestrator:
         notifications: list[str] | None = None,
     ) -> dict[str, Any]:
         """Finalize a turn for the Rust loop: surface pendings queued during
-        it, remember the assistant reply, merge background alerts, schedule
-        the summary backfill."""
-        scope = scope_for(channel, sender)
-        with use_scope(scope):
-            memory, _ = self._memory_for(channel, sender)
-            known_ids = {
-                int(item["id"]) for item in (known_pending or []) if "id" in item
-            }
-            final_reply, pending_created = self._append_new_pending(
-                reply, known_ids, sender, channel
-            )
-
-            # 3. Save assistant's reply to memory
-            memory.append_message("assistant", final_reply)
-
-            if notifications:
-                self._pending_notifications.extend(notifications)
-
-            self._schedule_summary_backfill(channel, sender)
-            return {"reply": final_reply, "pending_created": pending_created}
+        it and merge background alerts. Memory append and the summary
+        backfill happen in Rust."""
+        known_ids = {int(item["id"]) for item in (known_pending or []) if "id" in item}
+        final_reply, pending_created = self._append_new_pending(
+            reply, known_ids, sender, channel
+        )
+        if notifications:
+            self._pending_notifications.extend(notifications)
+        return {"reply": final_reply, "pending_created": pending_created}
 
     async def complete_turn(
         self,
         messages: list[dict[str, Any]],
         model: str,
         tools: list[dict[str, Any]] | None = None,
+        scope: str = "",
     ) -> dict[str, Any]:
         """One python llm call for backends the rust client doesn't serve.
 
@@ -335,17 +270,21 @@ class Orchestrator:
         claude-cli and local providers run in Rust. Python loads the user's
         personal API keys before calling cloud providers.
         """
-        env_path = self._project_root / "personal" / "api_keys.env"
-        if env_path.exists():
-            from dotenv import load_dotenv
+        with use_scope(scope or DEFAULT_SCOPE):
+            env_path = self._project_root / "personal" / "api_keys.env"
+            if env_path.exists():
+                from dotenv import load_dotenv
 
-            load_dotenv(env_path)
+                load_dotenv(env_path)
 
-        from nerv.llm import complete
+            from nerv.llm import complete
 
-        result = await complete(
-            messages, model=model, tools=tools, project_root=self._project_root
-        )
+            result = await complete(
+                messages,
+                model=model,
+                tools=tools,
+                project_root=self._project_root,
+            )
         return {
             "content": result.content,
             "tool_calls": result.tool_calls,
@@ -422,29 +361,6 @@ class Orchestrator:
         model = tier_models.get(tier, tier_models[0])
         logger.debug("Selected model for tier %d: %s", tier, model)
         return model
-
-    def _memory_for(
-        self, channel: str, sender: str
-    ) -> tuple[MemoryManager, ContextManager]:
-        """Return the memory and context manager for one conversation scope."""
-        scope = scope_for(channel, sender)
-        memory = self._memory_by_scope.get(scope)
-        if memory is None:
-            memory = MemoryManager(self._project_root, scope)
-            self._memory_by_scope[scope] = memory
-            self._context_by_scope[scope] = ContextManager(memory)
-        return memory, self._context_by_scope[scope]
-
-    def _remember_turn(
-        self,
-        user_message: str,
-        assistant_message: str,
-        memory: MemoryManager | None = None,
-    ) -> None:
-        """Persist a direct user/assistant turn without invoking the model."""
-        target = memory or self.memory
-        target.append_message("user", user_message)
-        target.append_message("assistant", assistant_message)
 
     async def _model_available(self, model: str) -> bool:
         """Whether the provider-prefixed ``model`` can serve a request right now."""

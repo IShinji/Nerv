@@ -53,7 +53,7 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
-    fn new(role: &str, content: impl Into<String>) -> Self {
+    pub fn new(role: &str, content: impl Into<String>) -> Self {
         Self {
             role: role.to_string(),
             content: content.into(),

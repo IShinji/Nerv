@@ -108,7 +108,7 @@ impl TurnRunner {
         route_result: &RouteResult,
         channel: &str,
         sender: &str,
-        caller: &dyn ModelCaller,
+        caller: std::sync::Arc<dyn ModelCaller>,
     ) -> Result<String, BrainError> {
         let scope = scope_for(channel, sender);
         let mut trace = TraceRecord::new(channel, &scope);
@@ -145,7 +145,8 @@ impl TurnRunner {
                         sender,
                         &scope,
                         &prepared,
-                        caller,
+                        caller.as_ref(),
+                        caller.clone(),
                         &mut trace,
                     )
                     .await
@@ -183,6 +184,12 @@ impl TurnRunner {
         prepared: &serde_json::Value,
         trace: &mut TraceRecord,
     ) -> Result<String, TurnError> {
+        let scope = scope_for(channel, sender);
+        let memory = Arc::new(crate::memory::MemoryManager::new(
+            &self.project_root,
+            &scope,
+        ));
+        memory.append_message("user", message);
         let reply = prepared["reply"].as_str().unwrap_or("").to_string();
         let notifications = prepared["notifications"]
             .as_array()
@@ -210,7 +217,9 @@ impl TurnRunner {
         if finished["pending_created"].as_bool().unwrap_or(false) {
             trace.pending_created = true;
         }
-        Ok(finished["reply"].as_str().unwrap_or("").to_string())
+        let final_reply = finished["reply"].as_str().unwrap_or("").to_string();
+        memory.append_message("assistant", &final_reply);
+        Ok(final_reply)
     }
 
     /// The agent path: run the model loop, then let python finalize the turn.
@@ -224,6 +233,7 @@ impl TurnRunner {
         scope: &str,
         prepared: &serde_json::Value,
         caller: &dyn ModelCaller,
+        caller_arc: crate::memory::summarizer::ArcCaller,
         trace: &mut TraceRecord,
     ) -> Result<String, TurnError> {
         let agent = &prepared["agent"];
@@ -237,13 +247,38 @@ impl TurnRunner {
             })
             .unwrap_or_default();
         let model = prepared["model"].as_str().unwrap_or_default().to_string();
-        let messages: Vec<crate::llm::ChatMessage> =
-            serde_json::from_value(prepared["messages"].clone())
-                .map_err(|e| BrainError::Rpc(format!("prepare_turn returned bad messages: {e}")))?;
-        let tools_schemas: Option<Vec<serde_json::Value>> =
-            serde_json::from_value(prepared["tools_schemas"].clone()).ok();
         let known_pending: Vec<PendingRecord> =
             serde_json::from_value(prepared["known_pending"].clone()).unwrap_or_default();
+
+        // Memory is the facade's now: persist the user's message, then let the
+        // context manager assemble the prompt window (facts, summaries,
+        // budgeted history) around it.
+        let memory = Arc::new(crate::memory::MemoryManager::new(&self.project_root, scope));
+        memory.append_message("user", message);
+        let agent_prompt = crate::memory::AgentPrompt {
+            name: agent_name.clone(),
+            system_prompt: agent["system_prompt"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            max_context_tokens: agent["max_context_tokens"].as_i64().unwrap_or(8000),
+        };
+        let catalogs: Vec<String> = prepared["catalogs"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let messages = crate::memory::ContextManager { memory: &memory }.build_messages(
+            &agent_prompt,
+            message,
+            10,
+            &catalogs,
+        );
+        let tools_schemas: Option<Vec<serde_json::Value>> =
+            serde_json::from_value(prepared["tools_schemas"].clone()).ok();
 
         let (loop_outcome, notifications) = {
             let mut ctx = LoopContext {
@@ -254,6 +289,7 @@ impl TurnRunner {
                 sender,
                 channel,
                 scope,
+                memory: memory.clone(),
                 pending_notifications: Vec::new(),
             };
             let outcome = run_model_loop(
@@ -287,20 +323,30 @@ impl TurnRunner {
             .call(
                 "finish_turn",
                 json!({
-                    "message": message,
                     "reply": reply,
                     "channel": channel,
                     "sender": sender,
                     "known_pending": known_pending,
                     "notifications": notifications,
-                    "pending_created": false,
                 }),
             )
             .await?;
         if finished["pending_created"].as_bool().unwrap_or(false) {
             trace.pending_created = true;
         }
-        Ok(finished["reply"].as_str().unwrap_or("").to_string())
+        let final_reply = finished["reply"].as_str().unwrap_or("").to_string();
+        // The finalized reply (with any pending additions) is what memory
+        // keeps, matching the old python order.
+        memory.append_message("assistant", &final_reply);
+        let tier0_model = nerv_shared::config::NervConfig::load(&self.project_root)
+            .map(|config| config.models.tiers.tier0)
+            .unwrap_or_else(|_| "claude-cli:opus".to_string());
+        crate::memory::summarizer::spawn_backfill(
+            self.project_root.clone(),
+            tier0_model,
+            caller_arc,
+        );
+        Ok(final_reply)
     }
 }
 
