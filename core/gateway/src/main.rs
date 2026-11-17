@@ -1,5 +1,6 @@
 mod adapter;
 mod ollama;
+mod tasks_service;
 
 use adapter::cli::CliAdapter;
 use adapter::{ChannelAdapter, IncomingMessage};
@@ -216,14 +217,15 @@ async fn main() -> Result<()> {
     // Targeted notifications (E0): route each brain `notify` to the matching
     // adapter's per-sender delivery. Unknown channels are dropped with a
     // warning — an unregistered channel must never silently widen delivery.
-    let notify_adapters: std::sync::RwLock<Vec<Arc<dyn ChannelAdapter>>> =
-        std::sync::RwLock::new(broadcasters.clone());
+    let notify_adapters: Arc<std::sync::RwLock<Vec<Arc<dyn ChannelAdapter>>>> =
+        Arc::new(std::sync::RwLock::new(broadcasters.clone()));
+    let pump_adapters = Arc::clone(&notify_adapters);
     let notify_pump = tokio::spawn(async move {
         while let Some(message) = notify_rx.recv().await {
             // Clone the matching adapter and drop the guard before awaiting:
             // the std guard is not Send and would poison the spawned task.
             let adapter = {
-                let adapters = notify_adapters.read().expect("adapters lock");
+                let adapters = pump_adapters.read().expect("adapters lock");
                 adapters
                     .iter()
                     .find(|a| a.channel_type().to_string() == message.channel)
@@ -239,6 +241,30 @@ async fn main() -> Result<()> {
             adapter.send_to(&message.sender, &message.text).await;
         }
     });
+
+    // Background task service (E0): sweeps INTERRUPTED runs, then polls the
+    // shared store for QUEUED tasks and runs them in gateway subprocesses.
+    let task_adapters = notify_adapters.clone();
+    let task_service = Arc::new(tasks_service::TaskService::new(
+        &project_root,
+        Arc::new(move |channel, sender, text| {
+            let adapters = task_adapters.read().expect("adapters lock");
+            if let Some(adapter) = adapters
+                .iter()
+                .find(|a| a.channel_type().to_string() == channel)
+            {
+                let adapter = adapter.clone();
+                drop(adapters);
+                tokio::spawn(async move {
+                    adapter.send_to(&sender, &text).await;
+                });
+            } else {
+                warn!("Background task notification for unknown channel '{channel}' dropped");
+            }
+        }),
+    ));
+    task_service.sweep_interrupted();
+    let tasks_pickup = task_service.clone().spawn_pickup_loop();
 
     // Heartbeat results go to every channel that can push proactively
     // (the CLI prints them; Telegram messages the allow-listed users).
@@ -277,6 +303,7 @@ async fn main() -> Result<()> {
     // Cleanup
     heartbeat_task.abort();
     notify_pump.abort();
+    tasks_pickup.abort();
     processor.await?;
     brain.stop().await?;
     info!("Nerv gateway stopped");
