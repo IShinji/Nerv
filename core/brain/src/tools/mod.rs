@@ -4,10 +4,13 @@
 //! migrates too).
 
 pub mod desktop;
+pub mod evolution;
 pub mod files;
 pub mod helpers;
+pub mod knowledge;
 pub mod memory;
 pub mod pending_store;
+pub mod productivity;
 pub mod registry;
 pub mod sandbox;
 pub mod system;

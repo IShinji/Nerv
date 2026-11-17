@@ -126,7 +126,10 @@ class MemoryManager:
     def _flock(lock_path: Path) -> Iterator[None]:
         """Hold an exclusive cross-process lock on ``lock_path``."""
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(lock_path, "w") as lock_file:
+        resolved = lock_path.resolve()
+        if resolved.parent != lock_path.parent.resolve():
+            raise ValueError("lock path escaped its directory")
+        with open(resolved, "w") as lock_file:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
             try:
                 yield

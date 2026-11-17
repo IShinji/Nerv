@@ -59,6 +59,21 @@ pub struct WorkflowReviewItem {
     pub source_path: String,
 }
 
+/// Review ids and slugged names land directly in filesystem paths, so
+/// anything outside this charset (separators and ".." in particular) is
+/// rejected before a path is ever built from them.
+fn require_safe_path_id(value: &str, what: &str) -> Result<(), String> {
+    let ok = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("unsafe {what}: {value:?}"))
+    }
+}
+
 /// Convert a label into a filesystem-safe slug.
 pub fn slugify(value: &str) -> String {
     static NON_SLUG: std::sync::LazyLock<regex::Regex> =
@@ -78,6 +93,7 @@ pub fn slugify(value: &str) -> String {
 }
 
 use regex::Regex;
+use tracing::error;
 
 /// Serialize a workflow for YAML persistence (python's `workflow_to_dict`).
 fn workflow_to_dict(workflow: &WorkflowDefinition) -> serde_yaml::Value {
@@ -341,9 +357,12 @@ impl ReviewQueue {
         item.status = "approved".to_string();
         item.workflow.review_status = "approved".to_string();
 
+        let slug = slugify(&item.workflow.name);
+        require_safe_path_id(&slug, "workflow slug")
+            .map_err(|e| format!("Failed to publish the workflow: {e}"))?;
         let target_path = self
             .workflows_dir
-            .join(format!("{}.yaml", slugify(&item.workflow.name)));
+            .join(format!("{slug}.yaml"));
         let payload = workflow_to_dict(&item.workflow);
         let yaml_text = serde_yaml::to_string(&payload)
             .map_err(|e| format!("Failed to serialize the workflow: {e}"))?;
@@ -437,8 +456,15 @@ impl ReviewQueue {
 
     /// Persist a review item back to disk.
     fn write_review(&self, item: &WorkflowReviewItem) {
+        if let Err(e) = require_safe_path_id(&item.review_id, "review id") {
+            error!("{e}");
+            return;
+        }
         let path = self.reviews_dir.join(format!("{}.yaml", item.review_id));
         let payload = serde_yaml::to_value(item).unwrap_or(serde_yaml::Value::Null);
         let _ = std::fs::write(&path, serde_yaml::to_string(&payload).unwrap_or_default());
     }
 }
+
+#[cfg(test)]
+mod tests;

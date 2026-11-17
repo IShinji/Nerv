@@ -54,7 +54,13 @@ fn find_for_agent_matches_owner_or_tag() {
     let dir = tempfile::tempdir().unwrap();
     let shared = dir.path().join("workflows");
     std::fs::create_dir_all(&shared).unwrap();
-    write_workflow(&shared, "DeployFlow", &["sysadmin"], &["deploy"], "approved");
+    write_workflow(
+        &shared,
+        "DeployFlow",
+        &["sysadmin"],
+        &["deploy"],
+        "approved",
+    );
     write_workflow(&shared, "CodeFlow", &["coder"], &["code"], "approved");
 
     let registry = WorkflowRegistry::new(dir.path());
@@ -62,7 +68,7 @@ fn find_for_agent_matches_owner_or_tag() {
     assert_eq!(for_sysadmin.len(), 1);
     assert_eq!(for_sysadmin[0].name, "DeployFlow");
 
-    let for_coder = registry.find_for_agent("Other", &["code"]);
+    let for_coder = registry.find_for_agent("Other", &[String::from("code")]);
     assert_eq!(for_coder.len(), 1);
     assert_eq!(for_coder[0].name, "CodeFlow");
 
@@ -74,7 +80,13 @@ fn render_catalog_lists_and_hints() {
     let dir = tempfile::tempdir().unwrap();
     let shared = dir.path().join("workflows");
     std::fs::create_dir_all(&shared).unwrap();
-    write_workflow(&shared, "DeployFlow", &["sysadmin"], &["deploy"], "approved");
+    write_workflow(
+        &shared,
+        "DeployFlow",
+        &["sysadmin"],
+        &["deploy"],
+        "approved",
+    );
 
     let registry = WorkflowRegistry::new(dir.path());
     let catalog = registry.render_catalog("SysAdmin", &[], 4);
@@ -114,7 +126,9 @@ fn review_queue_round_trips_approve_and_reject() {
     let registry = WorkflowRegistry::new(dir.path());
     assert!(registry.find("DraftFlow").is_some());
 
-    let rejected = queue.reject_workflow(&item.review_id, "needs work").unwrap();
+    let rejected = queue
+        .reject_workflow(&item.review_id, "needs work")
+        .unwrap();
     assert_eq!(rejected.status, "rejected");
     assert_eq!(rejected.reviewer_notes, "needs work");
 }

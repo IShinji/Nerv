@@ -22,6 +22,19 @@ def _slugify(value: str) -> str:
     return normalized or "workflow"
 
 
+# Review ids and slugged names land directly in filesystem paths, so anything
+# outside this charset (in particular separators and "..") is rejected before
+# a path is ever built from them.
+_SAFE_PATH_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _require_safe_path_id(value: str, what: str) -> str:
+    """Reject ids that could traverse out of the intended directory."""
+    if not _SAFE_PATH_ID.fullmatch(value):
+        raise ValueError(f"Unsafe {what}: {value!r}")
+    return value
+
+
 def workflow_to_dict(workflow: WorkflowDefinition) -> dict[str, object]:
     """Serialize a workflow for YAML persistence."""
     return {
@@ -147,6 +160,7 @@ class ReviewQueue:
 
     def get(self, review_id: str) -> WorkflowReviewItem | None:
         """Get a review item by ID."""
+        _require_safe_path_id(review_id, "review id")
         path = self.reviews_dir / f"{review_id}.yaml"
         if not path.exists():
             return None
@@ -180,7 +194,8 @@ class ReviewQueue:
         item.status = "approved"
         item.workflow.review_status = "approved"
 
-        target_path = self.workflows_dir / f"{_slugify(item.workflow.name)}.yaml"
+        slug = _require_safe_path_id(_slugify(item.workflow.name), "workflow slug")
+        target_path = self.workflows_dir / f"{slug}.yaml"
         with open(target_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(
                 workflow_to_dict(item.workflow),
@@ -242,6 +257,7 @@ class ReviewQueue:
 
     def _write_review(self, item: WorkflowReviewItem) -> None:
         """Persist a review item back to disk."""
+        _require_safe_path_id(item.review_id, "review id")
         path = self.reviews_dir / f"{item.review_id}.yaml"
         payload = {
             "review_id": item.review_id,

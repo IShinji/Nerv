@@ -1,5 +1,6 @@
 """Tests for the Orchestrator and Agent Registry."""
 
+import re
 import tempfile
 from pathlib import Path
 
@@ -21,7 +22,7 @@ class TestAgentRegistry:
         agent_dir = tmp / "agents"
         agent_dir.mkdir(parents=True, exist_ok=True)
         for agent_data in agents:
-            name = agent_data["name"].lower()
+            name = re.sub(r"[^a-z0-9_-]+", "_", agent_data["name"].lower())
             with open(agent_dir / f"{name}.yaml", "w") as f:
                 yaml.dump(agent_data, f)
         return tmp
