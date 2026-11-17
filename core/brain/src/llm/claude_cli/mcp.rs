@@ -11,6 +11,8 @@ use serde_json::json;
 /// Prefix of the temp MCP config written for each request (the Python sweep
 /// in `nerv.mcp_server` startup cleans leftovers of both implementations).
 pub const MCP_SERVER_NAME: &str = "nerv";
+/// The python sidecar's MCP server name (serves the unported tools).
+pub const PYTHON_SERVER_NAME: &str = "nervpy";
 pub const MCP_CONFIG_PREFIX: &str = "nerv-mcp-";
 
 /// Map requested tool/capability names to concrete provider tool names.
@@ -49,12 +51,10 @@ fn capability_alias(name: &str) -> Option<&'static str> {
     })
 }
 
-/// Write a temp MCP config that points Claude at the Nerv tool server.
-///
-/// Returns the path; the caller removes it when the request finishes (a
-/// `finally` in Python). The file must be removed before the process exits —
-/// a brain killed mid-request leaves it behind, and the sidecar's startup
-/// sweep deletes files older than an hour with this prefix.
+/// Write a temp MCP config that points Claude at the Nerv tool servers: the
+/// rust registry (this binary, `--mcp-server` mode) serves the ported tools,
+/// the python sidecar serves the rest. Returns the path; the caller removes
+/// it when the request finishes (a `finally` in python).
 pub fn write_mcp_config(project_root: &Path, scope: &str) -> std::io::Result<PathBuf> {
     // Memory tools in the MCP process must read this request's scope, not the
     // default one.
@@ -76,14 +76,23 @@ pub fn write_mcp_config(project_root: &Path, scope: &str) -> std::io::Result<Pat
         let resolved = user_config.canonicalize().unwrap_or(user_config);
         env["NERV_CONFIG"] = json!(resolved.to_string_lossy());
     }
+    // The rust server is the same binary that launched the turn, in its
+    // --mcp-server mode (works for the gateway and the GUI alike).
+    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("nerv"));
+
     let config = json!({
         "mcpServers": {
             MCP_SERVER_NAME: {
+                "command": current_exe.display().to_string(),
+                "args": ["--mcp-server"],
+                "env": env,
+            },
+            PYTHON_SERVER_NAME: {
                 "command": "uv",
                 "args": ["run", "python", "-m", "nerv.mcp_server"],
                 "cwd": project_root.join("brain").to_string_lossy(),
                 "env": env,
-            }
+            },
         }
     });
 

@@ -82,6 +82,14 @@ fn brain_spawn_config(config: &NervConfig, project_root: &std::path::Path) -> Br
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // The gateway binary doubles as the rust MCP server for the claude-cli
+    // bridge: claude spawns the same executable with this flag (see
+    // nerv_brain::llm::claude_cli::write_mcp_config).
+    if std::env::args().any(|arg| arg == "--mcp-server") {
+        nerv_brain::mcp_server::run_stdio().await;
+        return Ok(());
+    }
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
