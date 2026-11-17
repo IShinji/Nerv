@@ -94,8 +94,15 @@ def _call_key(tool_name: str, kwargs: dict[str, Any]) -> str:
 class WorkflowExecutor:
     """Execute a workflow step-by-step with persistence and per-step retries."""
 
-    def __init__(self, orchestrator: "Orchestrator") -> None:
+    def __init__(
+        self,
+        orchestrator: "Orchestrator",
+        channel: str = "",
+        sender: str = "",
+    ) -> None:
         self.orchestrator = orchestrator
+        self._channel = channel
+        self._sender = sender
         self._store = TaskRunStore(orchestrator._project_root)
         # Exact calls the user approved for the run in progress (see ``execute``).
         self._approved_calls: frozenset[str] = frozenset()
@@ -625,3 +632,17 @@ class WorkflowExecutor:
         log_event("workflow_notice", message=message)
         if hasattr(self.orchestrator, "_pending_notifications"):
             self.orchestrator._pending_notifications.append(message)
+        # E0 定向通知: also push a `notify` so the gateway routes it to the
+        # requesting channel/sender immediately instead of at heartbeat.
+        try:
+            from nerv.ipc import write_notification
+
+            write_notification(
+                {
+                    "channel": getattr(self, "_channel", ""),
+                    "sender": getattr(self, "_sender", ""),
+                    "text": message,
+                }
+            )
+        except Exception:
+            logger.debug("notify write failed", exc_info=True)

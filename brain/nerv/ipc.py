@@ -156,6 +156,22 @@ def write_response(response: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+def write_notification(params: dict[str, Any]) -> None:
+    """Emit a JSON-RPC notification (no id) — the E0 定向通知 channel.
+
+    The gateway routes `notify{channel, sender, text}` to the matching
+    adapter's per-sender delivery instead of broadcasting. Must only be
+    called from the brain process (stdout is the JSON-RPC channel); writes
+    are serialized by the caller or the stdout lock.
+    """
+    line = json.dumps(
+        {"jsonrpc": "2.0", "method": "notify", "params": params},
+        ensure_ascii=False,
+    )
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+
+
 async def write_response_async(response: dict[str, Any]) -> None:
     """Write one response, serialized against other in-flight handlers."""
     global _stdout_lock

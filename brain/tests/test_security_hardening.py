@@ -197,7 +197,7 @@ async def test_execute_workflow_awaits_orchestrator(tmp_path: Path, monkeypatch)
     seen = {}
 
     class FakeExecutor:
-        def __init__(self, orch):
+        def __init__(self, orch, channel="", sender=""):
             seen["orch"] = orch
 
         async def execute(self, workflow, inputs):

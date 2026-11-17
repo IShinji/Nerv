@@ -35,6 +35,11 @@ pub trait ChannelAdapter: Send + Sync {
     /// authorized recipients. Channels that cannot do so keep the no-op default.
     async fn broadcast(&self, _text: &str) {}
 
+    /// Deliver a targeted notification to one sender on this channel
+    /// (E0 定向通知). Channels that cannot address a single sender keep the
+    /// no-op default; the notify pump warns when a message lands here.
+    async fn send_to(&self, _sender: &str, _text: &str) {}
+
     /// Identify which channel this adapter serves.
     #[allow(dead_code)]
     fn channel_type(&self) -> ChannelType;

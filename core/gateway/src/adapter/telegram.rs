@@ -259,20 +259,45 @@ impl super::ChannelAdapter for TelegramAdapter {
         // Private chats share their id with the user, so each allowed user id
         // doubles as the chat id to message.
         for user in &self.config.allowed_users {
-            let Ok(id) = user.trim().parse::<i64>() else {
-                continue;
-            };
-            for chunk in chunk_text(text, TELEGRAM_MAX_CHARS) {
-                if let Err(e) = bot.send_message(ChatId(id), chunk).await {
-                    warn!("Failed to push proactive message to Telegram: {e}");
-                    break;
-                }
-            }
+            Self::send_chunks(&bot, user, text).await;
         }
+    }
+
+    /// Deliver a notification to exactly one sender (E0 定向通知). Senders
+    /// outside the allow-list are dropped: the allow-list is the authorization
+    /// boundary, and a notification must never widen it.
+    async fn send_to(&self, sender: &str, text: &str) {
+        if !self
+            .config
+            .allowed_users
+            .iter()
+            .any(|u| u.trim() == sender.trim())
+        {
+            warn!("Notification for {sender} dropped: not in the allow-list");
+            return;
+        }
+        let bot = Bot::new(&self.config.bot_token);
+        Self::send_chunks(&bot, sender, text).await;
     }
 
     fn channel_type(&self) -> ChannelType {
         ChannelType::Telegram
+    }
+}
+
+impl TelegramAdapter {
+    /// Send `text` to one user id in 4096-char chunks.
+    async fn send_chunks(bot: &Bot, user: &str, text: &str) {
+        let Ok(id) = user.trim().parse::<i64>() else {
+            warn!("Invalid Telegram user id: {user}");
+            return;
+        };
+        for chunk in chunk_text(text, TELEGRAM_MAX_CHARS) {
+            if let Err(e) = bot.send_message(ChatId(id), chunk).await {
+                warn!("Failed to push proactive message to Telegram: {e}");
+                break;
+            }
+        }
     }
 }
 
