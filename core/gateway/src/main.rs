@@ -1,6 +1,7 @@
 mod adapter;
 mod delegation;
 mod ollama;
+mod scheduler;
 mod tasks_service;
 
 use adapter::cli::CliAdapter;
@@ -243,6 +244,63 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Scheduled-message scheduler (E2): fires due user-created messages
+    // through the normal brain path and delivers replies via targeted notify.
+    let scheduler_route: Arc<dyn Fn(String, String, String) + Send + Sync> = {
+        let brain = Arc::clone(&brain);
+        let notify_adapters = Arc::clone(&notify_adapters);
+        Arc::new(move |channel, sender, message| {
+            let brain = Arc::clone(&brain);
+            let adapters = Arc::clone(&notify_adapters);
+            tokio::spawn(async move {
+                let params = serde_json::json!({
+                    "message": message,
+                    "channel": channel,
+                    "sender": sender,
+                });
+                let reply = match brain.call("execute", params).await {
+                    Ok(result) => result
+                        .get("reply")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    Err(e) => format!("Error: {e}"),
+                };
+                // Deliver the reply via targeted notify on the same channel.
+                let adapter = {
+                    let adapters = adapters.read().expect("adapters lock");
+                    adapters
+                        .iter()
+                        .find(|a| a.channel_type().to_string() == channel)
+                        .cloned()
+                };
+                if let Some(adapter) = adapter {
+                    adapter.send_to(&sender, &reply).await;
+                }
+            });
+        })
+    };
+    let sched_adapters = Arc::clone(&notify_adapters);
+    let scheduler = Arc::new(scheduler::Scheduler::new(
+        &project_root,
+        Arc::new(move |channel, sender, text| {
+            let adapters = sched_adapters.read().expect("adapters lock");
+            if let Some(adapter) = adapters
+                .iter()
+                .find(|a| a.channel_type().to_string() == channel)
+            {
+                let adapter = adapter.clone();
+                drop(adapters);
+                tokio::spawn(async move {
+                    adapter.send_to(&sender, &text).await;
+                });
+            }
+        }),
+        scheduler_route,
+    ));
+    let scheduler = Arc::clone(&scheduler);
+    let scheduler_task = scheduler.spawn();
+
     // Background task service (E0): sweeps INTERRUPTED runs, then polls the
     // shared store for QUEUED tasks and runs them in gateway subprocesses.
     let task_adapters = notify_adapters.clone();
@@ -305,6 +363,7 @@ async fn main() -> Result<()> {
     heartbeat_task.abort();
     notify_pump.abort();
     tasks_pickup.abort();
+    scheduler_task.abort();
     processor.await?;
     brain.stop().await?;
     info!("Nerv gateway stopped");
