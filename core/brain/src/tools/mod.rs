@@ -3,6 +3,7 @@
 //! `brain/nerv/tools/` (which keeps running for the MCP server until that
 //! migrates too).
 
+pub mod delegation;
 pub mod desktop;
 pub mod evolution;
 pub mod files;

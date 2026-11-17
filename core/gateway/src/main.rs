@@ -1,4 +1,5 @@
 mod adapter;
+mod delegation;
 mod ollama;
 mod tasks_service;
 

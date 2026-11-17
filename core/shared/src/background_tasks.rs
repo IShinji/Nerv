@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::error;
 
 pub const CURRENT_SCHEMA_VERSION: i64 = 1;
 
@@ -179,7 +178,7 @@ fn newer_schema(data: &Value, path: &Path) -> bool {
     if version <= CURRENT_SCHEMA_VERSION {
         return false;
     }
-    error!(
+    eprintln!(
         "{} has schema_version {version} but this build supports up to \
          {CURRENT_SCHEMA_VERSION}; ignoring it and leaving it untouched",
         path.display()

@@ -142,5 +142,7 @@ fn build_registry() -> Vec<ToolDefinition> {
         super::knowledge::list_skills(),
         super::knowledge::get_skill(),
         super::knowledge::list_review_queue(),
+        super::delegation::delegate_task(),
+        super::delegation::delegation_status(),
     ]
 }

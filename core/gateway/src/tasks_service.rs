@@ -80,6 +80,15 @@ impl TaskService {
 
     /// Start one task's subprocess and a watcher that persists the result.
     async fn spawn_task(self: &Arc<Self>, mut task: BackgroundTask) -> Result<(), std::io::Error> {
+        if task.kind == "delegate" {
+            // Delegations run via the delegation runner (E1) with the
+            // transcript written under personal/delegations/<id>/.
+            let service = Arc::clone(self);
+            tokio::spawn(async move {
+                service.run_delegate_task(task).await;
+            });
+            return Ok(());
+        }
         if task.kind != "command" {
             task.status = FAILED.to_string();
             task.error = format!("Unknown background task kind: {}", task.kind);
@@ -218,6 +227,12 @@ impl TaskService {
                 }
             }
         }
+    }
+
+    /// Run a delegation task end to end and report via targeted notify.
+    async fn run_delegate_task(self: Arc<Self>, task: BackgroundTask) {
+        let outcome = super::delegation::run_delegate(&task).await;
+        (self.notify)(task.channel.clone(), task.sender.clone(), outcome);
     }
 
     fn persist(&self, task: &BackgroundTask) {
