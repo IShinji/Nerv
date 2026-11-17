@@ -28,6 +28,70 @@ pub struct NervConfig {
     pub orchestrator: OrchestratorConfig,
     #[serde(default)]
     pub security: SecurityConfig,
+    #[serde(default)]
+    pub delegation: DelegationConfig,
+}
+
+/// Delegation of coding tasks to native coding-agent CLIs (PRD v2 E1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationConfig {
+    /// The executors the model may choose from. An empty list means no
+    /// executor is usable and `delegate_task` fails with guidance.
+    #[serde(default)]
+    pub executors: Vec<DelegationExecutor>,
+    /// Hard budget ceiling per delegation (USD).
+    #[serde(default = "default_max_budget_usd")]
+    pub max_budget_usd: f64,
+    /// Hard wall-clock ceiling per delegation (seconds).
+    #[serde(default = "default_max_timeout_s")]
+    pub max_timeout_s: u64,
+    /// How many delegations may run at once (v1: 1).
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent: u32,
+}
+
+impl Default for DelegationConfig {
+    fn default() -> Self {
+        Self {
+            executors: Vec::new(),
+            max_budget_usd: default_max_budget_usd(),
+            max_timeout_s: default_max_timeout_s(),
+            max_concurrent: default_max_concurrent(),
+        }
+    }
+}
+
+fn default_max_budget_usd() -> f64 {
+    2.0
+}
+
+fn default_max_timeout_s() -> u64 {
+    1800
+}
+
+fn default_max_concurrent() -> u32 {
+    1
+}
+
+/// One selectable coding-agent CLI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationExecutor {
+    /// The name the model passes to `delegate_task` (e.g. "claude").
+    pub name: String,
+    /// One sentence: what this executor is good at (model-facing).
+    pub description: String,
+    /// Which CLI drives it: `claude` or `codex`.
+    pub kind: String,
+}
+
+impl Default for DelegationExecutor {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: String::new(),
+            kind: "claude".to_string(),
+        }
+    }
 }
 
 /// Sandbox guards (`security.*`): the workspace root the tools may write in,
