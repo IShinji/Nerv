@@ -33,6 +33,8 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex};
 use tracing::{debug, info, warn};
 
+use serde_json::Value;
+
 use crate::ipc::{JsonRpcRequest, JsonRpcResponse};
 
 /// How long to wait for the brain's first `ping` after spawning it.
@@ -172,6 +174,10 @@ struct RestartState {
 pub struct BrainClient {
     config: BrainSpawnConfig,
     process: Mutex<Option<Process>>,
+    /// Set before `start`: where brain `notify` messages are delivered. The
+    /// gateway registers a routing pump; hosts without one keep the log-only
+    /// behaviour.
+    notify_tx: StdMutex<Option<tokio::sync::mpsc::UnboundedSender<NotifyMessage>>>,
     next_id: AtomicU64,
     /// Bumped on every successful spawn, so concurrent failures from the same
     /// dead process trigger exactly one restart between them.
@@ -181,10 +187,17 @@ pub struct BrainClient {
 }
 
 impl BrainClient {
+    /// Register the handler for brain `notify` messages. Must be called
+    /// before [`start`](Self::start) so the reader task picks it up.
+    pub fn set_notify_handler(&self, tx: tokio::sync::mpsc::UnboundedSender<NotifyMessage>) {
+        *self.notify_tx.lock().expect("notify lock") = Some(tx);
+    }
+
     pub fn new(config: BrainSpawnConfig) -> Self {
         Self {
             config,
             process: Mutex::new(None),
+            notify_tx: StdMutex::new(None),
             next_id: AtomicU64::new(1),
             generation: AtomicU64::new(0),
             restart_state: StdMutex::new(RestartState {
@@ -259,7 +272,12 @@ impl BrainClient {
 
         let group = ProcessGroup(child.id());
         let pending: PendingMap = Arc::new(StdMutex::new(HashMap::new()));
-        tokio::spawn(read_brain_stdout(BufReader::new(stdout), pending.clone()));
+        let notify_tx = self.notify_tx.lock().expect("notify lock").clone();
+        tokio::spawn(read_brain_stdout(
+            BufReader::new(stdout),
+            pending.clone(),
+            notify_tx,
+        ));
         *self.process.lock().await = Some(Process {
             child,
             stdin,
@@ -542,9 +560,22 @@ fn fail_all_pending(pending: &PendingMap, reason: &str) {
     }
 }
 
+/// A `notify` notification from the brain: an unsolicited, targeted message
+/// meant for one channel/sender (E0 定向通知). The gateway registers a handler
+/// that routes it to the right adapter instead of broadcasting.
+#[derive(Debug, Clone)]
+pub struct NotifyMessage {
+    pub channel: String,
+    pub sender: String,
+    pub text: String,
+}
+
 /// Route brain stdout lines to their waiting callers until the pipe closes.
-async fn read_brain_stdout<R>(mut reader: BufReader<R>, pending: PendingMap)
-where
+async fn read_brain_stdout<R>(
+    mut reader: BufReader<R>,
+    pending: PendingMap,
+    notify_tx: Option<tokio::sync::mpsc::UnboundedSender<NotifyMessage>>,
+) where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut line = String::new();
@@ -555,7 +586,7 @@ where
                 debug!("Brain process stdout closed");
                 break;
             }
-            Ok(_) => dispatch_line(line.trim(), &pending),
+            Ok(_) => dispatch_line(line.trim(), &pending, notify_tx.as_ref()),
             Err(e) => {
                 warn!("Error reading from brain stdout: {e}");
                 break;
@@ -567,7 +598,11 @@ where
     fail_all_pending(&pending, "stdout closed");
 }
 
-fn dispatch_line(trimmed: &str, pending: &PendingMap) {
+fn dispatch_line(
+    trimmed: &str,
+    pending: &PendingMap,
+    notify_tx: Option<&tokio::sync::mpsc::UnboundedSender<NotifyMessage>>,
+) {
     if trimmed.is_empty() {
         return;
     }
@@ -579,12 +614,34 @@ fn dispatch_line(trimmed: &str, pending: &PendingMap) {
 
     // Notifications carry a method instead of an id.
     if value.get("method").and_then(|m| m.as_str()) == Some("notify") {
-        let message = value
-            .get("params")
-            .and_then(|p| p.get("message"))
+        let params = value.get("params").cloned().unwrap_or(Value::Null);
+        let text = params
+            .get("text")
+            .or_else(|| params.get("message"))
             .and_then(|m| m.as_str())
-            .unwrap_or(trimmed);
-        info!("⚡[Brain]: {message}");
+            .unwrap_or(trimmed)
+            .to_string();
+        let message = NotifyMessage {
+            channel: params
+                .get("channel")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string(),
+            sender: params
+                .get("sender")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string(),
+            text,
+        };
+        match notify_tx {
+            Some(tx) => {
+                if let Err(e) = tx.send(message) {
+                    warn!("Notify handler dropped: {e}");
+                }
+            }
+            None => info!("⚡[Brain]: {}", message.text),
+        }
         return;
     }
 

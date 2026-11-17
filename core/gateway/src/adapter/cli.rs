@@ -67,6 +67,11 @@ impl super::ChannelAdapter for CliAdapter {
         println!("\n{text}\n");
     }
 
+    /// The CLI is the single local user: a targeted notification is a print.
+    async fn send_to(&self, _sender: &str, text: &str) {
+        println!("🔔 {text}");
+    }
+
     fn channel_type(&self) -> ChannelType {
         ChannelType::Cli
     }

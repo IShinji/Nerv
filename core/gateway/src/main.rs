@@ -5,7 +5,7 @@ use adapter::cli::CliAdapter;
 use adapter::{ChannelAdapter, IncomingMessage};
 use anyhow::{Context, Result};
 use nerv_brain::handle::BrainHandle;
-use nerv_shared::brain_client::{find_brain_dir, BrainClient, BrainSpawnConfig};
+use nerv_shared::brain_client::{find_brain_dir, BrainClient, BrainSpawnConfig, NotifyMessage};
 use nerv_shared::config::NervConfig;
 use nerv_shared::message::Message;
 use std::path::PathBuf;
@@ -114,6 +114,10 @@ async fn main() -> Result<()> {
     // Start the Python brain process, then the Rust brain facade: the router
     // classifies locally, the python sidecar handles pending/execute.
     let brain = Arc::new(BrainClient::new(brain_spawn_config(&config, &project_root)));
+    // Targeted notifications (E0): brain `notify` messages flow out through
+    // this channel into a pump that routes them by channel + sender.
+    let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<NotifyMessage>();
+    brain.set_notify_handler(notify_tx);
     brain.start().await?;
     let brain_handle = Arc::new(
         BrainHandle::new(brain.clone(), &project_root).context("loading the router prompts")?,
@@ -209,6 +213,33 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Targeted notifications (E0): route each brain `notify` to the matching
+    // adapter's per-sender delivery. Unknown channels are dropped with a
+    // warning — an unregistered channel must never silently widen delivery.
+    let notify_adapters: std::sync::RwLock<Vec<Arc<dyn ChannelAdapter>>> =
+        std::sync::RwLock::new(broadcasters.clone());
+    let notify_pump = tokio::spawn(async move {
+        while let Some(message) = notify_rx.recv().await {
+            // Clone the matching adapter and drop the guard before awaiting:
+            // the std guard is not Send and would poison the spawned task.
+            let adapter = {
+                let adapters = notify_adapters.read().expect("adapters lock");
+                adapters
+                    .iter()
+                    .find(|a| a.channel_type().to_string() == message.channel)
+                    .cloned()
+            };
+            let Some(adapter) = adapter else {
+                warn!(
+                    "Notification for unknown channel '{}' dropped",
+                    message.channel
+                );
+                continue;
+            };
+            adapter.send_to(&message.sender, &message.text).await;
+        }
+    });
+
     // Heartbeat results go to every channel that can push proactively
     // (the CLI prints them; Telegram messages the allow-listed users).
     let brain_heartbeat = brain.clone();
@@ -245,6 +276,7 @@ async fn main() -> Result<()> {
 
     // Cleanup
     heartbeat_task.abort();
+    notify_pump.abort();
     processor.await?;
     brain.stop().await?;
     info!("Nerv gateway stopped");

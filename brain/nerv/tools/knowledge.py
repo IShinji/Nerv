@@ -156,7 +156,12 @@ async def execute_workflow(workflow_name: str, inputs: str) -> ToolResult:
         )
 
     orchestrator = await _get_orchestrator()
-    executor = WorkflowExecutor(orchestrator)
+    from nerv.memory.manager import active_scope
+
+    scope = active_scope()
+    # The scope slug is channel-sender; best effort split for targeting.
+    channel, _, sender = scope.partition("-")
+    executor = WorkflowExecutor(orchestrator, channel=channel, sender=sender or scope)
 
     try:
         final_result = await executor.execute(workflow, inputs)

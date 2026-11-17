@@ -360,9 +360,7 @@ impl ReviewQueue {
         let slug = slugify(&item.workflow.name);
         require_safe_path_id(&slug, "workflow slug")
             .map_err(|e| format!("Failed to publish the workflow: {e}"))?;
-        let target_path = self
-            .workflows_dir
-            .join(format!("{slug}.yaml"));
+        let target_path = self.workflows_dir.join(format!("{slug}.yaml"));
         let payload = workflow_to_dict(&item.workflow);
         let yaml_text = serde_yaml::to_string(&payload)
             .map_err(|e| format!("Failed to serialize the workflow: {e}"))?;

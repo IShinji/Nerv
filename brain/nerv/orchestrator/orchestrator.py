@@ -482,7 +482,7 @@ class Orchestrator:
         from nerv.workflows.executor import WorkflowExecutor, WorkflowNeedsApproval
 
         executor = WorkflowExecutor(self)
-        try:
+        try:  # the fallback gate does not know the channel/sender here
             result = await executor.execute(fallback_wf, user_message)
             return result
         except WorkflowNeedsApproval as pending:
