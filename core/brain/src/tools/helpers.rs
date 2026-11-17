@@ -16,6 +16,7 @@ pub fn timezone_alias(name: &str) -> Option<&'static str> {
     })
 }
 
+pub const DEFAULT_HTTP_TIMEOUT: f64 = 20.0;
 pub const MAX_TOOL_OUTPUT_CHARS: usize = 5000;
 const SPILL_PREVIEW_HEAD_CHARS: usize = 3000;
 const SPILL_PREVIEW_TAIL_CHARS: usize = 1000;

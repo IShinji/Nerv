@@ -11,6 +11,7 @@ pub mod pending_store;
 pub mod registry;
 pub mod sandbox;
 pub mod system;
+pub mod web;
 
 #[cfg(test)]
 mod tests;

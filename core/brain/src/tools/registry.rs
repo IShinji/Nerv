@@ -126,5 +126,7 @@ fn build_registry() -> Vec<ToolDefinition> {
         super::desktop::desktop_control(),
         super::memory::search_memory(),
         super::memory::get_fact_section(),
+        super::web::web_search(),
+        super::web::browser(),
     ]
 }

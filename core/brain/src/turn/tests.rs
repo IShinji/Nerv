@@ -255,8 +255,10 @@ async fn executed_tool_results_feed_back_into_the_next_round() {
     let prepare = agent_prepare();
     let run_tool = serde_json::json!({"content": "tool output", "suspended": false});
     let (runner, _methods) = started_runner(dir.path(), prepare, &[run_tool]).await;
+    // `web_search` is native now; use an unported tool name so this round
+    // still exercises the python run_tool RPC path.
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
-        tool_calls_result(&[("web_search", serde_json::json!({"query": "x"}))]),
+        tool_calls_result(&[("legacy_rpc_tool", serde_json::json!({"query": "x"}))]),
         final_result("answer with tools"),
     ]));
 

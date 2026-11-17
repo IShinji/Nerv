@@ -12,6 +12,11 @@ chrono-tz = "0.10"
 # The facade drives the python sidecar through the shared JSON-RPC client.
 nerv-shared = { path = "../shared", features = ["brain-client"] }
 regex = "1"
+# The web tools normalize redirect/query URLs.
+url = "2"
+# The web tools parse duckduckgo result pages and fetch readable page text.
+scraper = "0.24"
+ego-tree = "0.10"
 uuid = { version = "1", features = ["v4"] }
 # HTTP for the local Ollama backend only (localhost, plain http://), so TLS
 # stays disabled to keep the dependency footprint small.
