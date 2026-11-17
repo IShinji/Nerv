@@ -224,6 +224,18 @@ fn child_path(existing: Option<&str>, home: Option<&Path>) -> String {
 }
 
 fn main() {
+    // The GUI binary doubles as the rust MCP server: when the claude-cli
+    // bridge spawns this executable in --mcp-server mode, run the server
+    // loop instead of the desktop app.
+    if std::env::args().any(|arg| arg == "--mcp-server") {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("mcp server runtime");
+        runtime.block_on(nerv_brain::mcp_server::run_stdio());
+        return;
+    }
+
     let project_root = find_project_root();
 
     tauri::Builder::default()

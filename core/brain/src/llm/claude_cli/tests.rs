@@ -239,10 +239,19 @@ async fn tool_names_bridge_through_the_mcp_config() {
     let capture = dir.path().join("mcp_capture.json");
     let config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&capture).unwrap()).unwrap();
+    // The rust server entry is this test binary itself in --mcp-server mode;
+    // the python sidecar entry keeps the brain cwd.
     let server = &config["mcpServers"]["nerv"];
-    assert_eq!(server["command"], "uv");
+    assert!(
+        server["command"].as_str().unwrap().contains("nerv_brain"),
+        "{}",
+        server["command"]
+    );
+    assert_eq!(server["args"][0], "--mcp-server");
+    let python_server = &config["mcpServers"]["nervpy"];
+    assert_eq!(python_server["command"], "uv");
     assert_eq!(
-        server["cwd"].as_str(),
+        python_server["cwd"].as_str(),
         Some(project_root.path().join("brain").to_string_lossy().as_ref())
     );
     assert_eq!(server["env"]["NERV_MEMORY_SCOPE"], "telegram:42");

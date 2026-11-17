@@ -79,7 +79,7 @@ pub struct ToolRegistry;
 
 impl ToolRegistry {
     /// All registered tools, in declaration order.
-    pub(crate) fn all() -> &'static [ToolDefinition] {
+    pub fn all() -> &'static [ToolDefinition] {
         static TOOLS: std::sync::LazyLock<Vec<ToolDefinition>> =
             std::sync::LazyLock::new(build_registry);
         &TOOLS

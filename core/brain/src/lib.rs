@@ -9,6 +9,7 @@
 
 pub mod handle;
 pub mod llm;
+pub mod mcp_server;
 pub mod memory;
 pub mod router;
 pub mod skills;
