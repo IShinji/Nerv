@@ -49,3 +49,4 @@ personal/
 # Logs
 *.log
 logs/
+.mimosa/
