@@ -10,6 +10,7 @@ import yaml
 from nerv.models import RouteResult
 from nerv.orchestrator.orchestrator import Orchestrator
 from nerv.orchestrator.registry import AgentRegistry
+from nerv.security.locks import open_write_in_dir
 from nerv.tools.registry import ToolResult, registry
 from nerv.workflows.models import WorkflowDefinition
 
@@ -23,7 +24,7 @@ class TestAgentRegistry:
         agent_dir.mkdir(parents=True, exist_ok=True)
         for agent_data in agents:
             name = re.sub(r"[^a-z0-9_-]+", "_", agent_data["name"].lower())
-            with open(agent_dir / f"{name}.yaml", "w") as f:
+            with open_write_in_dir(agent_dir, f"{name}.yaml") as f:
                 yaml.dump(agent_data, f)
         return tmp
 

@@ -27,7 +27,6 @@ in a separate process from the orchestrator and both can append.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import logging
 import os
@@ -41,6 +40,7 @@ from datetime import datetime
 from pathlib import Path
 
 from nerv.memory.models import ChatMessage, DailyConversation
+from nerv.security.locks import exclusive_lock
 
 logger = logging.getLogger(__name__)
 
@@ -126,15 +126,8 @@ class MemoryManager:
     def _flock(lock_path: Path) -> Iterator[None]:
         """Hold an exclusive cross-process lock on ``lock_path``."""
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        resolved = lock_path.resolve()
-        if resolved.parent != lock_path.parent.resolve():
-            raise ValueError("lock path escaped its directory")
-        with open(resolved, "w") as lock_file:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
+        with exclusive_lock(lock_path.parent, lock_path.name):
+            yield
 
     def _locked(self) -> contextlib.AbstractContextManager[None]:
         """Lock this scope's conversation directory."""

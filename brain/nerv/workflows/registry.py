@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
+from nerv.security.locks import open_write_in_dir
 from nerv.workflows.models import WorkflowDefinition, WorkflowReviewItem
 
 if TYPE_CHECKING:
@@ -195,8 +196,7 @@ class ReviewQueue:
         item.workflow.review_status = "approved"
 
         slug = _require_safe_path_id(_slugify(item.workflow.name), "workflow slug")
-        target_path = self.workflows_dir / f"{slug}.yaml"
-        with open(target_path, "w", encoding="utf-8") as f:
+        with open_write_in_dir(self.workflows_dir, f"{slug}.yaml") as f:
             yaml.safe_dump(
                 workflow_to_dict(item.workflow),
                 f,
@@ -258,7 +258,6 @@ class ReviewQueue:
     def _write_review(self, item: WorkflowReviewItem) -> None:
         """Persist a review item back to disk."""
         _require_safe_path_id(item.review_id, "review id")
-        path = self.reviews_dir / f"{item.review_id}.yaml"
         payload = {
             "review_id": item.review_id,
             "status": item.status,
@@ -267,5 +266,5 @@ class ReviewQueue:
             "reviewer_notes": item.reviewer_notes,
             "workflow": workflow_to_dict(item.workflow),
         }
-        with open(path, "w", encoding="utf-8") as f:
+        with open_write_in_dir(self.reviews_dir, f"{item.review_id}.yaml") as f:
             yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)

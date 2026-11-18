@@ -9,7 +9,6 @@ separate process) lists, executes, or cancels them when the user replies with
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 import tempfile
@@ -19,6 +18,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from nerv.security.locks import exclusive_lock
 from nerv.state_version import CURRENT_SCHEMA_VERSION, is_newer_schema
 
 
@@ -72,21 +72,13 @@ class PendingActionStore:
         self._ttl = ttl_seconds
         self._dir = project_root / "personal"
         self._path = self._dir / "pending_actions.json"
-        self._lock_path = self._dir / "pending_actions.lock"
 
     @contextlib.contextmanager
     def _locked(self) -> Iterator[None]:
         """Hold an exclusive cross-process lock for a read-modify-write cycle."""
         self._dir.mkdir(parents=True, exist_ok=True)
-        lock_path = self._lock_path.resolve()
-        if self._dir.resolve() != lock_path.parent:
-            raise ValueError("pending lock path escaped the store directory")
-        with open(lock_path, "w") as lock_file:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
+        with exclusive_lock(self._dir, "pending_actions.lock"):
+            yield
 
     def _read(self) -> dict[str, Any]:
         if not self._path.exists():

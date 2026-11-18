@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 import os
-import random
+import secrets
 import stat
 import tempfile
 import time
@@ -338,7 +338,7 @@ async def complete_claude_cli(
 def _backoff_seconds(attempt: int) -> float:
     """Exponential backoff capped at 8s (1s, 2s, 4s, 8s) with +/-10% jitter."""
     base = float(min(2 ** (attempt - 1), 8))
-    return base * random.uniform(0.9, 1.1)
+    return base * secrets.SystemRandom().uniform(0.9, 1.1)
 
 
 async def _invoke_once(
