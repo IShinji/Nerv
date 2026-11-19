@@ -1,20 +1,21 @@
 //! One user turn as the Rust facade drives it: the port of the orchestrator's
 //! `dispatch`/`_dispatch` flow, with the model loop in
-//! [`crate::turn::model_loop`] and python kept for the leaf operations that
-//! have not migrated (memory context, agent registry, tool execution, the
-//! pending store) behind thin RPCs:
+//! [`crate::turn::model_loop`]. The pre-model stages and finalization run
+//! locally in [`prepare`] (pending commands, review queue, agent selection,
+//! model selection, new-pending surfacing); python keeps only the leaf
+//! operations that have not migrated, behind thin RPCs:
 //!
-//! - `prepare_turn` — review-queue commands, the direct-reply path, agent
-//!   selection, workflow fallback, context assembly, tool schemas, and the
-//!   pending snapshot
 //! - `run_tool` — capability resolution, the confirmation gate, execution
-//! - `finish_turn` — new-pending surfacing, memory append, summary backfill
+//!   for the tools that are still python
+//! - `workflow_fallback` — the WorkflowExecutor is still python
+//! - `execute_pending` — confirming a queued python-only tool
+//! - `complete_turn` — python-only model backends (litellm)
 //!
-//! The trace line is written here (Rust owns the timing); scope binding stays
-//! python-side inside each handler.
+//! The trace line is written here (Rust owns the timing).
 
 pub mod model_loop;
 pub mod pending;
+pub mod prepare;
 mod trace;
 
 #[cfg(test)]
@@ -125,45 +126,51 @@ impl TurnRunner {
         trace.tier = Some(route_result.model_tier);
 
         let outcome: Result<String, TurnError> = async {
-            // Everything before the model call, on the python side.
-            let prepared = self
-                .brain
-                .call(
-                    "prepare_turn",
-                    json!({
-                        "message": message,
-                        "route_result": serde_json::to_value(route_result)
-                            .expect("serializes"),
-                        "channel": channel,
-                        "sender": sender,
-                    }),
-                )
-                .await?;
+            // Everything before the model call, decided locally (pending
+            // commands, review queue, agent selection, model selection).
+            let prepared = prepare::prepare_turn(
+                &self.brain,
+                &self.project_root,
+                message,
+                route_result,
+                channel,
+                sender,
+            )
+            .await?;
 
-            match prepared["status"].as_str().unwrap_or("") {
+            match prepared {
                 // Handled without any model call (review queue, direct router
                 // reply, fallback workflow, a late confirm/cancel).
-                "review" | "direct" | "workflow_fallback" | "pending" => {
-                    self.finish_simple(message, channel, sender, &prepared, &mut trace)
+                prepare::PreparedTurn::Direct(reply) => {
+                    self.finish_simple(message, channel, sender, &reply, &mut trace)
                         .await
                 }
-                "agent" => {
+                prepare::PreparedTurn::Agent {
+                    agent,
+                    system_prompt,
+                    model,
+                    catalogs,
+                    tools_schemas,
+                    known_pending,
+                } => {
                     self.run_agent_turn(
                         message,
                         route_result,
                         channel,
                         sender,
                         &scope,
-                        &prepared,
+                        agent,
+                        system_prompt,
+                        model,
+                        catalogs,
+                        tools_schemas,
+                        known_pending,
                         caller.as_ref(),
                         caller.clone(),
                         &mut trace,
                     )
                     .await
                 }
-                other => Err(TurnError::Brain(BrainError::Rpc(format!(
-                    "prepare_turn returned unknown status {other:?}"
-                )))),
             }
         }
         .await;
@@ -191,7 +198,7 @@ impl TurnRunner {
         message: &str,
         channel: &str,
         sender: &str,
-        prepared: &serde_json::Value,
+        reply: &str,
         trace: &mut TraceRecord,
     ) -> Result<String, TurnError> {
         let scope = scope_for(channel, sender);
@@ -201,39 +208,16 @@ impl TurnRunner {
             self.vector_retrieval,
         ));
         memory.append_message("user", message);
-        let reply = prepared["reply"].as_str().unwrap_or("").to_string();
-        let notifications = prepared["notifications"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let finished = self
-            .brain
-            .call(
-                "finish_turn",
-                json!({
-                    "message": message,
-                    "reply": reply,
-                    "channel": channel,
-                    "sender": sender,
-                    "known_pending": [],
-                    "notifications": notifications,
-                    "pending_created": false,
-                }),
-            )
-            .await?;
-        if finished["pending_created"].as_bool().unwrap_or(false) {
+        let (final_reply, pending_created) =
+            prepare::finish_turn(&self.project_root, reply, sender, channel, &[]);
+        if pending_created {
             trace.pending_created = true;
         }
-        let final_reply = finished["reply"].as_str().unwrap_or("").to_string();
         memory.append_message("assistant", &final_reply);
         Ok(final_reply)
     }
 
-    /// The agent path: run the model loop, then let python finalize the turn.
+    /// The agent path: run the model loop, then finalize the turn locally.
     #[allow(clippy::too_many_arguments)]
     async fn run_agent_turn(
         &self,
@@ -242,24 +226,18 @@ impl TurnRunner {
         channel: &str,
         sender: &str,
         scope: &str,
-        prepared: &serde_json::Value,
+        agent: crate::orchestrator::AgentDefinition,
+        system_prompt: String,
+        model: String,
+        catalogs: Vec<String>,
+        tools_schemas: Option<Vec<serde_json::Value>>,
+        known_pending: Vec<PendingRecord>,
         caller: &dyn ModelCaller,
         caller_arc: crate::memory::summarizer::ArcCaller,
         trace: &mut TraceRecord,
     ) -> Result<String, TurnError> {
-        let agent = &prepared["agent"];
-        let agent_name = agent["name"].as_str().unwrap_or("General").to_string();
-        let agent_tools: Vec<String> = agent["tools"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let model = prepared["model"].as_str().unwrap_or_default().to_string();
-        let known_pending: Vec<PendingRecord> =
-            serde_json::from_value(prepared["known_pending"].clone()).unwrap_or_default();
+        let agent_name = agent.name.clone();
+        let agent_tools = agent.tools.clone();
 
         // Memory is the facade's now: persist the user's message, then let the
         // context manager assemble the prompt window (facts, summaries,
@@ -272,28 +250,15 @@ impl TurnRunner {
         memory.append_message("user", message);
         let agent_prompt = crate::memory::AgentPrompt {
             name: agent_name.clone(),
-            system_prompt: agent["system_prompt"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-            max_context_tokens: agent["max_context_tokens"].as_i64().unwrap_or(8000),
+            system_prompt,
+            max_context_tokens: agent.max_context_tokens as i64,
         };
-        let catalogs: Vec<String> = prepared["catalogs"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
         let messages = crate::memory::ContextManager { memory: &memory }.build_messages(
             &agent_prompt,
             message,
             10,
             &catalogs,
         );
-        let tools_schemas: Option<Vec<serde_json::Value>> =
-            serde_json::from_value(prepared["tools_schemas"].clone()).ok();
 
         let (loop_outcome, notifications) = {
             let mut ctx = LoopContext {
@@ -334,23 +299,23 @@ impl TurnRunner {
             }
         };
 
-        let finished = self
-            .brain
-            .call(
-                "finish_turn",
-                json!({
-                    "reply": reply,
-                    "channel": channel,
-                    "sender": sender,
-                    "known_pending": known_pending,
-                    "notifications": notifications,
-                }),
-            )
-            .await?;
-        if finished["pending_created"].as_bool().unwrap_or(false) {
+        // Background alerts queued during the turn (suspended actions) reach
+        // the heartbeat drain through python's notification queue, as before.
+        if !notifications.is_empty() {
+            let _ = self
+                .brain
+                .call(
+                    "queue_notifications",
+                    json!({ "notifications": notifications }),
+                )
+                .await;
+        }
+
+        let (final_reply, pending_created) =
+            prepare::finish_turn(&self.project_root, &reply, sender, channel, &known_pending);
+        if pending_created {
             trace.pending_created = true;
         }
-        let final_reply = finished["reply"].as_str().unwrap_or("").to_string();
         // The finalized reply (with any pending additions) is what memory
         // keeps, matching the old python order.
         memory.append_message("assistant", &final_reply);

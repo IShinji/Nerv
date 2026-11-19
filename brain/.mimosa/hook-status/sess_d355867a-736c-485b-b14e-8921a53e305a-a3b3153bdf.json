@@ -1,14 +1,14 @@
 {
   "schemaVersion": "mimosa-hook-status/v1",
-  "recordedAt": "2026-11-18T19:35:02.140Z",
+  "recordedAt": "2026-11-19T16:41:10.458Z",
   "sessionId": "sess_d355867a-736c-485b-b14e-8921a53e305a",
   "event": "PostToolUse",
   "toolName": "Edit",
-  "file": "nerv/security/locks.py",
-  "outcome": "clear",
-  "coverage": "complete",
+  "file": "/Users/wisely/Documents/GitHub/Nerv/core/brain/src/handle.rs",
+  "outcome": "inconclusive",
+  "coverage": "partial",
   "findingCount": 0,
-  "durationMs": 4,
+  "durationMs": 7,
   "hostState": "hook_complete",
   "reportHint": ".mimosa/reports/"
 }

@@ -19,7 +19,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from nerv.models import RouteResult
 from nerv.orchestrator.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
@@ -66,40 +65,14 @@ async def _get_orchestrator() -> Orchestrator:
 async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
     """Dispatch a JSON-RPC method call to the appropriate handler.
 
-    Since the router and the turn loop migrated to Rust (``core/brain``),
-    the old ``route`` method is split: the host classifies locally and drives
-    this brain with ``check_pending`` (confirm/cancel <id>, before any model
-    call) and the turn's leaf operations — ``prepare_turn`` (agent selection,
-    context assembly), ``run_tool`` (capability gate + execution),
-    ``complete_turn`` (python-only backends), ``finish_turn`` (memory append,
-    pending surfacing, summaries).
+    The router, the turn's pre-model stages and its finalization live in Rust
+    (``core/brain``). Python keeps the leaf operations that have not migrated:
+    ``run_tool`` (capability gate + execution), ``workflow_fallback`` (the
+    WorkflowExecutor), ``execute_pending`` (python-only confirmed tools),
+    ``queue_notifications`` (the heartbeat drain), ``complete_turn``
+    (python-only model backends) and ``browser_mcp_attempt``.
     """
-    if method == "check_pending":
-        if params is None:
-            raise ValueError("check_pending method requires params")
-        message = params.get("message", "")
-        channel = params.get("channel", "")
-        sender = params.get("sender", "")
-        orchestrator = await _get_orchestrator()
-
-        # confirm/cancel <id> is handled before classification, so approving a
-        # queued action never depends on a model call succeeding.
-        pending_reply = await orchestrator.dispatch_pending_command(
-            message, channel=channel, sender=sender
-        )
-        return {"pending": pending_reply is not None, "reply": pending_reply or ""}
-    elif method == "prepare_turn":
-        if params is None:
-            raise ValueError("prepare_turn method requires params")
-        message = params.get("message", "")
-        channel = params.get("channel", "")
-        sender = params.get("sender", "")
-        route_result = RouteResult(**(params.get("route_result") or {}))
-        orchestrator = await _get_orchestrator()
-        return await orchestrator.prepare_turn(
-            message, route_result, channel=channel, sender=sender
-        )
-    elif method == "run_tool":
+    if method == "run_tool":
         if params is None:
             raise ValueError("run_tool method requires params")
         orchestrator = await _get_orchestrator()
@@ -110,17 +83,33 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
             channel=params.get("channel", ""),
             scope=params.get("scope", ""),
         )
-    elif method == "finish_turn":
+    elif method == "workflow_fallback":
         if params is None:
-            raise ValueError("finish_turn method requires params")
+            raise ValueError("workflow_fallback method requires params")
         orchestrator = await _get_orchestrator()
-        return await orchestrator.finish_turn(
-            params.get("reply", ""),
-            channel=params.get("channel", ""),
-            sender=params.get("sender", ""),
-            known_pending=params.get("known_pending") or [],
-            notifications=params.get("notifications") or [],
+        return await orchestrator.try_workflow_fallback(
+            params.get("message", ""),
+            params.get("tier", 1),
+            params.get("model", ""),
+            params.get("agent") or {},
+            scope=params.get("scope", ""),
         )
+    elif method == "execute_pending":
+        if params is None:
+            raise ValueError("execute_pending method requires params")
+        orchestrator = await _get_orchestrator()
+        return await orchestrator.execute_pending_record(
+            params.get("id", 0),
+            tool_name=params.get("tool_name", ""),
+            arguments=params.get("arguments") or {},
+            justification=params.get("justification", ""),
+        )
+    elif method == "queue_notifications":
+        if params is None:
+            raise ValueError("queue_notifications method requires params")
+        orchestrator = await _get_orchestrator()
+        orchestrator.queue_notifications(params.get("notifications") or [])
+        return {"ok": True}
     elif method == "complete_turn":
         if params is None:
             raise ValueError("complete_turn method requires params")

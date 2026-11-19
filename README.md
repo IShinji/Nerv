@@ -62,7 +62,7 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 | Subsystem | Status | Where |
 |---|---|---|
 | **Router** — intent classification + model tier selection from a small dedicated prompt, with an offline eval harness | ✅ Built (migrated to Rust) | `core/brain/src/router.rs` |
-| **Orchestrator + Agent Factory** — task dispatch, runtime policy injection, on-demand specialist agent creation | ✅ Built | `brain/nerv/orchestrator/` |
+| **Orchestrator + Agent Factory** — task dispatch, runtime policy injection, on-demand specialist agent creation | ✅ Built (core migrated to Rust) | `core/brain/src/orchestrator/`, `brain/nerv/orchestrator/` |
 | **Tool / function calling** — decorator-based registry that derives JSON schemas from Python signatures; **33 registered tools** | ✅ Built | `brain/nerv/tools/` |
 | **MCP client** — connect to external MCP servers, with builtin presets (e.g. Chrome DevTools) and a diagnostics tool | ✅ Built | `brain/nerv/mcp/` |
 | **MCP server** — exposes Nerv's own tools over MCP, so a host like the Claude Code CLI can drive Nerv | ✅ Built | `brain/nerv/mcp_server/` |
@@ -77,15 +77,15 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 | **GUI** — Tauri desktop shell | 🚧 Early | `gui/` |
 | **Agent evolution** — self-updating agent knowledge with version history and rollback | 🚧 Partial | `brain/nerv/evolution.py` |
 | **Agent Store** | 📋 Roadmap | — |
-| **Multilingual retrieval** (hybrid keyword + local embeddings; Chinese and English first, Japanese later) | 📋 Planned — memory is file-backed, summary-based and keyword-searched today | — |
-| **Rust brain** — migrating the Python brain into Rust one module at a time | 🚧 In progress — router migrated; orchestrator, memory, tools still Python | `core/brain/` |
+| **Multilingual retrieval** (hybrid keyword + local embeddings; Chinese and English first, Japanese later) | ✅ Built — RRF-fused keyword + vector search over chat history, opt-in via `brain.vector_retrieval` (local multilingual-e5-small embeddings, SQLite store) | `core/brain/src/memory/retrieval.rs` |
+| **Rust brain** — migrating the Python brain into Rust one module at a time | 🚧 In progress — router, turn loop (preparation/finalization/pending commands), memory, orchestrator core, agent factory, vector retrieval, MCP server migrated; tools, workflow executor and litellm backend still Python | `core/brain/` |
 
 **Size:** 8.8k lines of Python in `brain/nerv/`, 2.1k lines of Rust in `core/`, and 3.9k lines of Python tests. A CI workflow lives in `.github/workflows/ci.yml`; this README does not claim it is passing. Test counts (brain figure collected earlier; the Rust figures were re-run locally after the latest changes):
 
 | Suite | Command | Tests |
 |---|---|---|
-| Brain | `cd brain && uv run pytest` | 264 |
-| Core (Rust) | `cd core && cargo test --workspace` | 110 |
+| Brain | `cd brain && uv run pytest` | 231 |
+| Core (Rust) | `cd core && cargo test --workspace` | 219 |
 | GUI (Rust) | `cd gui/src-tauri && cargo test` | 9 |
 
 CI also enforces `ruff check`, `ruff format --check`, `cargo fmt --check`, and

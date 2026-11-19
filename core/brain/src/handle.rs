@@ -76,17 +76,18 @@ impl BrainHandle {
     ) -> Result<serde_json::Value, BrainError> {
         // confirm/cancel <id> is handled before classification, so approving
         // a queued action never depends on a model call succeeding. The
-        // facade owns the trace line (python's request_trace module is gone).
+        // command matching runs locally (turn::prepare); python is only
+        // reached when a confirmed python-only tool executes.
         let scope = crate::turn::scope_for(channel, sender);
-        let pending = self
-            .brain
-            .call(
-                "check_pending",
-                json!({"message": message, "channel": channel, "sender": sender}),
-            )
-            .await?;
-        if pending.get("pending").and_then(|v| v.as_bool()) == Some(true) {
-            let reply = pending.get("reply").and_then(|v| v.as_str()).unwrap_or("");
+        let pending = crate::turn::prepare::handle_pending_command(
+            &self.project_root,
+            &self.brain,
+            message,
+            sender,
+            channel,
+        )
+        .await?;
+        if let Some(reply) = pending {
             TraceRecord::new(channel, &scope).write(&self.project_root);
             let result = RouteResult {
                 intent: "pending_action".to_string(),
@@ -125,39 +126,28 @@ mod tests {
         Router::with_parts("litellm:unused", "system", "template")
     }
 
-    /// A fake brain implementing the check_pending/prepare_turn/finish_turn
-    /// protocol; method names are logged in call order, prepare_turn params
-    /// captured for assertions.
-    fn fake_brain(method_log: &Path) -> BrainSpawnConfig {
-        let capture = method_log.parent().unwrap().join("prepare_capture.json");
-        let script = format!(
-            r#"
+    /// A fake brain implementing the leaf protocol that is still python:
+    /// `run_tool` errors unless the test scripts a response; everything the
+    /// turn does besides leaf calls is local now.
+    fn fake_brain() -> BrainSpawnConfig {
+        let script = r#"
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9]*\).*/\1/p')
   case "$line" in
     *'"method":"ping"'*)
-      printf '{{"jsonrpc":"2.0","result":{{"status":"ok"}},"id":%s}}\n' "$id" ;;
-    *'"method":"check_pending"'*)
-      printf '%s\n' "check_pending" >> "{log}"
-      printf '{{"jsonrpc":"2.0","result":{{"pending":false,"reply":""}},"id":%s}}\n' "$id" ;;
-    *'"method":"prepare_turn"'*)
-      printf '%s\n' "prepare_turn" >> "{log}"
-      printf '%s' "$line" > "{capture}"
-      printf '{{"jsonrpc":"2.0","result":{{"status":"agent","agent":{{"name":"Coder","tools":[]}},"model":"claude-cli:fake","messages":[{{"role":"user","content":"x"}}],"tools_schemas":null,"known_pending":[]}},"id":%s}}\n' "$id" ;;
-    *'"method":"finish_turn"'*)
-      printf '%s\n' "finish_turn" >> "{log}"
-      printf '{{"jsonrpc":"2.0","result":{{"reply":"finished","pending_created":false}},"id":%s}}\n' "$id" ;;
-    *'"method":"run_tool"'*)
-      printf '{{"jsonrpc":"2.0","error":{{"code":-32000,"message":"unexpected run_tool"}},"id":%s}}\n' "$id" ;;
+      printf '{"jsonrpc":"2.0","result":{"status":"ok"},"id":%s}\n' "$id" ;;
+    *'"method":"queue_notifications"'*)
+      printf '{"jsonrpc":"2.0","result":{"ok":true},"id":%s}\n' "$id" ;;
+    *'"method":"execute_pending"'*)
+      printf '{"jsonrpc":"2.0","result":{"content":"python ran it"},"id":%s}\n' "$id" ;;
+    *)
+      printf '{"jsonrpc":"2.0","error":{"code":-32000,"message":"boom"},"id":%s}\n' "$id" ;;
   esac
 done
-"#,
-            log = method_log.display(),
-            capture = capture.display(),
-        );
+"#;
         BrainSpawnConfig {
             command: "/bin/sh".to_string(),
-            args: vec!["-c".to_string(), script],
+            args: vec!["-c".to_string(), script.to_string()],
             working_dir: std::env::temp_dir(),
             env: Vec::new(),
             restart_max: 0,
@@ -167,9 +157,9 @@ done
         }
     }
 
-    fn scripted_caller() -> Arc<dyn ModelCaller> {
+    fn scripted_caller(content: &str) -> Arc<dyn ModelCaller> {
         Arc::new(FakeModelCaller::new(vec![CompletionResult {
-            content: "agent answer".to_string(),
+            content: content.to_string(),
             tool_calls: Vec::new(),
             runs_own_tool_loop: false,
             provider: String::new(),
@@ -179,138 +169,114 @@ done
         }]))
     }
 
-    async fn read_log(method_log: &Path) -> Vec<String> {
-        std::fs::read_to_string(method_log)
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_string)
-            .collect()
-    }
-
     #[tokio::test]
-    async fn normal_message_runs_check_pending_prepare_and_finish() {
+    async fn normal_message_runs_the_local_turn() {
         let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("methods.log");
-        let brain = Arc::new(BrainClient::new(fake_brain(&log)));
+        let brain = Arc::new(BrainClient::new(fake_brain()));
         brain.start().await.expect("fake brain starts");
-        let handle =
-            BrainHandle::with_parts(brain, fallback_router(), scripted_caller(), dir.path());
+        let handle = BrainHandle::with_parts(
+            brain,
+            fallback_router(),
+            scripted_caller("agent answer"),
+            dir.path(),
+        );
 
         let result = handle
             .reply("help me debug this python function", "cli", "dev")
             .await
             .expect("reply succeeds");
 
-        assert_eq!(result["reply"], "finished");
-        assert_eq!(
-            read_log(&log).await,
-            vec!["check_pending", "prepare_turn", "finish_turn"]
-        );
+        assert_eq!(result["reply"], "agent answer");
+        assert_eq!(result["intent"], "code_generation");
     }
 
     #[tokio::test]
-    async fn prepare_turn_receives_the_rust_routing_decision() {
+    async fn pending_confirmation_runs_without_any_rpc() {
         let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("methods.log");
-        let brain = Arc::new(BrainClient::new(fake_brain(&log)));
+        // The MCP server (a separate process) queued an action earlier.
+        let store = crate::tools::pending_store::PendingActionStore::new(dir.path());
+        store
+            .add(
+                "current_time",
+                serde_json::json!({}),
+                "for the test",
+                "dev",
+                "cli",
+                "",
+                "",
+            )
+            .unwrap();
+        let brain = Arc::new(BrainClient::new(fake_brain()));
         brain.start().await.expect("fake brain starts");
-        let handle =
-            BrainHandle::with_parts(brain, fallback_router(), scripted_caller(), dir.path());
-
-        handle
-            .reply("help me debug this python function", "cli", "dev")
-            .await
-            .expect("reply succeeds");
-
-        let request: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.path().join("prepare_capture.json")).unwrap(),
-        )
-        .unwrap();
-        let route_result = &request["params"]["route_result"];
-        assert_eq!(route_result["intent"], "code_generation");
-        assert_eq!(route_result["agent_type"], "coder");
-        assert_eq!(route_result["model_tier"], 1);
-        assert_eq!(request["params"]["channel"], "cli");
-        assert_eq!(request["params"]["sender"], "dev");
-    }
-
-    #[tokio::test]
-    async fn pending_confirmation_short_circuits_before_prepare() {
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("methods.log");
-        let script = format!(
-            r#"
-while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"ping"'*)
-      printf '{{"jsonrpc":"2.0","result":{{"status":"ok"}},"id":%s}}\n' "$id" ;;
-    *'"method":"check_pending"'*)
-      printf '%s\n' "check_pending" >> "{log}"
-      printf '{{"jsonrpc":"2.0","result":{{"pending":true,"reply":"approved"}},"id":%s}}\n' "$id" ;;
-    *'"method":"prepare_turn"'*)
-      printf '{{"jsonrpc":"2.0","error":{{"code":-32000,"message":"must not run"}},"id":%s}}\n' "$id" ;;
-  esac
-done
-"#,
-            log = log.display(),
+        let handle = BrainHandle::with_parts(
+            brain,
+            fallback_router(),
+            scripted_caller("must not be called"),
+            dir.path(),
         );
-        let brain = Arc::new(BrainClient::new(BrainSpawnConfig {
-            command: "/bin/sh".to_string(),
-            args: vec!["-c".to_string(), script],
-            working_dir: std::env::temp_dir(),
-            env: Vec::new(),
-            restart_max: 0,
-            restart_window: Duration::from_secs(600),
-            restart_backoff: Duration::from_millis(10),
-            call_timeout: Duration::from_secs(5),
-        }));
-        brain.start().await.expect("brain starts");
-        let handle =
-            BrainHandle::with_parts(brain, fallback_router(), scripted_caller(), dir.path());
 
         let result = handle
-            .reply("confirm 3", "cli", "dev")
+            .reply("confirm 1", "cli", "dev")
             .await
             .expect("pending reply succeeds");
 
         assert_eq!(result["intent"], "pending_action");
-        assert_eq!(result["reply"], "approved");
-        assert_eq!(read_log(&log).await, vec!["check_pending"]);
+        assert!(
+            result["reply"]
+                .as_str()
+                .unwrap()
+                .contains("Executed pending action #1"),
+            "{}",
+            result["reply"]
+        );
+        assert!(store.list().is_empty());
     }
 
     #[tokio::test]
     async fn a_failing_brain_surfaces_its_error() {
         let dir = tempfile::tempdir().unwrap();
-        let script = r#"
-while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"ping"'*)
-      printf '{"jsonrpc":"2.0","result":{"status":"ok"},"id":%s}\n' "$id" ;;
-    *)
-      printf '{"jsonrpc":"2.0","error":{"code":-32000,"message":"boom"},"id":%s}\n' "$id" ;;
-  esac
-done
-"#;
-        let brain = Arc::new(BrainClient::new(BrainSpawnConfig {
-            command: "/bin/sh".to_string(),
-            args: vec!["-c".to_string(), script.to_string()],
-            working_dir: std::env::temp_dir(),
-            env: Vec::new(),
-            restart_max: 0,
-            restart_window: Duration::from_secs(600),
-            restart_backoff: Duration::from_millis(10),
-            call_timeout: Duration::from_secs(5),
-        }));
+        // The workflow-fallback gate is the one prepare step that still
+        // calls python: a tier-1 route whose litellm model has no API key
+        // hands over through the RPC, and its failure surfaces.
+        // The config loader always reads core/config.default.yaml from the
+        // project root first, so stage a minimal one.
+        std::fs::create_dir_all(dir.path().join("core")).unwrap();
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("config.default.yaml"),
+            dir.path().join("core/config.default.yaml"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("config.yaml"),
+            "models:\n  tiers:\n    tier1: \"litellm:gpt-4o\"\n",
+        )
+        .unwrap();
+        // NERV_CONFIG points the config loader at our tier override; the
+        // loader refuses world-readable files, so keep it owner-only.
+        let cfg = dir.path().join("config.yaml");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        std::env::set_var("NERV_CONFIG", &cfg);
+        let brain = Arc::new(BrainClient::new(fake_brain()));
         brain.start().await.expect("brain starts");
-        let handle =
-            BrainHandle::with_parts(brain, fallback_router(), scripted_caller(), dir.path());
+        let handle = BrainHandle::with_parts(
+            brain,
+            fallback_router(),
+            scripted_caller("unused"),
+            dir.path(),
+        );
 
+        // A code-generation route is tier 1 — the gate applies.
         let err = handle
-            .reply("hello", "cli", "u")
+            .reply("help me debug this python function", "cli", "u")
             .await
-            .expect_err("check_pending errors");
+            .expect_err("workflow_fallback errors");
         assert!(err.to_string().contains("boom"), "{err}");
     }
 }

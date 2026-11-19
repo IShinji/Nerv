@@ -84,18 +84,23 @@ The JSON-RPC method surface is not frozen: when a module migrates, the old
 method that used it is split, and the host-side facade drives the new flow.
 The router is the worked example — the old `route` method became:
 
-1. `check_pending` (Python): resolve `confirm <id>` / `cancel <id>` from the
-   pending queue. Must stay first — an approval never depends on a model call.
+1. Pending commands run in Rust (`turn::prepare::handle_pending_command`):
+   resolve `confirm <id>` / `cancel <id>` from the pending queue first — an
+   approval never depends on a model call. Python-only tools are confirmed
+   through the `execute_pending` RPC.
 2. The migrated module runs in-process in Rust (no round trip).
-3. Thin Python RPC methods for what remains (`execute` = orchestrator
-   dispatch). Responses keep the old wire shape so hosts render unchanged.
+3. Thin Python RPC methods remain only for what is still python:
+   `run_tool` (unported tools), `workflow_fallback` (the WorkflowExecutor),
+   `complete_turn` (litellm backends), `queue_notifications` (heartbeat
+   alerts), `heartbeat`, `ping`. Responses keep the old wire shape so hosts
+   render unchanged.
 
 - The facade lives in `core/brain/src/handle.rs` and is the single host entry:
   the gateway and the GUI both call it — do not duplicate the split logic in a
   second host
 - Prompts of migrated modules live as data files under `core/brain/prompts/`
-- Follow the same pattern for every later module (memory, tools, orchestrator,
-  …), splitting methods until the Python sidecar is gone
+- Follow the same pattern for every later module (tools, orchestrator
+  leftovers, …), splitting methods until the Python sidecar is gone
 
 ## When Writing Code
 
