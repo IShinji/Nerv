@@ -171,10 +171,9 @@ async def test_concurrency_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
     assert peak <= 2
 
 
-async def test_ping_does_not_build_the_orchestrator() -> None:
-    """Readiness probes must stay cheap — no orchestrator."""
+async def test_ping_is_cheap() -> None:
+    """Readiness probes must stay cheap."""
     assert await ipc.handle_request("ping", None) == {"status": "ok"}
-    assert ipc._orchestrator is None
 
 
 async def test_oversize_line_gets_handled_and_loop_survives(

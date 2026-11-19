@@ -87,18 +87,6 @@ async def complete(
     """
     provider, model_name = parse_model(model)
 
-    if provider == "claude-cli":
-        from nerv.llm.claude_cli import complete_claude_cli
-
-        return await complete_claude_cli(
-            messages,
-            model_name=model_name,
-            tool_names=tool_names,
-            json_mode=json_mode,
-            project_root=project_root,
-            timeout=timeout,
-        )
-
     if provider == "local":
         return await _complete_ollama(
             messages,

@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-/// Prefix of the temp MCP config written for each request (the Python sweep
-/// in `nerv.mcp_server` startup cleans leftovers of both implementations).
+/// Prefix of the temp MCP config written for each request.
 pub const MCP_SERVER_NAME: &str = "nerv";
-/// The python sidecar's MCP server name (serves the unported tools).
-pub const PYTHON_SERVER_NAME: &str = "nervpy";
 pub const MCP_CONFIG_PREFIX: &str = "nerv-mcp-";
+/// A temp MCP config older than this is a leftover from a brain killed
+/// mid-request (the file is removed in a `finally` that never ran).
+pub const STALE_MCP_CONFIG_SECONDS: f64 = 3600.0;
 
 /// Map requested tool/capability names to concrete provider tool names.
 ///
@@ -80,17 +80,13 @@ pub fn write_mcp_config(project_root: &Path, scope: &str) -> std::io::Result<Pat
     // --mcp-server mode (works for the gateway and the GUI alike).
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("nerv"));
 
+    sweep_stale_mcp_configs(None);
+
     let config = json!({
         "mcpServers": {
             MCP_SERVER_NAME: {
                 "command": current_exe.display().to_string(),
                 "args": ["--mcp-server"],
-                "env": env,
-            },
-            PYTHON_SERVER_NAME: {
-                "command": "uv",
-                "args": ["run", "python", "-m", "nerv.mcp_server"],
-                "cwd": project_root.join("brain").to_string_lossy(),
                 "env": env,
             },
         }
@@ -103,6 +99,66 @@ pub fn write_mcp_config(project_root: &Path, scope: &str) -> std::io::Result<Pat
     ));
     std::fs::write(&path, serde_json::to_string(&config).unwrap())?;
     Ok(path)
+}
+
+/// Delete temp MCP configs left behind by a brain that was killed
+/// mid-request. Only our own regular files with the Nerv prefix older than
+/// [`STALE_MCP_CONFIG_SECONDS`] are removed, so a live request's file, a
+/// symlink or anyone else's file is never touched. Returns how many were
+/// removed.
+pub fn sweep_stale_mcp_configs(directory: Option<&Path>) -> usize {
+    use std::time::UNIX_EPOCH;
+
+    let dir = directory
+        .map(Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir);
+    let now = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let cutoff = now - STALE_MCP_CONFIG_SECONDS;
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    let mut paths: Vec<_> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if !path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(MCP_CONFIG_PREFIX))
+        {
+            continue;
+        }
+        // lstat semantics: a symlink is judged as itself, never followed.
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if meta.uid() != unsafe { libc::getuid() } {
+                continue;
+            }
+        }
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(f64::INFINITY);
+        if mtime < cutoff && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 fn unique_suffix() -> u128 {

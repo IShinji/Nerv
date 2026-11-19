@@ -62,30 +62,30 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 | Subsystem | Status | Where |
 |---|---|---|
 | **Router** — intent classification + model tier selection from a small dedicated prompt, with an offline eval harness | ✅ Built (migrated to Rust) | `core/brain/src/router.rs` |
-| **Orchestrator + Agent Factory** — task dispatch, runtime policy injection, on-demand specialist agent creation | ✅ Built (core migrated to Rust) | `core/brain/src/orchestrator/`, `brain/nerv/orchestrator/` |
-| **Tool / function calling** — decorator-based registry that derives JSON schemas from Python signatures; **33 registered tools** | ✅ Built | `brain/nerv/tools/` |
-| **MCP client** — connect to external MCP servers, with builtin presets (e.g. Chrome DevTools) and a diagnostics tool | ✅ Built | `brain/nerv/mcp/` |
-| **MCP server** — exposes Nerv's own tools over MCP, so a host like the Claude Code CLI can drive Nerv | ✅ Built | `brain/nerv/mcp_server/` |
-| **Guardrails** — workspace sandbox policy (config, `personal/` secrets, and code directories are protected even inside the workspace); every tool with `requires_confirmation`, outward-acting tools (`shell`, `desktop_control`, `send_email`) and any path escaping the sandbox are suspended into a cross-process, file-locked approval queue and only run on explicit `confirm <id>` | ✅ Built | `brain/nerv/security/` |
+| **Orchestrator + Agent Factory** — task dispatch, runtime policy injection, on-demand specialist agent creation | ✅ Built (migrated to Rust) | `core/brain/src/orchestrator/`, `core/brain/src/turn/` |
+| **Tool / function calling** — native registry with Ollama-compatible JSON schemas; **35 registered tools** (all executed in Rust) | ✅ Built | `core/brain/src/tools/` |
+| **MCP client** — connect to external MCP servers, with builtin presets (e.g. Chrome DevTools) and a diagnostics tool | ✅ Built (migrated to Rust) | `core/brain/src/mcp/` |
+| **MCP server** — exposes Nerv's own tools over MCP, so a host like the Claude Code CLI can drive Nerv | ✅ Built (single native server) | `core/brain/src/mcp_server.rs` |
+| **Guardrails** — workspace sandbox policy (config, `personal/` secrets, and code directories are protected even inside the workspace); every tool with `requires_confirmation`, outward-acting tools (`shell`, `desktop_control`, `send_email`) and any path escaping the sandbox are suspended into a cross-process, file-locked approval queue and only run on explicit `confirm <id>` | ✅ Built (migrated to Rust) | `core/brain/src/tools/sandbox.rs`, `core/brain/src/turn/prepare.rs` |
 | **Channel authorization** — every channel with a remote sender requires an explicit allow-list. Telegram fails closed: an empty `allowed_users` authorizes nobody and the gateway refuses to start the adapter | ✅ Built | `core/shared/src/config.rs`, `core/gateway/src/adapter/` |
 | **Brain supervision** — the JSON-RPC client fails in-flight requests when the brain dies, respawns it up to `restart_max`, and bounds every call with a timeout | ✅ Built | `core/shared/src/brain_client.rs` |
-| **Agent memory** — conversation history partitioned by day *and* by sender/channel scope (JSON Lines, append-only, file-locked across processes), a long-term `facts.md` shared by the owner across channels, and a context manager that assembles a token-budgeted window (system prompt + facts + newest-first history, truncated to fit) rather than replaying full history | ✅ Built | `brain/nerv/memory/` |
-| **Context summarization** — past days outside the recency window are kept as rolling summaries, generated off the reply path | ✅ Built | `brain/nerv/memory/summarizer.py` |
-| **Pluggable model backends** — provider-prefix scheme (`claude-cli:` / `local:` / `litellm:`) so swapping providers is a config edit, not a code change | ✅ Built | `brain/nerv/llm/` |
+| **Agent memory** — conversation history partitioned by day *and* by sender/channel scope (JSON Lines, append-only, file-locked across processes), a long-term `facts.md` shared by the owner across channels, and a context manager that assembles a token-budgeted window (system prompt + facts + newest-first history, truncated to fit) rather than replaying full history | ✅ Built (migrated to Rust) | `core/brain/src/memory/` |
+| **Context summarization** — past days outside the recency window are kept as rolling summaries, generated off the reply path | ✅ Built (migrated to Rust) | `core/brain/src/memory/summarizer.rs` |
+| **Pluggable model backends** — provider-prefix scheme (`claude-cli:` / `local:` / `litellm:`) so swapping providers is a config edit, not a code change | ✅ Built (claude-cli + local in Rust; litellm via the python sidecar) | `core/brain/src/llm/`, `brain/nerv/llm/` |
 | **Skills / Workflows** — markdown skill guidelines and YAML workflows run by a native executor (once-per-run approval for gated steps, resumable runs) | ✅ Built (executor migrated to Rust) | `core/brain/src/skills.rs`, `core/brain/src/workflows/` |
 | **Gateway** — Rust daemon, channel adapters, IPC to the brain | ✅ Built | `core/` |
 | **GUI** — Tauri desktop shell | 🚧 Early | `gui/` |
 | **Agent evolution** — self-updating agent knowledge with version history and rollback | 🚧 Partial | `brain/nerv/evolution.py` |
 | **Agent Store** | 📋 Roadmap | — |
 | **Multilingual retrieval** (hybrid keyword + local embeddings; Chinese and English first, Japanese later) | ✅ Built — RRF-fused keyword + vector search over chat history, opt-in via `brain.vector_retrieval` (local multilingual-e5-small embeddings, SQLite store) | `core/brain/src/memory/retrieval.rs` |
-| **Rust brain** — migrating the Python brain into Rust one module at a time | 🚧 In progress — router, turn loop (preparation/finalization/pending commands), memory, orchestrator core, agent factory, vector retrieval, MCP server migrated; tools, workflow executor and litellm backend still Python | `core/brain/` |
+| **Rust brain** — migrating the Python brain into Rust one module at a time | ✅ Complete — router, turn flow, tools, memory (incl. vector retrieval), orchestrator, workflows, MCP, proactive heartbeat all run in Rust; the python sidecar remains only for the litellm cloud backends | `core/brain/` |
 
-**Size:** 8.8k lines of Python in `brain/nerv/`, 2.1k lines of Rust in `core/`, and 3.9k lines of Python tests. A CI workflow lives in `.github/workflows/ci.yml`; this README does not claim it is passing. Test counts (brain figure collected earlier; the Rust figures were re-run locally after the latest changes):
+**Size:** 0.7k lines of Python in `brain/nerv/` (the litellm sidecar), 22k lines of Rust in `core/`, and 0.6k lines of Python tests plus the Rust suites. A CI workflow lives in `.github/workflows/ci.yml`; this README does not claim it is passing. Test counts (brain figure collected earlier; the Rust figures were re-run locally after the latest changes):
 
 | Suite | Command | Tests |
 |---|---|---|
-| Brain | `cd brain && uv run pytest` | 213 |
-| Core (Rust) | `cd core && cargo test --workspace` | 231 |
+| Brain | `cd brain && uv run pytest` | 14 |
+| Core (Rust) | `cd core && cargo test --workspace` | 247 |
 | GUI (Rust) | `cd gui/src-tauri && cargo test` | 9 |
 
 CI also enforces `ruff check`, `ruff format --check`, `cargo fmt --check`, and

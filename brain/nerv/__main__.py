@@ -25,7 +25,6 @@ def main() -> None:
     """Entry point for the brain process."""
     logger.info("Nerv brain starting...")
     try:
-        from nerv.config import get_router_model, get_tier_models
         from nerv.ipc import _get_project_root
         from nerv.llm import parse_model
 
@@ -34,10 +33,24 @@ def main() -> None:
         # Only warm up a local Ollama model when a `local:` provider is actually
         # configured. With the claude-cli / litellm backends this is a no-op, so
         # startup never blocks pulling models we won't use.
-        configured = [
-            get_router_model(project_root),
-            *get_tier_models(project_root).values(),
-        ]
+        configured: list[str] = []
+        try:
+            import yaml
+
+            for path in (
+                project_root / "core" / "config.default.yaml",
+                project_root / "config.yaml",
+            ):
+                if path.exists():
+                    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                    models = data.get("models", {}) or {}
+                    tiers = models.get("tiers", {}) or {}
+                    router = (models.get("router", {}) or {}).get("model", "")
+                    if router:
+                        configured.append(str(router))
+                    configured.extend(str(v) for v in tiers.values())
+        except Exception:
+            logger.debug("Config read for model warmup failed", exc_info=True)
         local_models = {
             name
             for provider, name in map(parse_model, configured)
@@ -48,14 +61,6 @@ def main() -> None:
 
             for model_name in local_models:
                 check_and_pull_model(model_name)
-
-        # A brain killed mid-request cannot delete its temp MCP config; clear the
-        # ones that earlier brains left behind.
-        from nerv.llm.claude_cli import sweep_stale_mcp_configs
-
-        removed = sweep_stale_mcp_configs()
-        if removed:
-            logger.info("Removed %d stale MCP config file(s)", removed)
 
         asyncio.run(run_jsonrpc_loop())
     except KeyboardInterrupt:
