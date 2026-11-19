@@ -13,6 +13,7 @@ pub mod mcp;
 pub mod mcp_server;
 pub mod memory;
 pub mod orchestrator;
+pub mod proactive;
 pub mod router;
 pub mod skills;
 pub mod tasks;

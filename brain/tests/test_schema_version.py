@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from nerv.proactive import ProactiveMonitor
 from nerv.security import PendingActionStore
 from nerv.state_version import CURRENT_SCHEMA_VERSION
 from nerv.tasks.store import TaskRunStore
@@ -99,29 +98,4 @@ def test_task_run_newer_file_is_not_overwritten(tmp_path: Path) -> None:
     assert store.get(run.id) is None
     run.status = "done"
     store.save(run)
-    assert _read(path) == future
-
-
-# --- proactive state -------------------------------------------------------
-
-
-def test_proactive_state_versioned(tmp_path: Path) -> None:
-    monitor = ProactiveMonitor(tmp_path)
-    monitor._save_notified({"a"})
-    path = tmp_path / "personal" / "proactive_state.json"
-    assert _read(path) == {"schema_version": 1, "notified": ["a"]}
-    assert monitor._load_notified() == {"a"}
-
-
-def test_proactive_state_legacy_and_newer(tmp_path: Path) -> None:
-    (tmp_path / "personal").mkdir()
-    path = tmp_path / "personal" / "proactive_state.json"
-    path.write_text(json.dumps({"notified": ["old"]}))
-    monitor = ProactiveMonitor(tmp_path)
-    assert monitor._load_notified() == {"old"}
-
-    future = {"schema_version": 2, "notified": ["x"], "extra": True}
-    path.write_text(json.dumps(future))
-    assert monitor._load_notified() == set()
-    monitor._save_notified({"y"})
     assert _read(path) == future

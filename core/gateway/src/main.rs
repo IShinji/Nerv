@@ -334,27 +334,22 @@ async fn main() -> Result<()> {
     let tasks_pickup = task_service.clone().spawn_pickup_loop();
 
     // Heartbeat results go to every channel that can push proactively
-    // (the CLI prints them; Telegram messages the allow-listed users).
-    let brain_heartbeat = brain.clone();
+    // (the CLI prints them; Telegram messages the allow-listed users). The
+    // monitor and the alert queue are native now — no brain round trip.
     let heartbeat_interval = Duration::from_secs(config.brain.heartbeat_interval_secs);
     let heartbeat_task = tokio::spawn(async move {
+        let monitor = nerv_brain::proactive::ProactiveMonitor::new(&project_root);
         let mut interval = tokio::time::interval(heartbeat_interval);
         loop {
             interval.tick().await;
-            match brain_heartbeat
-                .call("heartbeat", serde_json::json!({}))
-                .await
-            {
-                Ok(result) => {
-                    if let Some(reply) = result.get("reply").and_then(|v| v.as_str()) {
-                        if !reply.is_empty() {
-                            for adapter in &broadcasters {
-                                adapter.broadcast(reply).await;
-                            }
-                        }
-                    }
-                }
-                Err(e) => warn!("Heartbeat failed: {e}"),
+            let mut batch = nerv_brain::proactive::drain_notifications();
+            batch.extend(monitor.check(None));
+            if batch.is_empty() {
+                continue;
+            }
+            let reply = batch.join("\n");
+            for adapter in &broadcasters {
+                adapter.broadcast(&reply).await;
             }
         }
     });
