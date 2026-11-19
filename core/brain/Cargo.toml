@@ -21,6 +21,10 @@ uuid = { version = "1", features = ["v4"] }
 # HTTP for the local Ollama backend only (localhost, plain http://), so TLS
 # stays disabled to keep the dependency footprint small.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# E10 向量检索: local embeddings (multilingual-e5-small, CPU) + SQLite store
+fastembed = "4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+half = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

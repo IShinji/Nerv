@@ -7,14 +7,18 @@
 //! on-disk format is the interface between the two implementations).
 
 pub mod context;
+pub mod embeddings;
 pub mod manager;
 pub mod models;
 pub mod summarizer;
+pub mod vector_store;
 
 #[cfg(test)]
 mod tests;
 
 pub use context::{estimate_tokens as context_estimate_tokens, AgentPrompt, ContextManager};
+pub use embeddings::{chunk_text, cosine_similarity, Embedder, FastembedEmbedder};
 pub use manager::{MemoryManager, SearchHit, DEFAULT_SCOPE};
 pub use models::{DailyConversation, StoredChatMessage};
 pub use summarizer::{backfill_summaries, ArcCaller};
+pub use vector_store::VectorStore;

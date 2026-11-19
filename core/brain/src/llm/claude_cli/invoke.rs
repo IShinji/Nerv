@@ -60,20 +60,38 @@ pub async fn invoke_once(
     timeout: Duration,
 ) -> Result<Value, ClaudeCliError> {
     // Run from a scratch cwd so project/user CLAUDE.md files are not discovered.
-    let mut child = tokio::process::Command::new(bin)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .current_dir(std::env::temp_dir())
-        .kill_on_drop(true)
-        .spawn()
-        // Python surfaces spawn errors (e.g. a missing binary) immediately,
-        // without retrying — same here.
-        .map_err(|e| ClaudeCliError {
-            kind: FailureKind::Fatal,
-            message: format!("failed to spawn claude CLI: {e}"),
-        })?;
+    // ETXTBSY can transiently fire right after a timed-out child was killed
+    // (the dying process still holds the executable during exit) — retry the
+    // spawn itself briefly before treating it as fatal.
+    let mut child = None;
+    for attempt in 0..3 {
+        match tokio::process::Command::new(bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .current_dir(std::env::temp_dir())
+            .kill_on_drop(true)
+            .spawn()
+        {
+            Ok(c) => {
+                child = Some(c);
+                break;
+            }
+            Err(e) if e.raw_os_error() == Some(26) && attempt < 2 => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            // Python surfaces spawn errors (e.g. a missing binary) immediately,
+            // without retrying — same here for anything but ETXTBSY.
+            Err(e) => {
+                return Err(ClaudeCliError {
+                    kind: FailureKind::Fatal,
+                    message: format!("failed to spawn claude CLI: {e}"),
+                });
+            }
+        }
+    }
+    let mut child = child.expect("spawn loop exits with a child or an error");
 
     let mut stdin = child.stdin.take().ok_or_else(|| ClaudeCliError {
         kind: FailureKind::Fatal,
