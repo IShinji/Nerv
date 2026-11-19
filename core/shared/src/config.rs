@@ -293,6 +293,9 @@ pub struct BrainConfig {
     /// Interval between proactive heartbeat polls.
     #[serde(default = "default_heartbeat_interval_secs")]
     pub heartbeat_interval_secs: u64,
+    /// Vector retrieval (PRD v2 E10) — opt-in until daily use starts.
+    #[serde(default)]
+    pub vector_retrieval: bool,
 }
 
 impl Default for BrainConfig {
@@ -304,6 +307,7 @@ impl Default for BrainConfig {
             restart_max: default_restart_max(),
             call_timeout_secs: default_call_timeout_secs(),
             heartbeat_interval_secs: default_heartbeat_interval_secs(),
+            vector_retrieval: false,
         }
     }
 }

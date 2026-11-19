@@ -65,6 +65,10 @@ brain:
   restart_max: 3            # Max respawns of a crashed brain before giving up
   call_timeout_secs: 300    # Per-request ceiling; a wedged brain errors out
   heartbeat_interval_secs: 30  # Proactive check interval (no model calls)
+  # Vector retrieval (PRD v2 E10): hybrid keyword+vector search over chat
+  # history. Off by default — enabling it downloads the local embedding
+  # model (~470MB, multilingual-e5-small, CPU) on first use.
+  vector_retrieval: false
 
 # Optional MCP integrations.
 # Rust currently ignores this block; the Python brain reads it directly.

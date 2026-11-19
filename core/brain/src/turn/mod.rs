@@ -72,6 +72,8 @@ pub struct TurnRunner {
     brain: Arc<BrainClient>,
     project_root: PathBuf,
     max_rounds: u32,
+    /// Vector retrieval opt-in (PRD v2 E10), from `brain.vector_retrieval`.
+    vector_retrieval: bool,
 }
 
 impl TurnRunner {
@@ -79,13 +81,20 @@ impl TurnRunner {
     /// `orchestrator.max_tool_iterations` from config (python re-read it per
     /// turn, the rust facade reads it once at startup).
     pub fn new(brain: Arc<BrainClient>, project_root: &Path) -> Self {
-        let max_rounds = nerv_shared::config::NervConfig::load(project_root)
-            .map(|config| config.orchestrator.max_tool_iterations)
+        let config = nerv_shared::config::NervConfig::load(project_root).ok();
+        let max_rounds = config
+            .as_ref()
+            .map(|c| c.orchestrator.max_tool_iterations)
             .unwrap_or(20);
+        let vector_retrieval = config
+            .as_ref()
+            .map(|c| c.brain.vector_retrieval)
+            .unwrap_or(false);
         Self {
             brain,
             project_root: project_root.to_path_buf(),
             max_rounds,
+            vector_retrieval,
         }
     }
 
@@ -95,6 +104,7 @@ impl TurnRunner {
             brain,
             project_root: project_root.to_path_buf(),
             max_rounds,
+            vector_retrieval: false,
         }
     }
 
@@ -185,9 +195,10 @@ impl TurnRunner {
         trace: &mut TraceRecord,
     ) -> Result<String, TurnError> {
         let scope = scope_for(channel, sender);
-        let memory = Arc::new(crate::memory::MemoryManager::new(
+        let memory = Arc::new(crate::memory::MemoryManager::manager_for(
             &self.project_root,
             &scope,
+            self.vector_retrieval,
         ));
         memory.append_message("user", message);
         let reply = prepared["reply"].as_str().unwrap_or("").to_string();
@@ -253,7 +264,11 @@ impl TurnRunner {
         // Memory is the facade's now: persist the user's message, then let the
         // context manager assemble the prompt window (facts, summaries,
         // budgeted history) around it.
-        let memory = Arc::new(crate::memory::MemoryManager::new(&self.project_root, scope));
+        let memory = Arc::new(crate::memory::MemoryManager::manager_for(
+            &self.project_root,
+            scope,
+            self.vector_retrieval,
+        ));
         memory.append_message("user", message);
         let agent_prompt = crate::memory::AgentPrompt {
             name: agent_name.clone(),

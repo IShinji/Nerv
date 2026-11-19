@@ -24,12 +24,15 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use chrono::Local;
 use regex::Regex;
 use tracing::{error, info};
 
+use super::embeddings::Embedder;
 use super::models::{DailyConversation, StoredChatMessage};
+use super::retrieval::{parse_doc_id, rrf_fuse, HybridRetriever};
 
 pub const DEFAULT_SCOPE: &str = "default";
 
@@ -48,6 +51,10 @@ pub struct MemoryManager {
     pub facts_file: PathBuf,
     lock_path: PathBuf,
     facts_lock_path: PathBuf,
+    /// Vector retrieval (PRD v2 E10). `None` until first use — the embedder
+    /// model (~470MB) must never block chat flow on first run.
+    retriever: OnceLock<Option<Arc<HybridRetriever>>>,
+    embedder: Option<Arc<dyn Embedder>>,
 }
 
 impl MemoryManager {
@@ -73,9 +80,60 @@ impl MemoryManager {
             facts_file,
             lock_path,
             facts_lock_path,
+            retriever: OnceLock::new(),
+            embedder: None,
         };
         manager.ensure_directories();
         manager
+    }
+
+    /// Enable the vector retrieval path with an explicit embedder (tests
+    /// inject a fake here; production uses the fastembed default).
+    pub fn with_embedder(mut self, embedder: Arc<dyn Embedder>) -> Self {
+        self.embedder = Some(embedder);
+        self
+    }
+
+    /// The scope's retriever. Only scopes constructed with an embedder get
+    /// the vector path — an embedder that fails to initialize stays `None`
+    /// and the keyword path is the permanent fallback.
+    fn retriever(&self) -> Option<&Arc<HybridRetriever>> {
+        self.retriever
+            .get_or_init(|| {
+                self.embedder.as_ref().map(|embedder| {
+                    Arc::new(HybridRetriever::new(
+                        &self.project_root(),
+                        &self.scope,
+                        Arc::clone(embedder),
+                    ))
+                })
+            })
+            .as_ref()
+    }
+
+    /// The project root recovered from the memory directory layout
+    /// (`<root>/personal/...`); used to place the vector store.
+    fn project_root(&self) -> PathBuf {
+        let memory_dir = self
+            .facts_file
+            .parent()
+            .unwrap_or_else(|| Path::new("personal/memory"));
+        memory_dir
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Build a manager with the vector path enabled when the config says so.
+    /// The embedder is lazy — the ~470MB model loads on first use, never at
+    /// construction.
+    pub fn manager_for(project_root: &Path, scope: &str, vector_retrieval: bool) -> Self {
+        let manager = Self::new(project_root, scope);
+        if vector_retrieval {
+            manager.with_embedder(Arc::new(super::embeddings::LazyEmbedder::new()))
+        } else {
+            manager
+        }
     }
 
     fn ensure_directories(&self) {
@@ -286,6 +344,89 @@ impl MemoryManager {
         hits
     }
 
+    /// Hybrid search (PRD v2 E10): the keyword ranking above fused with the
+    /// vector ranking through Reciprocal Rank Fusion. Without an embedder
+    /// this is exactly the keyword path.
+    pub fn search_messages_hybrid(
+        &self,
+        query: &str,
+        limit: usize,
+        since: &str,
+        until: &str,
+        role: &str,
+    ) -> Vec<SearchHit> {
+        let keyword = self.search_messages(query, limit * 2, since, until, role);
+        let Some(retriever) = self.retriever() else {
+            return keyword;
+        };
+
+        // Backfill the vector index once, on the first hybrid search of an
+        // empty store — afterwards appends keep it current.
+        if retriever.count() == 0 {
+            self.backfill_index(retriever);
+        }
+
+        let vector = retriever.search(query, limit * 2);
+        // A hit's identity key must match the indexed doc id (date#timestamp).
+        let mut keyword_map: std::collections::HashMap<String, SearchHit> =
+            std::collections::HashMap::new();
+        let keyword_ids: Vec<String> = keyword
+            .iter()
+            .map(|h| {
+                let id = format!("{}#{}", h.date, h.message.timestamp);
+                keyword_map.insert(id.clone(), h.clone());
+                id
+            })
+            .collect();
+        let vector_ids: Vec<String> = vector.iter().map(|(id, _)| id.clone()).collect();
+        let fused = rrf_fuse(&keyword_ids, &vector_ids, 60.0);
+
+        let mut out: Vec<SearchHit> = Vec::new();
+        for (id, score) in fused.into_iter().take(limit) {
+            let hit = match keyword_map.remove(&id) {
+                Some(mut hit) => {
+                    hit.score = score;
+                    hit
+                }
+                None => match self.message_by_doc_id(&id) {
+                    Some(mut hit) => {
+                        hit.score = score;
+                        hit
+                    }
+                    None => continue,
+                },
+            };
+            out.push(hit);
+        }
+        out
+    }
+
+    /// Look a doc id up in its day file: `(date, timestamp)` identifies the
+    /// message, the trailing `#chunk` selects one chunk of many.
+    fn message_by_doc_id(&self, id: &str) -> Option<SearchHit> {
+        let (date, ts, _chunk) = parse_doc_id(id)?;
+        let path = self.daily_file(&date);
+        self.read_messages(&path)
+            .into_iter()
+            .find(|m| m.timestamp.to_string() == ts)
+            .map(|message| SearchHit {
+                date,
+                message,
+                score: 0.0,
+            })
+    }
+
+    /// Index the whole conversation history into the vector store. Runs on
+    /// the caller's thread — invoked once from the first hybrid search.
+    fn backfill_index(&self, retriever: &Arc<HybridRetriever>) {
+        info!("Backfilling the vector index for scope {}", self.scope);
+        for (date_str, path) in self.dated_files() {
+            for msg in self.read_messages(&path) {
+                retriever.index_message(&date_str, &msg);
+            }
+        }
+    }
+
     // ── Writing ──────────────────────────────────────────────────────────────
 
     /// Replace a whole day's conversation on disk.
@@ -324,6 +465,14 @@ impl MemoryManager {
         });
         if let Err(e) = result {
             error!("Failed to append message to {}: {e}", path.display());
+            return;
+        }
+        // Index for vector retrieval off the write path — indexing must
+        // never block or fail the append.
+        if let Some(retriever) = self.retriever() {
+            let retriever = Arc::clone(retriever);
+            let today = today.clone();
+            std::thread::spawn(move || retriever.index_message(&today, &msg));
         }
     }
 
