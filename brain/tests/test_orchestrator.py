@@ -224,4 +224,3 @@ async def test_approve_workflow_review_publishes_shared_workflow(
     orchestrator.workflow_registry.reload()
 
     assert orchestrator.workflow_registry.find("DraftFlow") is not None
-

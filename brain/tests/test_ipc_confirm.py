@@ -62,6 +62,7 @@ async def test_queue_notifications_reaches_the_heartbeat_drain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Alerts queued by the Rust loop are surfaced by the next heartbeat."""
+
     class FakeOrchestrator:
         def __init__(self) -> None:
             self.pending: list[str] = []
