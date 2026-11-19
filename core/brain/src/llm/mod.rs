@@ -17,6 +17,7 @@
 //!   bare cloud name        -> treated as litellm
 
 pub mod claude_cli;
+pub mod litellm;
 pub mod ollama;
 
 #[cfg(test)]
@@ -187,14 +188,19 @@ pub async fn complete(
             )
             .await
         }
-        // Reserved backend, not ported yet. Callers treat this like any
-        // backend failure (the router falls back to keywords; the
-        // orchestrator's graceful degradation catches it).
-        _ => Err(LlmError::Unsupported(format!(
-            "the litellm backend is not implemented in the Rust brain yet; \
-             configure a claude-cli: or local: model instead (got {:?})",
-            opts.model
-        ))),
+        // Multi-vendor cloud backends, served natively (the python litellm
+        // sidecar is retired).
+        _ => {
+            litellm::complete(
+                messages,
+                model_name,
+                opts.tools,
+                opts.temperature,
+                opts.json_mode,
+                opts.timeout,
+            )
+            .await
+        }
     }
 }
 

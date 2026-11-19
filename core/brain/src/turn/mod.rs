@@ -28,7 +28,7 @@ pub use trace::TraceRecord;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use nerv_shared::brain_client::{BrainClient, BrainError};
+use nerv_shared::brain_client::BrainError;
 
 use crate::router::RouteResult;
 use model_loop::{run_model_loop, LoopContext, TurnError};
@@ -69,7 +69,6 @@ pub fn scope_for(channel: &str, sender: &str) -> String {
 
 /// Drives one user turn end to end.
 pub struct TurnRunner {
-    brain: Arc<BrainClient>,
     project_root: PathBuf,
     max_rounds: u32,
     /// Vector retrieval opt-in (PRD v2 E10), from `brain.vector_retrieval`.
@@ -80,7 +79,7 @@ impl TurnRunner {
     /// Build a runner; `max_rounds` mirrors
     /// `orchestrator.max_tool_iterations` from config (python re-read it per
     /// turn, the rust facade reads it once at startup).
-    pub fn new(brain: Arc<BrainClient>, project_root: &Path) -> Self {
+    pub fn new(project_root: &Path) -> Self {
         let config = nerv_shared::config::NervConfig::load(project_root).ok();
         let max_rounds = config
             .as_ref()
@@ -91,7 +90,6 @@ impl TurnRunner {
             .map(|c| c.brain.vector_retrieval)
             .unwrap_or(false);
         Self {
-            brain,
             project_root: project_root.to_path_buf(),
             max_rounds,
             vector_retrieval,
@@ -99,9 +97,8 @@ impl TurnRunner {
     }
 
     #[cfg(test)]
-    pub fn with_max_rounds(brain: Arc<BrainClient>, project_root: &Path, max_rounds: u32) -> Self {
+    pub fn with_max_rounds(project_root: &Path, max_rounds: u32) -> Self {
         Self {
-            brain,
             project_root: project_root.to_path_buf(),
             max_rounds,
             vector_retrieval: false,
@@ -127,15 +124,9 @@ impl TurnRunner {
         let outcome: Result<String, TurnError> = async {
             // Everything before the model call, decided locally (pending
             // commands, review queue, agent selection, model selection).
-            let prepared = prepare::prepare_turn(
-                &self.brain,
-                &self.project_root,
-                message,
-                route_result,
-                channel,
-                sender,
-            )
-            .await?;
+            let prepared =
+                prepare::prepare_turn(&self.project_root, message, route_result, channel, sender)
+                    .await?;
 
             match prepared {
                 // Handled without any model call (review queue, direct router
@@ -261,7 +252,6 @@ impl TurnRunner {
 
         let (loop_outcome, notifications) = {
             let mut ctx = LoopContext {
-                brain: &self.brain,
                 caller,
                 trace,
                 max_rounds: self.max_rounds,

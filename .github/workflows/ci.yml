@@ -13,32 +13,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  brain:
-    name: Brain (Python)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: brain
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Sync dependencies
-        run: uv sync --all-extras --dev --locked
-
-      - name: Lint
-        run: uv run ruff check .
-
-      - name: Check formatting
-        run: uv run ruff format --check .
-
-      - name: Test
-        run: uv run pytest -q
-
   core:
     name: Core (Rust)
     runs-on: ubuntu-latest

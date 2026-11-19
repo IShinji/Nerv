@@ -66,8 +66,6 @@ pub struct ExecutorContext {
     pub scope: String,
     pub channel: String,
     pub sender: String,
-    /// The heartbeat-notification drain (alerts surface at the next tick).
-    pub brain: Option<Arc<nerv_shared::brain_client::BrainClient>>,
     /// Targeted-notify sink (None in the MCP server, where there are no adapters).
     pub notify: Option<NotifyFn>,
     /// The record the user confirmed, when this run IS the confirmed call.
@@ -588,7 +586,7 @@ impl WorkflowExecutor {
             project_root: self.ctx.project_root.clone(),
             workspace_root: self.ctx.workspace_root.clone(),
             scope: self.ctx.scope.clone(),
-            brain: self.ctx.brain.clone(),
+            brain: None,
             confirmed: None,
         };
         let result: ToolResult = (tool.func)(&tool_ctx, kwargs).await;
@@ -631,15 +629,7 @@ impl WorkflowExecutor {
     /// targeted sink is wired, straight to the requesting channel (E0).
     fn notify(&self, message: &str) {
         info!("{message}");
-        if let Some(brain) = &self.ctx.brain {
-            let text = message.to_string();
-            let brain = Arc::clone(brain);
-            tokio::spawn(async move {
-                let _ = brain
-                    .call("queue_notifications", json!({ "notifications": [text] }))
-                    .await;
-            });
-        }
+        crate::proactive::queue_notifications(&[message.to_string()]);
         if let Some(notify) = &self.ctx.notify {
             notify(&self.ctx.channel, &self.ctx.sender, message);
         }
@@ -823,7 +813,6 @@ mod tests {
             scope: scope_for("cli", "dev"),
             channel: "cli".to_string(),
             sender: "dev".to_string(),
-            brain: None,
             notify: None,
             confirmed: None,
             caller,

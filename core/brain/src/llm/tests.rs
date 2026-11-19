@@ -16,18 +16,3 @@ fn parse_model_recognizes_provider_prefixes() {
         ("litellm", "claude-opus-4-8")
     );
 }
-
-#[tokio::test]
-async fn litellm_backend_reports_itself_as_unsupported() {
-    // The python backend needs `uv sync --extra litellm`; the rust port has no
-    // litellm library at all, so the reserved path fails loudly (callers fall
-    // back or degrade gracefully, exactly like any backend failure).
-    let opts = CompleteOptions {
-        model: "litellm:claude-opus-4-8",
-        ..Default::default()
-    };
-    let err = complete(&[ChatMessage::user("hi")], &opts)
-        .await
-        .expect_err("litellm is not ported");
-    assert!(err.to_string().contains("not implemented"), "{err}");
-}

@@ -59,8 +59,6 @@ logging:
 
 # Brain (Python) process settings
 brain:
-  python_command: "uv run python"  # Uses uv-managed venv in brain/
-  module: "nerv"            # Python module to run (python -m nerv)
   auto_install_ollama: false  # Only used when a local: model is configured
   restart_max: 3            # Max respawns of a crashed brain before giving up
   call_timeout_secs: 300    # Per-request ceiling; a wedged brain errors out
