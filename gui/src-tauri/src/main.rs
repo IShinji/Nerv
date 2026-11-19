@@ -7,106 +7,29 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nerv_brain::handle::BrainHandle;
-use nerv_shared::brain_client::{BrainClient, BrainSpawnConfig};
-use nerv_shared::config::NervConfig;
 use serde::Serialize;
 use tauri::State;
 use tokio::sync::Mutex;
 
 struct AppState {
-    /// Spawned on first use and supervised from then on.
-    brain: Mutex<Option<Arc<BrainClient>>>,
-    /// The Rust brain facade (router + pending/execute protocol), built once
-    /// after the brain starts.
+    /// The fully-native brain facade, built on first use. There is no
+    /// sidecar to supervise — everything runs in this process.
     handle: Mutex<Option<Arc<BrainHandle>>>,
     project_root: PathBuf,
 }
 
 impl AppState {
-    /// Return the running brain, starting it on first use.
-    async fn brain(&self) -> Result<Arc<BrainClient>, String> {
-        let mut guard = self.brain.lock().await;
-        if let Some(brain) = guard.as_ref() {
-            return Ok(brain.clone());
-        }
-
-        let brain = Arc::new(BrainClient::new(brain_spawn_config(&self.project_root)));
-        brain.start().await.map_err(|e| e.to_string())?;
-        *guard = Some(brain.clone());
-        Ok(brain)
-    }
-
-    /// Ask the brain for a `reply` string (raw JSON-RPC, used by heartbeat).
-    async fn reply(&self, method: &str, params: serde_json::Value) -> Result<String, String> {
-        let brain = self.brain().await?;
-        let result = brain
-            .call(method, params)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(result
-            .get("reply")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string())
-    }
-
-    /// Return the Rust brain facade, building it once after the brain starts.
+    /// Return the brain facade, building it once on first use.
     async fn handle(&self) -> Result<Arc<BrainHandle>, String> {
-        let brain = self.brain().await?;
         let mut guard = self.handle.lock().await;
         if let Some(handle) = guard.as_ref() {
             return Ok(handle.clone());
         }
         let handle =
-            Arc::new(BrainHandle::new(brain, &self.project_root).map_err(|e| e.to_string())?);
+            Arc::new(BrainHandle::new(&self.project_root).map_err(|e| e.to_string())?);
         *guard = Some(handle.clone());
         Ok(handle)
     }
-}
-
-/// Build the brain spawn config from `config.yaml`, exactly like the gateway.
-///
-/// Reading the same config is the point: the GUI used to hardcode
-/// `uv run python -m nerv`, so a user who changed the interpreter or module in
-/// config got a different brain depending on which host launched it.
-fn brain_spawn_config(project_root: &Path) -> BrainSpawnConfig {
-    let spawn = brain_spawn_config_inner(project_root);
-    let path = child_path(
-        std::env::var("PATH").ok().as_deref(),
-        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
-    );
-    spawn.with_env("PATH", path)
-}
-
-fn brain_spawn_config_inner(project_root: &Path) -> BrainSpawnConfig {
-    let brain_dir = project_root.join("brain");
-
-    let config = match NervConfig::load(project_root) {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("[nerv-gui] falling back to default brain settings: {e}");
-            return BrainSpawnConfig::python("uv run python", "nerv", &brain_dir)
-                .with_env("NERV_PROJECT_ROOT", project_root.to_string_lossy());
-        }
-    };
-
-    for warning in config.startup_warnings(project_root) {
-        eprintln!("[nerv-gui] warning: {warning}");
-    }
-
-    BrainSpawnConfig::python(
-        &config.brain.python_command,
-        &config.brain.module,
-        &brain_dir,
-    )
-    .with_restart_max(config.brain.restart_max)
-    .with_call_timeout(Duration::from_secs(config.brain.call_timeout_secs))
-    .with_env("NERV_PROJECT_ROOT", project_root.to_string_lossy())
-    .with_env("NERV_OLLAMA_URL", &config.models.router.base_url)
-    .with_env("NERV_MODEL_TIER0", &config.models.tiers.tier0)
-    .with_env("NERV_MODEL_TIER1", &config.models.tiers.tier1)
-    .with_env("NERV_MODEL_TIER2", &config.models.tiers.tier2)
-    .with_env("NERV_MODEL_TIER3", &config.models.tiers.tier3)
 }
 
 #[derive(Serialize)]
@@ -132,7 +55,8 @@ async fn send_message(state: State<'_, AppState>, text: String) -> Result<String
 
 #[tauri::command]
 async fn check_heartbeat(state: State<'_, AppState>) -> Result<String, String> {
-    state.reply("heartbeat", serde_json::json!({})).await
+    // The heartbeat drain is native now: surface queued background alerts.
+    Ok(nerv_brain::proactive::drain_notifications().join("\n"))
 }
 
 #[tauri::command]
@@ -240,7 +164,6 @@ fn main() {
 
     tauri::Builder::default()
         .manage(AppState {
-            brain: Mutex::new(None),
             handle: Mutex::new(None),
             project_root,
         })

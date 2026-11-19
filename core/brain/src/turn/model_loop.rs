@@ -4,10 +4,9 @@
 //! `brain/nerv/orchestrator/orchestrator.py`.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
-use nerv_shared::brain_client::{BrainClient, BrainError};
+use nerv_shared::brain_client::BrainError;
 use serde_json::json;
 use tracing::{info, warn};
 
@@ -40,7 +39,6 @@ pub trait ModelCaller: Send + Sync {
 pub struct ProviderCaller {
     pub claude_cli_backend: ClaudeCliBackend,
     pub project_root: PathBuf,
-    pub brain: Arc<BrainClient>,
 }
 
 #[async_trait::async_trait]
@@ -53,71 +51,27 @@ impl ModelCaller for ProviderCaller {
         tool_names: &[String],
         scope: &str,
     ) -> Result<CompletionResult, LlmError> {
-        match llm::parse_model(model).0 {
-            // litellm is a python-only dependency (a multi-vendor cloud API
-            // router); until a rust equivalent lands, those models keep
-            // running through the python client so the dormant path behaves
-            // exactly as before — including its `personal/api_keys.env` load.
-            "litellm" => {
-                self.complete_via_python(messages, model, tools, scope)
-                    .await
-            }
-            _ => {
-                llm::complete(
-                    messages,
-                    &CompleteOptions {
-                        model,
-                        tools,
-                        tool_names,
-                        temperature: 0.2,
-                        json_mode: false,
-                        project_root: Some(&self.project_root),
-                        scope,
-                        timeout: Duration::from_secs(120),
-                    },
-                )
-                .await
-            }
-        }
-    }
-}
-
-impl ProviderCaller {
-    async fn complete_via_python(
-        &self,
-        messages: &[ChatMessage],
-        model: &str,
-        tools: Option<&[serde_json::Value]>,
-        scope: &str,
-    ) -> Result<CompletionResult, LlmError> {
-        let result = self
-            .brain
-            .call(
-                "complete_turn",
-                json!({
-                    "messages": messages,
-                    "model": model,
-                    "tools": tools.unwrap_or(&[]),
-                    "scope": scope,
-                }),
-            )
-            .await
-            .map_err(|e| LlmError::Unsupported(format!("python llm call failed: {e}")))?;
-        Ok(CompletionResult {
-            content: result["content"].as_str().unwrap_or("").to_string(),
-            tool_calls: serde_json::from_value(result["tool_calls"].clone()).unwrap_or_default(),
-            runs_own_tool_loop: result["runs_own_tool_loop"].as_bool().unwrap_or(false),
-            provider: result["provider"].as_str().unwrap_or("").to_string(),
-            duration_ms: result["duration_ms"].as_f64(),
-            cost_usd: result["cost_usd"].as_f64(),
-            usage: result.get("usage").cloned(),
-        })
+        // Every provider — claude-cli, local ollama and the multi-vendor
+        // litellm cloud family — runs natively.
+        llm::complete(
+            messages,
+            &CompleteOptions {
+                model,
+                tools,
+                tool_names,
+                temperature: 0.2,
+                json_mode: false,
+                project_root: Some(&self.project_root),
+                scope,
+                timeout: Duration::from_secs(120),
+            },
+        )
+        .await
     }
 }
 
 /// Everything one turn's model loop needs from its host.
 pub struct LoopContext<'a> {
-    pub brain: &'a std::sync::Arc<BrainClient>,
     pub caller: &'a dyn ModelCaller,
     pub trace: &'a mut TraceRecord,
     pub max_rounds: u32,
@@ -323,7 +277,7 @@ async fn native_run_tool(
             project_root: ctx.project_root.to_path_buf(),
             workspace_root,
             scope: ctx.scope.to_string(),
-            brain: Some(ctx.brain.clone()),
+            brain: None,
             confirmed: None,
         };
         let result = (tool.func)(&tool_ctx, arguments).await;

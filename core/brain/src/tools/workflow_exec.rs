@@ -56,16 +56,11 @@ async fn execute_workflow_impl(ctx: &ToolContext, args: &Value) -> ToolResult {
         ));
     }
 
-    // Model help for argument extraction and reasoning steps (tier 0).
-    let Some(brain) = ctx.brain.clone() else {
-        return ToolResult::error(
-            "Error: execute_workflow needs the brain sidecar (no MCP context).",
-        );
-    };
+    // Model help for argument extraction and reasoning steps (tier 0) —
+    // served natively by the llm client.
     let caller = std::sync::Arc::new(ProviderCaller {
         claude_cli_backend: crate::llm::claude_cli::ClaudeCliBackend::default(),
         project_root: ctx.project_root.clone(),
-        brain,
     });
 
     // The scope slug is channel-sender; best-effort split for targeting.
@@ -76,7 +71,6 @@ async fn execute_workflow_impl(ctx: &ToolContext, args: &Value) -> ToolResult {
         scope: ctx.scope.clone(),
         channel,
         sender,
-        brain: ctx.brain.clone(),
         notify: crate::tools::notify_sink(),
         confirmed: ctx.confirmed.clone(),
         caller,

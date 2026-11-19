@@ -18,9 +18,9 @@ url = "2"
 scraper = "0.24"
 ego-tree = "0.10"
 uuid = { version = "1", features = ["v4"] }
-# HTTP for the local Ollama backend only (localhost, plain http://), so TLS
-# stays disabled to keep the dependency footprint small.
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# HTTP for the local Ollama backend (plain http://) and the litellm cloud
+# backends (TLS via rustls — no OpenSSL dependency).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # E10 向量检索: local embeddings (multilingual-e5-small, CPU) + SQLite store
 fastembed = "4"
 rusqlite = { version = "0.32", features = ["bundled"] }

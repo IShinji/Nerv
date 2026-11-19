@@ -4,18 +4,15 @@ Read and follow `CONVENTIONS.md` for all code style, naming, and project structu
 
 ## Project Overview
 
-Nerv is a personal AI operating system. Architecture: Rust core + Python brain + Tauri GUI (later).
+Nerv is a personal AI operating system. Architecture: 100% Rust brain (`core/`: gateway, router, orchestrator, memory, tools, workflows, MCP, proactive heartbeat) + Tauri GUI.
 
-Direction (decided 2026-11-14): the brain is being unified into Rust, one module at a time. Until a module is migrated its Python implementation stays. New features are written in Rust; the Python brain only gets bug fixes. See "Rust migration rules" in `CLAUDE.md`.
-
-- `core/` — Rust: Gateway (channel adapters), hardware detection, process management
-- `brain/` — Python: Router, Orchestrator, Agent Factory, Context Manager, Memory, Tools
+- `core/` — Rust: gateway (channel adapters), hardware detection, the whole brain (`core/brain/`), process management
 - `agents/` — YAML agent definitions
-- `gui/` — Tauri + React (Phase 2, not yet)
+- `gui/` — Tauri + React
 
 ## Communication
 
-Rust ↔ Python: JSON-RPC 2.0 over stdin/stdout, newline-delimited.
+Everything runs in-process: hosts call `nerv_brain::handle::BrainHandle` directly. The old JSON-RPC sidecar protocol is retired.
 
 ## Critical Design Rules
 
@@ -29,5 +26,4 @@ Rust ↔ Python: JSON-RPC 2.0 over stdin/stdout, newline-delimited.
 
 See `CONVENTIONS.md` for complete rules. Summary:
 - Rust: rustfmt + clippy, snake_case functions, PascalCase types, async tokio, thiserror + anyhow
-- Python: ruff format + check, type hints required, dataclass/Pydantic for data, asyncio
 - Git: `feat:` / `fix:` / `refactor:` prefix, English, lowercase

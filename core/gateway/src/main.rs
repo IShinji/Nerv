@@ -8,7 +8,7 @@ use adapter::cli::CliAdapter;
 use adapter::{ChannelAdapter, IncomingMessage};
 use anyhow::{Context, Result};
 use nerv_brain::handle::BrainHandle;
-use nerv_shared::brain_client::{find_brain_dir, BrainClient, BrainSpawnConfig, NotifyMessage};
+use nerv_shared::brain_client::NotifyMessage;
 use nerv_shared::config::NervConfig;
 use nerv_shared::message::Message;
 use std::path::PathBuf;
@@ -54,35 +54,6 @@ fn find_project_root() -> Result<PathBuf> {
     )
 }
 
-/// Build the brain spawn config from the loaded Nerv config.
-fn brain_spawn_config(config: &NervConfig, project_root: &std::path::Path) -> BrainSpawnConfig {
-    let brain_dir = find_brain_dir(project_root);
-
-    let mut spawn = BrainSpawnConfig::python(
-        &config.brain.python_command,
-        &config.brain.module,
-        &brain_dir,
-    )
-    .with_restart_max(config.brain.restart_max)
-    .with_call_timeout(Duration::from_secs(config.brain.call_timeout_secs))
-    .with_env("NERV_PROJECT_ROOT", project_root.to_string_lossy())
-    .with_env("NERV_OLLAMA_URL", &config.models.router.base_url)
-    .with_env("NERV_MODEL_TIER0", &config.models.tiers.tier0)
-    .with_env("NERV_MODEL_TIER1", &config.models.tiers.tier1)
-    .with_env("NERV_MODEL_TIER2", &config.models.tiers.tier2)
-    .with_env("NERV_MODEL_TIER3", &config.models.tiers.tier3);
-
-    // Keep uv's cache inside the project unless the user chose their own.
-    if std::env::var_os("UV_CACHE_DIR").is_none() {
-        spawn = spawn.with_env(
-            "UV_CACHE_DIR",
-            brain_dir.join(".uv-cache").to_string_lossy(),
-        );
-    }
-
-    spawn
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // The gateway binary doubles as the rust MCP server for the claude-cli
@@ -114,14 +85,11 @@ async fn main() -> Result<()> {
     }
     ollama::ensure_ollama_ready(&config).await?;
 
-    // Start the Python brain process, then the Rust brain facade: the router
-    // classifies locally, the python sidecar handles pending/execute.
-    let brain = Arc::new(BrainClient::new(brain_spawn_config(&config, &project_root)));
-    // Targeted notifications (E0): brain `notify` messages flow out through
-    // this channel into a pump that routes them by channel + sender.
+    // The brain is fully native now — no sidecar to spawn.
+    // Targeted notifications (E0): Rust-side events (workflow progress,
+    // suspended actions) flow out through this channel into a pump that
+    // routes them by channel + sender.
     let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<NotifyMessage>();
-    brain.set_notify_handler(notify_tx.clone());
-    // Rust-side events (workflow progress) reach the same pump (E0 定向通知).
     nerv_brain::tools::set_notify_sink(std::sync::Arc::new(move |channel, sender, text| {
         let _ = notify_tx.send(NotifyMessage {
             channel: channel.to_string(),
@@ -129,10 +97,11 @@ async fn main() -> Result<()> {
             text: text.to_string(),
         });
     }));
-    brain.start().await?;
-    let brain_handle = Arc::new(
-        BrainHandle::new(brain.clone(), &project_root).context("loading the router prompts")?,
-    );
+    let brain_handle =
+        Arc::new(BrainHandle::new(&project_root).context("loading the router prompts")?);
+    // Cloned for the two consumers below (the message processor and the
+    // scheduler), both of which take ownership.
+    let scheduler_brain_handle = Arc::clone(&brain_handle);
 
     // Create the gateway message channel
     let (gateway_tx, mut gateway_rx) = mpsc::channel::<IncomingMessage>(32);
@@ -255,18 +224,13 @@ async fn main() -> Result<()> {
     // Scheduled-message scheduler (E2): fires due user-created messages
     // through the normal brain path and delivers replies via targeted notify.
     let scheduler_route: Arc<dyn Fn(String, String, String) + Send + Sync> = {
-        let brain = Arc::clone(&brain);
+        let brain_handle = Arc::clone(&scheduler_brain_handle);
         let notify_adapters = Arc::clone(&notify_adapters);
         Arc::new(move |channel, sender, message| {
-            let brain = Arc::clone(&brain);
+            let brain_handle = Arc::clone(&brain_handle);
             let adapters = Arc::clone(&notify_adapters);
             tokio::spawn(async move {
-                let params = serde_json::json!({
-                    "message": message,
-                    "channel": channel,
-                    "sender": sender,
-                });
-                let reply = match brain.call("execute", params).await {
+                let reply = match brain_handle.reply(&message, &channel, &sender).await {
                     Ok(result) => result
                         .get("reply")
                         .and_then(|v| v.as_str())
@@ -368,7 +332,6 @@ async fn main() -> Result<()> {
     tasks_pickup.abort();
     scheduler_task.abort();
     processor.await?;
-    brain.stop().await?;
     info!("Nerv gateway stopped");
 
     Ok(())

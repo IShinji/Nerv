@@ -20,7 +20,7 @@ use crate::tools::facade_workspace_root;
 use crate::tools::pending_store::PendingActionStore;
 use crate::tools::registry::ToolContext;
 use crate::workflows::{ReviewQueue, WorkflowRegistry};
-use nerv_shared::brain_client::{BrainClient, BrainError};
+use nerv_shared::brain_client::BrainError;
 
 const CONFIRM_COMMANDS: [&str; 6] = ["confirm", "approve", "run", "yes", "y", "ok"];
 const CANCEL_COMMANDS: [&str; 6] = ["cancel", "deny", "reject", "no", "n", "stop"];
@@ -46,10 +46,8 @@ pub enum PreparedTurn {
 
 /// Consult the pending queue for `confirm <id>` / `cancel <id>`.
 /// `None` means the message is not a pending command and routing continues.
-/// `brain` carries the live sidecar connection for python-only tools.
 pub async fn handle_pending_command(
     project_root: &Path,
-    brain: &std::sync::Arc<BrainClient>,
     message: &str,
     sender: &str,
     channel: &str,
@@ -119,20 +117,14 @@ pub async fn handle_pending_command(
     }
 
     if CONFIRM_COMMANDS.contains(&command) {
-        return Ok(Some(
-            execute_pending_action(project_root, brain, &target).await,
-        ));
+        return Ok(Some(execute_pending_action(project_root, &target).await));
     }
     Ok(None)
 }
 
 /// Run a previously approved pending action. Native tools execute in the
 /// Rust registry; python-only tools go through the `execute_pending` RPC.
-async fn execute_pending_action(
-    project_root: &Path,
-    brain: &std::sync::Arc<BrainClient>,
-    action: &PendingRecord,
-) -> String {
+async fn execute_pending_action(project_root: &Path, action: &PendingRecord) -> String {
     let registry = crate::tools::ToolRegistry;
     let summary = format_pending_action(action);
 
@@ -147,7 +139,7 @@ async fn execute_pending_action(
                 project_root: project_root.to_path_buf(),
                 workspace_root,
                 scope: action.scope.clone(),
-                brain: Some(std::sync::Arc::clone(brain)),
+                brain: None,
                 confirmed: Some(action.clone()),
             };
             let result = (tool.func)(&tool_ctx, &action.arguments).await;
@@ -333,7 +325,6 @@ fn which_exists(bin: &str) -> bool {
 
 /// Everything before the model call (port of `Orchestrator.prepare_turn`).
 pub async fn prepare_turn(
-    brain: &std::sync::Arc<BrainClient>,
     project_root: &Path,
     message: &str,
     route_result: &crate::router::RouteResult,
@@ -343,9 +334,7 @@ pub async fn prepare_turn(
     // confirm/cancel and review commands never reach a model call; a late
     // confirm is caught here too (one may have been queued by the MCP server
     // since the facade's check ran).
-    if let Some(reply) =
-        handle_pending_command(project_root, brain, message, sender, channel).await?
-    {
+    if let Some(reply) = handle_pending_command(project_root, message, sender, channel).await? {
         return Ok(PreparedTurn::Direct(reply));
     }
     if let Some(reply) = handle_review_command(project_root, message) {
@@ -400,7 +389,7 @@ pub async fn prepare_turn(
     // For tier >= 1: if the selected model is unavailable, attempt to fulfil
     // the request via a user-configured fallback workflow (native executor).
     if route_result.model_tier >= 1 && !model_available(&model).await {
-        if let Some(reply) = try_workflow_fallback(brain, project_root, &agent, message).await? {
+        if let Some(reply) = try_workflow_fallback(project_root, &agent, message).await? {
             return Ok(PreparedTurn::Direct(reply));
         }
     }
@@ -447,7 +436,6 @@ pub async fn prepare_turn(
 /// tier-0 model as before). A pending approval is reported as its reply.
 #[allow(clippy::too_many_arguments)]
 async fn try_workflow_fallback(
-    brain: &std::sync::Arc<BrainClient>,
     project_root: &Path,
     agent: &AgentDefinition,
     message: &str,
@@ -475,7 +463,6 @@ async fn try_workflow_fallback(
     let caller = std::sync::Arc::new(crate::turn::model_loop::ProviderCaller {
         claude_cli_backend: crate::llm::claude_cli::ClaudeCliBackend::default(),
         project_root: project_root.to_path_buf(),
-        brain: std::sync::Arc::clone(brain),
     });
     let executor_ctx = crate::workflows::executor::ExecutorContext {
         project_root: project_root.to_path_buf(),
@@ -483,7 +470,6 @@ async fn try_workflow_fallback(
         scope: String::new(),
         channel: String::new(),
         sender: String::new(),
-        brain: Some(std::sync::Arc::clone(brain)),
         notify: crate::tools::notify_sink(),
         confirmed: None,
         caller,

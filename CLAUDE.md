@@ -6,60 +6,49 @@ Read `NERV-PRD.md` for the full product requirements (if present in project root
 
 ## Project Overview
 
-Nerv is a personal AI operating system. Rust core (Gateway, hardware detection) + Rust router (`core/brain`, migrated 2026-11-16) + Python brain (Orchestrator, Agents, Memory, Tools) + Tauri GUI (Phase 2).
-
-**Direction (decided 2026-11-14): the brain is being unified into Rust**, one module at a time. Until a module is migrated its Python implementation stays and keeps working.
+Nerv is a personal AI operating system. **100% Rust brain** (gateway + router + orchestrator + memory + tools + workflows + MCP + proactive heartbeat, in `core/`) + Tauri GUI (Phase 3). The python brain is fully retired (migration completed 2026-11-19).
 
 ## Key Architecture Decisions
 
-- Rust and Python communicate via JSON-RPC 2.0 over stdin/stdout (newline-delimited)
-- The brain handles requests concurrently and replies may arrive out of order —
-  callers match on the request `id`, never on arrival order
-- Rust spawns Python as a sidecar process and manages its lifecycle. That client
-  lives once in `core/shared/src/brain_client.rs` (feature `brain-client`) and is
-  shared by the gateway and the Tauri GUI — do not write a second one
+- The whole brain is one Rust process: hosts (gateway, GUI) call
+  `nerv_brain::handle::BrainHandle` directly — no IPC, no sidecar
 - Gateway uses a `ChannelAdapter` trait — Telegram is just one implementation
 - All messages are converted to a unified `Message` struct before reaching the brain
 - The model backend is a config switch via a provider-prefix scheme on the model string
   (`claude-cli:<alias>` | `local:<ollama-model>` | `litellm:<model>`), resolved by the
-  unified LLM client in `brain/nerv/llm/`. Currently every tier runs on `claude-cli:opus`
-  (Claude Code subscription) for validation; local Ollama is reserved and dormant — switch
-  back by editing `models.tiers` in config. Never hardcode model names; read them from config.
+  unified LLM client in `core/brain/src/llm/`. claude-cli runs the Claude Code
+  subscription CLI; litellm serves the anthropic / OpenAI-compatible (openai, deepseek) /
+  gemini cloud families natively. Currently every tier runs on `claude-cli:opus`
+  for validation; local Ollama is reserved and dormant — switch
+  by editing `models.tiers` in config. Never hardcode model names; read them from config.
 - Under the `claude-cli` backend, Claude Code runs its own tool loop; Nerv native tools are
-  exposed to it through the MCP server in `brain/nerv/mcp_server/`. Tool calls that touch
-  paths outside `security.workspace_root` (or `shell`/`desktop_control`) are suspended into
-  the shared pending-action queue and require user `confirm <id>`.
+  exposed to it through the native MCP server (`--mcp-server` mode of the gateway/GUI
+  binary). Tool calls that touch paths outside `security.workspace_root` (or
+  `shell`/`desktop_control`) are suspended into the shared pending-action queue and
+  require user `confirm <id>`.
 - Agent definitions are YAML files, not code
-- `brain.python_command` is run as a program by the gateway, so config loading rejects
-  an unknown launcher (anything but `uv`, `python`, `python3` or a path to one) unless
-  `NERV_ALLOW_CUSTOM_PYTHON_COMMAND=1` is set in the environment — a config-file write
-  alone cannot enable it
 - Config uses YAML with snake_case keys
 - Any channel with a remote sender must be gated by an allow-list in config, and
   it fails closed: an empty list authorizes nobody. The brain can run shell
   commands, so an unauthenticated channel is a remote shell
-- Conversation memory is scoped per sender+channel (`nerv/memory/manager.py`);
-  `facts.md` is deliberately shared across a single owner's channels
-- Retrieval over memory is keyword-based today. Multilingual retrieval
-  (Chinese and English now, Japanese later) is a firm direction, so a hybrid of
-  keyword search and **locally computed** embeddings is planned. Constraints
-  for it: embeddings are always computed on this machine and conversation text
-  never leaves it; the vector store is a configurable backend (local SQLite by
-  default, a third-party vector database only when explicitly enabled in config,
-  and then only vectors and message ids are sent, because vectors can leak the
-  meaning of the text); no language-specific code on the default path, so
-  adding a language means adding evaluation data, not code; it must respect the same
+- Conversation memory is scoped per sender+channel (`core/brain/src/memory/`);
+  `facts.md` is deliberately shared across a single owner's channels. A tool
+  can never read another sender's history — anything reaching memory from a
+  new entry point must bind the scope the same way (fail closed to default)
+- Retrieval over memory is a hybrid of keyword search and **locally computed**
+  embeddings (opt-in via `brain.vector_retrieval`). Constraints: embeddings
+  are always computed on this machine and conversation text never leaves it;
+  the vector store is a configurable backend (local SQLite by default, a
+  third-party vector database only when explicitly enabled in config, and then
+  only vectors and message ids are sent, because vectors can leak the meaning
+  of the text); no language-specific code on the default path, so adding a
+  language means adding evaluation data, not code; it must respect the same
   sender+channel scope isolation as the keyword path; building the index must
   never add latency to a reply; and if the embedding service is unavailable it
-  falls back to keyword search. The planned implementation is in Rust, so do
-  not extend the Python keyword search beyond bug fixes.
-- Memory tools (`nerv/tools/memory.py`) read the scope the orchestrator binds
-  via `use_scope`; it fails closed to the default scope, so a tool can never
-  read another sender's history. Anything reaching memory from a new entry
-  point must bind the scope the same way
+  falls back to keyword search
 - Past days outside the recency window survive as rolling summaries generated
-  off the reply path (`nerv/memory/summarizer.py`). Summarizing must never add
-  latency to a reply or fail it
+  off the reply path (`core/brain/src/memory/summarizer.rs`). Summarizing must
+  never add latency to a reply or fail it
 
 ## Rust migration rules
 
