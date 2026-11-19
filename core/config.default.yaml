@@ -68,6 +68,23 @@ brain:
   # model (~470MB, multilingual-e5-small, CPU) on first use.
   vector_retrieval: false
 
+  # Email channel: IMAP polling + SMTP replies. Fails closed on
+  # allowed_senders — an empty list authorizes nobody.
+  # email:
+  #   enabled: false
+  #   imap_host: "imap.example.com"
+  #   smtp_host: "smtp.example.com"
+  #   username: "nerv@example.com"
+  #   password: ""
+  #   allowed_senders: ["you@example.com"]
+
+  # Slack channel: Socket Mode (app token) + Web API replies (bot token).
+  # slack:
+  #   enabled: false
+  #   app_token: "xapp-..."
+  #   bot_token: "xoxb-..."
+  #   allowed_users: ["U0123456789"]
+
 # Optional MCP integrations.
 # Rust currently ignores this block; the Python brain reads it directly.
 mcp:

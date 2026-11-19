@@ -17,6 +17,17 @@ chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 teloxide = { version = "0.17", features = ["macros"], optional = true }
+# Email channel: IMAP polling + SMTP replies (PRD v2 EmailAdapter).
+async-imap = { version = "0.10", optional = true, default-features = false, features = ["runtime-tokio"] }
+mail-parser = { version = "0.11", optional = true }
+lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "builder", "tokio1", "tokio1-rustls-tls"] }
+tokio-rustls = { version = "0.26", optional = true }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = { version = "0.8", optional = true }
+futures-util = { version = "0.3", optional = true }
+# Slack channel: Socket Mode websocket + Web API (PRD v2 SlackAdapter).
+tokio-tungstenite = { version = "0.24", optional = true, features = ["rustls-tls-native-roots"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -25,6 +36,8 @@ url = "2"
 [features]
 default = ["telegram"]
 telegram = ["dep:teloxide"]
+email = ["dep:async-imap", "dep:mail-parser", "dep:lettre", "dep:tokio-rustls", "dep:rustls", "dep:rustls-native-certs", "dep:futures-util"]
+slack = ["dep:tokio-tungstenite", "dep:futures-util", "dep:reqwest"]
 
 [dev-dependencies]
 tempfile = "3"

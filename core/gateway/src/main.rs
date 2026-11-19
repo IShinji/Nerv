@@ -17,6 +17,10 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+#[cfg(feature = "email")]
+use adapter::email::EmailAdapter;
+#[cfg(feature = "slack")]
+use adapter::slack::SlackAdapter;
 #[cfg(feature = "telegram")]
 use adapter::telegram::TelegramAdapter;
 
@@ -188,6 +192,58 @@ async fn main() -> Result<()> {
             adapter_tasks.push(tokio::spawn(async move {
                 if let Err(e) = telegram.start(tx_tg).await {
                     error!("Telegram adapter crashed: {}", e);
+                }
+            }));
+        }
+    }
+
+    #[cfg(feature = "email")]
+    if config.channels.email.enabled {
+        // The brain can run shell commands, so an allow-list is mandatory.
+        if config.channels.email.allowed_senders.is_empty() {
+            error!(
+                "Email is enabled but channels.email.allowed_senders is empty. \
+                 Refusing to start the adapter — add your address to the \
+                 allow-list in config.yaml first."
+            );
+        } else {
+            info!(
+                "Starting Email adapter for {} allowed sender(s)...",
+                config.channels.email.allowed_senders.len()
+            );
+            let tx_mail = gateway_tx.clone();
+            let email_config = config.channels.email.clone();
+            let email_adapter = Arc::new(EmailAdapter::new(email_config, project_root.clone()));
+            broadcasters.push(email_adapter.clone());
+            adapter_tasks.push(tokio::spawn(async move {
+                if let Err(e) = email_adapter.start(tx_mail).await {
+                    error!("Email adapter crashed: {}", e);
+                }
+            }));
+        }
+    }
+
+    #[cfg(feature = "slack")]
+    if config.channels.slack.enabled {
+        // The brain can run shell commands, so an allow-list is mandatory.
+        if config.channels.slack.allowed_users.is_empty() {
+            error!(
+                "Slack is enabled but channels.slack.allowed_users is empty. \
+                 Refusing to start the adapter — add your Slack member id to the \
+                 allow-list in config.yaml first."
+            );
+        } else {
+            info!(
+                "Starting Slack adapter for {} allowed user(s)...",
+                config.channels.slack.allowed_users.len()
+            );
+            let tx_slack = gateway_tx.clone();
+            let slack_config = config.channels.slack.clone();
+            let slack_adapter = Arc::new(SlackAdapter::new(slack_config));
+            broadcasters.push(slack_adapter.clone());
+            adapter_tasks.push(tokio::spawn(async move {
+                if let Err(e) = slack_adapter.start(tx_slack).await {
+                    error!("Slack adapter crashed: {}", e);
                 }
             }));
         }
