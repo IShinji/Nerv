@@ -25,8 +25,7 @@ impl AppState {
         if let Some(handle) = guard.as_ref() {
             return Ok(handle.clone());
         }
-        let handle =
-            Arc::new(BrainHandle::new(&self.project_root).map_err(|e| e.to_string())?);
+        let handle = Arc::new(BrainHandle::new(&self.project_root).map_err(|e| e.to_string())?);
         *guard = Some(handle.clone());
         Ok(handle)
     }

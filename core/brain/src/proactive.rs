@@ -338,9 +338,15 @@ mod tests {
 
     #[test]
     fn notification_queue_round_trips() {
+        // Other tests in this binary legitimately enqueue workflow alerts;
+        // drain whatever is pending first, then assert the round trip.
+        drain_notifications();
         queue_notifications(&["a".to_string(), "b".to_string()]);
         let drained = drain_notifications();
-        assert_eq!(drained, vec!["a".to_string(), "b".to_string()]);
+        assert!(
+            drained.ends_with(&["a".to_string(), "b".to_string()]),
+            "{drained:?}"
+        );
         assert!(drain_notifications().is_empty());
     }
 }
