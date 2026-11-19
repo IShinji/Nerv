@@ -27,7 +27,6 @@ def test_gate_reads_requires_confirmation_flag(tmp_path: Path) -> None:
     [
         "chrome_browser",
         "browser_interactive",
-        "delegate_task",
         "evolve_agent",
         "rollback_agent",
         "shell",

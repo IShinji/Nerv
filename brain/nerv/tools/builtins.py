@@ -37,5 +37,5 @@ from nerv.tools.files import (  # noqa: F401
 from nerv.tools.knowledge import mcp_presets, mcp_status  # noqa: F401
 from nerv.tools.memory import get_fact_section, search_memory  # noqa: F401
 from nerv.tools.registry import ToolResult, registry  # noqa: F401
-from nerv.tools.system import current_time, delegate_task, shell  # noqa: F401
+from nerv.tools.system import current_time, shell  # noqa: F401
 from nerv.tools.web import browser, web_search  # noqa: F401
