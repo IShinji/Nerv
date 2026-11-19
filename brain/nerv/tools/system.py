@@ -102,39 +102,3 @@ async def shell(command: str) -> ToolResult:
 # -----------------------------------------------------------------------------
 
 
-@registry.register(
-    name="delegate_task",
-    description="Ask another specialized professional agent to do a task and return the result to you. Use this to consult domain experts.",
-    requires_confirmation=True,  # spawns an agent that may use any of its tools
-)
-async def delegate_task(role_name: str, task_description: str) -> ToolResult:
-    """Spawn or consult a sub-agent for a specific task."""
-
-    from nerv.orchestrator.factory import normalize_role_name
-    from nerv.orchestrator.orchestrator import Orchestrator
-
-    safe_role = normalize_role_name(role_name)
-    if safe_role is None:
-        return ToolResult(content=f"Invalid role name: {role_name!r}", is_error=True)
-    role_name = safe_role
-
-    # We build a temporary orchestrator for the sub-agent
-    orch = Orchestrator(_get_project_root())
-
-    # Fake the route result
-    from nerv.models import RouteResult
-
-    route = RouteResult(
-        intent=role_name,
-        complexity="high",
-        model_tier=1,
-        agent_type=role_name,  # This forces the Factory to spawn this exact role!
-        reply="",
-    )
-
-    # We prefix the message so the sub-agent knows its context
-    prompt = f"[DELEGATION TASK]\nYou have been spawned by a higher-level architect agent to handle a sub-task.\nTask Description: {task_description}"
-
-    response = await orch.dispatch(prompt, route)
-
-    return ToolResult(content=f"Expert ({role_name}) replied: {response}")
