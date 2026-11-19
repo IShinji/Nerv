@@ -14,6 +14,7 @@ pub mod memory;
 pub mod orchestrator;
 pub mod router;
 pub mod skills;
+pub mod tasks;
 pub mod tools;
 pub mod turn;
 pub mod workflows;

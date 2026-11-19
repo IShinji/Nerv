@@ -44,7 +44,8 @@ pub fn search_memory() -> ToolDefinition {
                 workspace_root: ctx.workspace_root.clone(),
                 brain: ctx.brain.clone(),
                 scope: ctx.scope.clone(),
-            };
+            confirmed: None,
+        };
             let args = args.clone();
             Box::pin(async move { search_memory_impl(&ctx, &args) })
         },
@@ -118,7 +119,8 @@ pub fn get_fact_section() -> ToolDefinition {
                 workspace_root: ctx.workspace_root.clone(),
                 brain: ctx.brain.clone(),
                 scope: ctx.scope.clone(),
-            };
+            confirmed: None,
+        };
             let title = args
                 .get("title")
                 .and_then(|v| v.as_str())

@@ -331,6 +331,7 @@ async fn native_run_tool(
             workspace_root,
             scope: ctx.scope.to_string(),
             brain: Some(ctx.brain.clone()),
+            confirmed: None,
         };
         let result = (tool.func)(&tool_ctx, arguments).await;
         return Ok(Some(json!({

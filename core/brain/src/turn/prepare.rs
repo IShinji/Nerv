@@ -4,8 +4,7 @@
 //! Everything here runs without the python sidecar: pending-action commands
 //! (`confirm <id>` / `cancel <id>`), review-queue commands, agent selection
 //! (with the factory fallback), model selection and the new-pending surfacing.
-//! The workflow fallback gate stays a thin RPC (`workflow_fallback`) because
-//! the WorkflowExecutor is still python (E9b transitional decision).
+//! The workflow fallback gate runs the native executor directly.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -51,7 +50,7 @@ pub enum PreparedTurn {
 /// `brain` carries the live sidecar connection for python-only tools.
 pub async fn handle_pending_command(
     project_root: &Path,
-    brain: &BrainClient,
+    brain: &std::sync::Arc<BrainClient>,
     message: &str,
     sender: &str,
     channel: &str,
@@ -132,7 +131,7 @@ pub async fn handle_pending_command(
 /// Rust registry; python-only tools go through the `execute_pending` RPC.
 async fn execute_pending_action(
     project_root: &Path,
-    brain: &BrainClient,
+    brain: &std::sync::Arc<BrainClient>,
     action: &PendingRecord,
 ) -> String {
     let registry = crate::tools::ToolRegistry;
@@ -149,7 +148,8 @@ async fn execute_pending_action(
                 project_root: project_root.to_path_buf(),
                 workspace_root,
                 scope: action.scope.clone(),
-                brain: None,
+                brain: Some(std::sync::Arc::clone(brain)),
+                confirmed: Some(action.clone()),
             };
             let result = (tool.func)(&tool_ctx, &action.arguments).await;
             result.content
@@ -176,7 +176,7 @@ async fn execute_pending_action(
 /// (Python wraps the call in `executing_confirmed(action)` so its tools
 /// recognise the approved call.)
 async fn execute_pending_via_python(
-    brain: &BrainClient,
+    brain: &std::sync::Arc<BrainClient>,
     action: &PendingRecord,
 ) -> Result<String, BrainError> {
     let response = brain
@@ -361,7 +361,7 @@ fn which_exists(bin: &str) -> bool {
 
 /// Everything before the model call (port of `Orchestrator.prepare_turn`).
 pub async fn prepare_turn(
-    brain: &BrainClient,
+    brain: &std::sync::Arc<BrainClient>,
     project_root: &Path,
     message: &str,
     route_result: &crate::router::RouteResult,
@@ -426,19 +426,9 @@ pub async fn prepare_turn(
 
     // ── Fallback Workflow Gate ──
     // For tier >= 1: if the selected model is unavailable, attempt to fulfil
-    // the request via a user-configured fallback workflow. The executor is
-    // still python, so the gate hands over through one RPC.
+    // the request via a user-configured fallback workflow (native executor).
     if route_result.model_tier >= 1 && !model_available(&model).await {
-        if let Some(reply) = try_workflow_fallback(
-            brain,
-            project_root,
-            &agent,
-            message,
-            route_result.model_tier,
-            &model,
-        )
-        .await?
-        {
+        if let Some(reply) = try_workflow_fallback(brain, project_root, &agent, message).await? {
             return Ok(PreparedTurn::Direct(reply));
         }
     }
@@ -479,43 +469,61 @@ pub async fn prepare_turn(
     })
 }
 
-/// The fallback-workflow handover to the python executor. `None` means no
-/// fallback is needed or available (drop to the tier-0 model as before).
+/// The fallback workflow: when the selected model is unavailable, search for
+/// a matching (browser-tagged) workflow and execute it with the native
+/// executor. `None` means no fallback is needed or available (drop to the
+/// tier-0 model as before). A pending approval is reported as its reply.
 #[allow(clippy::too_many_arguments)]
 async fn try_workflow_fallback(
-    brain: &BrainClient,
-    _project_root: &Path,
+    brain: &std::sync::Arc<BrainClient>,
+    project_root: &Path,
     agent: &AgentDefinition,
     message: &str,
-    tier: i64,
-    model: &str,
 ) -> Result<Option<String>, BrainError> {
-    let response = brain
-        .call(
-            "workflow_fallback",
-            json!({
-                "message": message,
-                "tier": tier,
-                "model": model,
-                "agent": {
-                    "name": agent.name,
-                    "description": agent.description,
-                    "tags": agent.tags,
-                    "model_tier": agent.model_tier,
-                    "system_prompt": agent.system_prompt,
-                    "tools": agent.tools,
-                    "max_context_tokens": agent.max_context_tokens,
-                    "summary_strategy": agent.summary_strategy,
-                    "created_by": agent.created_by,
-                },
-            }),
-        )
-        .await?;
-    let reply = response["reply"].as_str().unwrap_or("");
-    if reply.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(reply.to_string()))
+    let registry = WorkflowRegistry::new(project_root);
+    let fallback_wf = registry
+        .find_for_agent(&agent.name, &agent.tags)
+        .into_iter()
+        .find(|wf| wf.tags.iter().any(|t| t == "browser"))
+        .or_else(|| {
+            registry
+                .list_workflows()
+                .into_iter()
+                .find(|wf| wf.tags.iter().any(|t| t == "browser"))
+        });
+    let Some(fallback_wf) = fallback_wf else {
+        tracing::warn!("No fallback workflow found. Falling back to tier 0 model.");
+        return Ok(None);
+    };
+    tracing::info!(
+        "Workflow fallback → '{}' for user request.",
+        fallback_wf.name
+    );
+
+    let caller = std::sync::Arc::new(crate::turn::model_loop::ProviderCaller {
+        claude_cli_backend: crate::llm::claude_cli::ClaudeCliBackend::default(),
+        project_root: project_root.to_path_buf(),
+        brain: std::sync::Arc::clone(brain),
+    });
+    let executor_ctx = crate::workflows::executor::ExecutorContext {
+        project_root: project_root.to_path_buf(),
+        workspace_root: crate::tools::facade_workspace_root(project_root),
+        scope: String::new(),
+        channel: String::new(),
+        sender: String::new(),
+        brain: Some(std::sync::Arc::clone(brain)),
+        notify: crate::tools::notify_sink(),
+        confirmed: None,
+        caller,
+    };
+    let mut executor = crate::workflows::executor::WorkflowExecutor::new(executor_ctx);
+    match executor.execute(&fallback_wf, message, None).await {
+        Ok(result) => Ok(Some(result)),
+        Err(pending) => {
+            // The user has to approve first: ask, rather than quietly dropping
+            // to a weaker model.
+            Ok(Some(pending.user_message))
+        }
     }
 }
 

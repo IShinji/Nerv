@@ -55,6 +55,9 @@ pub struct ToolContext {
     pub workspace_root: PathBuf,
     pub scope: String,
     pub brain: Option<std::sync::Arc<nerv_shared::brain_client::BrainClient>>,
+    /// The record the user confirmed, when this call IS a confirmed pending
+    /// action (`execute_workflow` reads it for whole-run approvals).
+    pub confirmed: Option<crate::turn::PendingRecord>,
 }
 
 use std::path::PathBuf;
@@ -143,6 +146,7 @@ fn build_registry() -> Vec<ToolDefinition> {
         super::knowledge::get_skill(),
         super::knowledge::list_review_queue(),
         super::delegation::delegate_task(),
+        super::workflow_exec::execute_workflow(),
         super::delegation::delegation_status(),
     ]
 }

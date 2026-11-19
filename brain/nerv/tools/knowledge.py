@@ -123,60 +123,6 @@ def propose_workflow(
 
 
 @registry.register(
-    name="execute_workflow",
-    description=(
-        "Execute a named shared workflow. This delegates control to the Workflow Executor engine "
-        "which will sequentially perform the steps and return the final structurally extracted response. "
-        "A workflow that drives the browser (or another tool that needs confirmation) is first "
-        "queued for the user's approval as a whole: tell the user to confirm it instead of retrying."
-    ),
-    requires_confirmation=False,
-)
-async def execute_workflow(workflow_name: str, inputs: str) -> ToolResult:
-    """Execute a shared workflow via the native WorkflowExecutor."""
-    # We must fetch the orchestrator from ipc to inject it into the executor
-    # To avoid circular import, we fetch it locally
-    from nerv.ipc import _get_orchestrator
-    from nerv.workflows.executor import WorkflowExecutor, WorkflowNeedsApproval
-    from nerv.workflows.registry import WorkflowRegistry
-
-    registry_obj = WorkflowRegistry(_get_project_root())
-    workflow = registry_obj.find(workflow_name.strip())
-
-    if not workflow:
-        return ToolResult(
-            content=f"Error: Shared workflow '{workflow_name}' not found. List workflows first.",
-            is_error=True,
-        )
-
-    if not workflow.steps:
-        return ToolResult(
-            content=f"Error: Workflow '{workflow.name}' has no defined steps.",
-            is_error=True,
-        )
-
-    orchestrator = await _get_orchestrator()
-    from nerv.memory.manager import active_scope
-
-    scope = active_scope()
-    # The scope slug is channel-sender; best effort split for targeting.
-    channel, _, sender = scope.partition("-")
-    executor = WorkflowExecutor(orchestrator, channel=channel, sender=sender or scope)
-
-    try:
-        final_result = await executor.execute(workflow, inputs)
-        return ToolResult(
-            content=f"Workflow executed successfully.\nResult context:\n{final_result}"
-        )
-    except WorkflowNeedsApproval as pending:
-        # Not a failure: the user has to approve first (or an earlier approval no
-        # longer matches the workflow, which is reported as an error).
-        return ToolResult(content=pending.message, is_error=pending.stale)
-    except Exception as e:
-        return ToolResult(content=f"Workflow execution failed: {e}", is_error=True)
-
-
-@registry.register(
     name="list_skills",
     description="List shared skills relevant to an agent or task domain.",
     requires_confirmation=False,

@@ -109,7 +109,8 @@ pub fn delegate_task() -> ToolDefinition {
                 workspace_root: ctx.workspace_root.clone(),
                 scope: ctx.scope.clone(),
                 brain: ctx.brain.clone(),
-            };
+            confirmed: None,
+        };
             let args = args.clone();
             Box::pin(async move { delegate_task_impl(&ctx, &args) })
         },

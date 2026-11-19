@@ -83,17 +83,6 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
             channel=params.get("channel", ""),
             scope=params.get("scope", ""),
         )
-    elif method == "workflow_fallback":
-        if params is None:
-            raise ValueError("workflow_fallback method requires params")
-        orchestrator = await _get_orchestrator()
-        return await orchestrator.try_workflow_fallback(
-            params.get("message", ""),
-            params.get("tier", 1),
-            params.get("model", ""),
-            params.get("agent") or {},
-            scope=params.get("scope", ""),
-        )
     elif method == "execute_pending":
         if params is None:
             raise ValueError("execute_pending method requires params")
