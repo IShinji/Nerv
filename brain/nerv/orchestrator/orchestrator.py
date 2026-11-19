@@ -25,7 +25,6 @@ from nerv.capabilities import capability_registry  # noqa: F401
 from nerv.config import get_tier_models, get_workspace_root
 from nerv.memory.manager import scope_for, use_scope
 from nerv.orchestrator.registry import AgentRegistry
-from nerv.proactive import ProactiveMonitor
 from nerv.security import (
     PendingActionStore,
     PendingRecord,
@@ -54,7 +53,6 @@ class Orchestrator:
         self.review_queue = ReviewQueue(project_root)
         self.base_url = os.environ.get("NERV_OLLAMA_URL", DEFAULT_OLLAMA_URL)
         self._client = httpx.AsyncClient(timeout=OLLAMA_TIMEOUT)
-        self._pending_notifications: list[str] = []
         # Strong refs to fire-and-forget tasks; asyncio only holds weak ones,
         # so without this the GC can cancel a summary mid-flight.
         self._background_tasks: set[asyncio.Task[None]] = set()
@@ -62,7 +60,6 @@ class Orchestrator:
         # are visible to this orchestrator's confirm/cancel flow.
         self._pending_store = PendingActionStore(project_root)
         self._workspace_root = get_workspace_root(project_root)
-        self._proactive = ProactiveMonitor(project_root)
         logger.info(
             "Orchestrator initialized with %d agents", len(self.registry.list_agents())
         )
@@ -81,11 +78,6 @@ class Orchestrator:
                 message, sender=sender, channel=channel
             )
             return reply or None
-
-    def queue_notifications(self, notifications: list[str]) -> None:
-        """Accept background alerts from the Rust turn loop so the heartbeat
-        drain delivers them, exactly as the old finish_turn RPC did."""
-        self._pending_notifications.extend(notifications or [])
 
     async def execute_pending_record(
         self,
@@ -149,7 +141,6 @@ class Orchestrator:
                 f"Pending action #{pending_action.id} ({executable_name}) is "
                 "waiting for confirmation."
             )
-            self._pending_notifications.append(notification)
             logger.warning(
                 "Tool %s suspended for confirmation: %s", executable_name, reason
             )
@@ -183,8 +174,6 @@ class Orchestrator:
         final_reply, pending_created = self._append_new_pending(
             reply, known_ids, sender, channel
         )
-        if notifications:
-            self._pending_notifications.extend(notifications)
         return {"reply": final_reply, "pending_created": pending_created}
 
     async def complete_turn(
@@ -503,26 +492,6 @@ class Orchestrator:
                 return str(e)
             return f"Rejected workflow review {item.review_id}."
 
-        return None
-
-    async def check_background_tasks(self) -> str | None:
-        """Heartbeat hook: surface one pending notification or proactive reminder.
-
-        The proactive monitor scans local state (calendar, unfinished workflows)
-        without calling any model, so heartbeats stay free. New reminders are
-        enqueued and drained one per heartbeat, alongside pending-action alerts.
-        """
-        try:
-            reminders = self._proactive.check()
-            self._pending_notifications.extend(reminders)
-        except Exception:
-            logger.debug("Proactive monitor check failed", exc_info=True)
-
-        if self._pending_notifications:
-            # Deliver everything queued in one batched reply; draining one per
-            # 30 s tick would lag far behind a chatty workflow.
-            batch, self._pending_notifications = self._pending_notifications, []
-            return "\n".join(batch)
         return None
 
     async def aclose(self) -> None:

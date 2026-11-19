@@ -67,10 +67,8 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
 
     The router, the turn's pre-model stages and its finalization live in Rust
     (``core/brain``). Python keeps the leaf operations that have not migrated:
-    ``run_tool`` (capability gate + execution), ``workflow_fallback`` (the
-    WorkflowExecutor), ``execute_pending`` (python-only confirmed tools),
-    ``queue_notifications`` (the heartbeat drain), ``complete_turn``
-    (python-only model backends) and ``browser_mcp_attempt``.
+    ``run_tool`` (unported tools), ``execute_pending`` (python-only
+    confirmed tools) and ``complete_turn`` (python-only model backends).
     """
     if method == "run_tool":
         if params is None:
@@ -93,12 +91,6 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
             arguments=params.get("arguments") or {},
             justification=params.get("justification", ""),
         )
-    elif method == "queue_notifications":
-        if params is None:
-            raise ValueError("queue_notifications method requires params")
-        orchestrator = await _get_orchestrator()
-        orchestrator.queue_notifications(params.get("notifications") or [])
-        return {"ok": True}
     elif method == "complete_turn":
         if params is None:
             raise ValueError("complete_turn method requires params")
@@ -109,10 +101,6 @@ async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
             tools=params.get("tools") or None,
             scope=params.get("scope", ""),
         )
-    elif method == "heartbeat":
-        orchestrator = await _get_orchestrator()
-        reply = await orchestrator.check_background_tasks()
-        return {"reply": reply or ""}
     elif method == "ping":
         return {"status": "ok"}
     else:

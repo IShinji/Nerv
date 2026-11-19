@@ -192,9 +192,9 @@ async fn suspended_tool_calls_queue_a_pending_and_notify() {
 
     // `shell` is native: the suspension happens in the rust registry, the
     // pending is queued in the shared store, and the reply carries the
-    // new-pending surfacing (no run_tool RPC). The background alert goes to
-    // the heartbeat drain.
-    assert_eq!(read_log(&methods).await, vec!["queue_notifications"]);
+    // new-pending surfacing (no run_tool RPC). The background alert reaches
+    // the heartbeat drain through the rust notification queue.
+    assert!(read_log(&methods).await.is_empty());
     // The loop's suspension reply lists the queued action; the finalization
     // does not repeat it (the reply already names #1).
     assert!(
@@ -206,9 +206,8 @@ async fn suspended_tool_calls_queue_a_pending_and_notify() {
     let queued = store.list();
     assert_eq!(queued.len(), 1);
     assert_eq!(queued[0].tool_name, "shell");
-    // The background alert reaches the heartbeat drain via python.
-    let captured = std::fs::read_to_string(dir.path().join("notify_capture.json")).unwrap();
-    assert!(captured.contains("ALERT"), "{captured}");
+    // The background alert reaches the heartbeat drain through the rust
+    // notification queue (drained and asserted by proactive's own tests).
 }
 
 #[tokio::test]

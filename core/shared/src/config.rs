@@ -35,6 +35,30 @@ pub struct NervConfig {
     /// owned by nerv-brain.
     #[serde(default)]
     pub mcp: serde_json::Value,
+    #[serde(default)]
+    pub proactive: ProactiveConfig,
+}
+
+/// The proactive heartbeat monitor (`proactive.*`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProactiveConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_reminder_minutes")]
+    pub calendar_reminder_minutes: i64,
+}
+
+impl Default for ProactiveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            calendar_reminder_minutes: 60,
+        }
+    }
+}
+
+fn default_reminder_minutes() -> i64 {
+    60
 }
 
 /// Delegation of coding tasks to native coding-agent CLIs (PRD v2 E1).

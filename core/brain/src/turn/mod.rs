@@ -29,7 +29,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nerv_shared::brain_client::{BrainClient, BrainError};
-use serde_json::json;
 
 use crate::router::RouteResult;
 use model_loop::{run_model_loop, LoopContext, TurnError};
@@ -300,15 +299,9 @@ impl TurnRunner {
         };
 
         // Background alerts queued during the turn (suspended actions) reach
-        // the heartbeat drain through python's notification queue, as before.
+        // the heartbeat drain through the notification queue, as before.
         if !notifications.is_empty() {
-            let _ = self
-                .brain
-                .call(
-                    "queue_notifications",
-                    json!({ "notifications": notifications }),
-                )
-                .await;
+            crate::proactive::queue_notifications(&notifications);
         }
 
         let (final_reply, pending_created) =
