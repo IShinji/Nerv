@@ -149,7 +149,6 @@ class Orchestrator:
 
         Mirrors the per-tool-call block of the old `_call_model`.
         """
-        from nerv.capabilities import capability_registry
 
         resolution = capability_registry.resolve(name)
         if not resolution:

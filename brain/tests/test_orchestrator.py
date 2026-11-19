@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from nerv.models import RouteResult
 from nerv.orchestrator.orchestrator import Orchestrator
 from nerv.orchestrator.registry import AgentRegistry
 from nerv.security.locks import open_write_in_dir
