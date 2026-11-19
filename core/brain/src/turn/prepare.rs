@@ -225,10 +225,7 @@ pub fn visible_pending_actions(
 /// Handle direct review-queue commands before routing to an agent.
 /// `None` means the message is not a review command.
 pub fn handle_review_command(project_root: &Path, message: &str) -> Option<String> {
-    let normalized = message
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let normalized = message.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
         return None;
     }
