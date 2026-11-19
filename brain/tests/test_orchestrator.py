@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from nerv.models import RouteResult
 from nerv.orchestrator.orchestrator import Orchestrator
 from nerv.orchestrator.registry import AgentRegistry
 from nerv.security.locks import open_write_in_dir
@@ -200,7 +199,11 @@ async def test_cancel_pending_action_discards_it(tmp_path: Path) -> None:
 async def test_approve_workflow_review_publishes_shared_workflow(
     tmp_path: Path,
 ) -> None:
-    """Direct approval commands should publish pending workflow proposals."""
+    """Direct approval commands should publish pending workflow proposals.
+
+    The command matching itself migrated to Rust (turn::prepare); this test
+    pins the python ReviewQueue behavior it drives.
+    """
     orchestrator = Orchestrator(tmp_path)
     item = orchestrator.review_queue.submit_workflow(
         WorkflowDefinition(
@@ -215,10 +218,9 @@ async def test_approve_workflow_review_publishes_shared_workflow(
         proposed_by="general",
     )
 
-    result = await orchestrator.prepare_turn(
-        f"approve workflow {item.review_id}", RouteResult(intent="general")
-    )
-    response = result["reply"]
+    # The command matching lives in Rust now; python keeps the queue
+    # operations the Rust handler drives.
+    orchestrator.review_queue.approve_workflow(item.review_id)
+    orchestrator.workflow_registry.reload()
 
-    assert "Approved workflow review" in response
     assert orchestrator.workflow_registry.find("DraftFlow") is not None

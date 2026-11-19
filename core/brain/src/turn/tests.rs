@@ -1,6 +1,10 @@
 //! Tests for the turn flow: protocol ordering, the tool loop, pending
 //! replies, and the trace line. Fake brains are `/bin/sh` JSON-RPC scripts
 //! (the brain_client test technique); the model caller is scripted.
+//!
+//! Since E9b, preparation and finalization run locally (`turn::prepare`) —
+//! the fake brain only serves the leaf RPCs that remain python:
+//! `run_tool` (unported tools) and `queue_notifications` (heartbeat alerts).
 
 use super::*;
 use crate::llm::CompletionResult;
@@ -39,16 +43,10 @@ fn tool_calls_result(calls: &[(&str, serde_json::Value)]) -> CompletionResult {
     }
 }
 
-/// A fake brain implementing the prepare_turn/run_tool/finish_turn protocol.
+/// A fake brain implementing the leaf protocol that is still python.
 /// Method names are appended to `methods.log` in call order; run_tool
 /// responses rotate through the provided list (the last repeats).
-fn fake_brain(
-    dir: &Path,
-    prepare: serde_json::Value,
-    run_tool_responses: &[serde_json::Value],
-) -> BrainSpawnConfig {
-    let prepare_file = dir.join("prepare.json");
-    std::fs::write(&prepare_file, serde_json::to_string(&prepare).unwrap()).unwrap();
+fn fake_brain(dir: &Path, run_tool_responses: &[serde_json::Value]) -> BrainSpawnConfig {
     let run_tool_file = dir.join("run_tool.jsonl");
     let run_tool_body: String = if run_tool_responses.is_empty() {
         serde_json::to_string(&serde_json::json!({"content": "", "suspended": false})).unwrap()
@@ -69,28 +67,24 @@ while IFS= read -r line; do
   case "$line" in
     *'"method":"ping"'*)
       printf '{{"jsonrpc":"2.0","result":{{"status":"ok"}},"id":%s}}\n' "$id" ;;
-    *'"method":"prepare_turn"'*)
-      printf '%s\n' "prepare_turn" >> "{methods}"
-      printf '{{"jsonrpc":"2.0","result":%s,"id":%s}}\n' "$(cat {prepare_file})" "$id" ;;
     *'"method":"run_tool"'*)
       printf '%s\n' "run_tool" >> "{methods}"
       n=$(grep -c "run_tool" {methods} | tr -d ' ')
       total=$(wc -l < {run_tool_file} | tr -d ' ')
       if [ "$n" -gt "$total" ]; then n=$total; fi
       printf '{{"jsonrpc":"2.0","result":%s,"id":%s}}\n' "$(sed -n "${{n}}p" {run_tool_file})" "$id" ;;
-    *'"method":"finish_turn"'*)
-      printf '%s\n' "finish_turn" >> "{methods}"
-      printf '%s' "$line" > "{finish_capture}"
-      printf '{{"jsonrpc":"2.0","result":{{"reply":"finished","pending_created":false}},"id":%s}}\n' "$id" ;;
+    *'"method":"queue_notifications"'*)
+      printf '%s\n' "queue_notifications" >> "{methods}"
+      printf '%s' "$line" > "{notify_capture}"
+      printf '{{"jsonrpc":"2.0","result":{{"ok":true}},"id":%s}}\n' "$id" ;;
     *'"method":"complete_turn"'*)
       printf '{{"jsonrpc":"2.0","error":{{"code":-32000,"message":"unexpected complete_turn"}},"id":%s}}\n' "$id" ;;
   esac
 done
 "#,
         methods = methods.display(),
-        prepare_file = prepare_file.display(),
         run_tool_file = run_tool_file.display(),
-        finish_capture = dir.join("finish_capture.json").display(),
+        notify_capture = dir.join("notify_capture.json").display(),
     );
     BrainSpawnConfig {
         command: "/bin/sh".to_string(),
@@ -104,30 +98,11 @@ done
     }
 }
 
-fn agent_prepare() -> serde_json::Value {
-    serde_json::json!({
-        "status": "agent",
-        "agent": {"name": "General", "tools": []},
-        "model": "claude-cli:fake",
-        "messages": [
-            {"role": "system", "content": "You are Nerv."},
-            {"role": "user", "content": "hello"}
-        ],
-        "tools_schemas": null,
-        "known_pending": []
-    })
-}
-
 async fn started_runner(
     dir: &Path,
-    prepare: serde_json::Value,
     run_tool_responses: &[serde_json::Value],
 ) -> (TurnRunner, PathBuf) {
-    let brain = Arc::new(BrainClient::new(fake_brain(
-        dir,
-        prepare,
-        run_tool_responses,
-    )));
+    let brain = Arc::new(BrainClient::new(fake_brain(dir, run_tool_responses)));
     brain.start().await.expect("fake brain starts");
     let runner = TurnRunner::with_max_rounds(brain, dir, 3);
     (runner, dir.join("methods.log"))
@@ -154,9 +129,10 @@ fn route_result() -> RouteResult {
 }
 
 #[tokio::test]
-async fn agent_turn_runs_prepare_then_finish_around_the_model() {
+async fn agent_turn_runs_locally_and_returns_the_model_answer() {
     let dir = tempfile::tempdir().unwrap();
-    let (runner, methods) = started_runner(dir.path(), agent_prepare(), &[]).await;
+    // No agents on disk: prepare falls back to the minimal General agent.
+    let (runner, methods) = started_runner(dir.path(), &[]).await;
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
         final_result("agent answer"),
     ]));
@@ -166,51 +142,45 @@ async fn agent_turn_runs_prepare_then_finish_around_the_model() {
         .await
         .expect("turn succeeds");
 
-    assert_eq!(reply, "finished");
-    assert_eq!(
-        read_log(&methods).await,
-        vec!["prepare_turn", "finish_turn"]
-    );
+    // The reply is the model's answer — finalization is local, there is no
+    // python round trip to rewrite it.
+    assert_eq!(reply, "agent answer");
+    // No leaf RPC at all: no run_tool, no notifications.
+    assert!(read_log(&methods).await.is_empty());
+    // The turn was remembered.
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let conv = dir
+        .path()
+        .join("personal/memory/scopes/cli/conversations")
+        .join(format!("{today}.jsonl"));
+    let body = std::fs::read_to_string(conv).unwrap();
+    assert!(body.contains("agent answer"), "{body}");
 }
 
 #[tokio::test]
 async fn direct_reply_skips_the_model_caller() {
     let dir = tempfile::tempdir().unwrap();
-    let prepare = serde_json::json!({"status": "direct", "reply": "hi there"});
-    let (runner, methods) = started_runner(dir.path(), prepare, &[]).await;
+    let (runner, methods) = started_runner(dir.path(), &[]).await;
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![]));
 
+    let route = RouteResult {
+        reply: "hi there".to_string(),
+        ..route_result()
+    };
     let reply = runner
-        .run_turn("你好", &route_result(), "cli", "", caller.clone())
+        .run_turn("你好", &route, "cli", "", caller.clone())
         .await
         .expect("turn succeeds");
 
-    assert_eq!(reply, "finished");
-    assert_eq!(
-        read_log(&methods).await,
-        vec!["prepare_turn", "finish_turn"]
-    );
+    assert_eq!(reply, "hi there");
+    assert!(read_log(&methods).await.is_empty());
     assert!(caller.recorded_calls().is_empty());
 }
 
 #[tokio::test]
-async fn suspended_tool_calls_end_the_round_with_a_pending_reply() {
+async fn suspended_tool_calls_queue_a_pending_and_notify() {
     let dir = tempfile::tempdir().unwrap();
-    let prepare = serde_json::json!({
-        "status": "agent",
-        "agent": {"name": "SysAdmin", "tools": ["shell"]},
-        "model": "claude-cli:fake",
-        "messages": [{"role": "user", "content": "rm it"}],
-        "tools_schemas": [{"type": "function"}],
-        "known_pending": []
-    });
-    let run_tool = serde_json::json!({
-        "content": "[ACTION SUSPENDED] Pending action #7: shell with arguments {}",
-        "suspended": true,
-        "pending": {"id": 7, "tool_name": "shell", "arguments": {}, "reason": "matches the guard"},
-        "notification": "⚠️ [SYSTEM BACKGROUND ALERT] Pending action #7 (shell) is waiting for confirmation."
-    });
-    let (runner, methods) = started_runner(dir.path(), prepare, &[run_tool]).await;
+    let (runner, methods) = started_runner(dir.path(), &[]).await;
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
         tool_calls_result(&[("shell", serde_json::json!({"command": "rm -rf /"}))]),
     ]));
@@ -220,41 +190,32 @@ async fn suspended_tool_calls_end_the_round_with_a_pending_reply() {
         .await
         .expect("turn succeeds");
 
-    assert_eq!(reply, "finished");
-    let captured = std::fs::read_to_string(dir.path().join("finish_capture.json")).unwrap();
+    // `shell` is native: the suspension happens in the rust registry, the
+    // pending is queued in the shared store, and the reply carries the
+    // new-pending surfacing (no run_tool RPC). The background alert goes to
+    // the heartbeat drain.
+    assert_eq!(read_log(&methods).await, vec!["queue_notifications"]);
+    // The loop's suspension reply lists the queued action; the finalization
+    // does not repeat it (the reply already names #1).
     assert!(
-        captured.contains("I queued the following high-risk action(s) for confirmation:"),
-        "{captured}"
+        reply.contains("I queued the following high-risk action(s)"),
+        "{reply}"
     );
-    assert!(
-        // The capture file holds the raw json line (quotes escaped) — and
-        // `shell` is queued natively (rust registry), so the fake brain's
-        // run_tool response is never consulted.
-        captured.contains("Pending action #1: shell with arguments")
-            && captured.contains("rm -rf /"),
-        "{captured}"
-    );
-    assert!(
-        captured.contains("\\nReply with \\\"confirm <id>\\\""),
-        "{captured}"
-    );
-    assert!(
-        captured.contains("ALERT"),
-        "notifications must reach finish_turn: {captured}"
-    );
-    // `shell` is native: no run_tool RPC — the suspension happens in rust.
-    assert_eq!(
-        read_log(&methods).await,
-        vec!["prepare_turn", "finish_turn"]
-    );
+    assert!(reply.contains("rm -rf /"), "{reply}");
+    let store = crate::tools::pending_store::PendingActionStore::new(dir.path());
+    let queued = store.list();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].tool_name, "shell");
+    // The background alert reaches the heartbeat drain via python.
+    let captured = std::fs::read_to_string(dir.path().join("notify_capture.json")).unwrap();
+    assert!(captured.contains("ALERT"), "{captured}");
 }
 
 #[tokio::test]
 async fn executed_tool_results_feed_back_into_the_next_round() {
     let dir = tempfile::tempdir().unwrap();
-    let prepare = agent_prepare();
     let run_tool = serde_json::json!({"content": "tool output", "suspended": false});
-    let (runner, _methods) = started_runner(dir.path(), prepare, &[run_tool]).await;
+    let (runner, methods) = started_runner(dir.path(), &[run_tool]).await;
     // `web_search` is native now; use an unported tool name so this round
     // still exercises the python run_tool RPC path.
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
@@ -267,7 +228,8 @@ async fn executed_tool_results_feed_back_into_the_next_round() {
         .await
         .expect("turn succeeds");
 
-    assert_eq!(reply, "finished");
+    assert_eq!(reply, "answer with tools");
+    assert_eq!(read_log(&methods).await, vec!["run_tool"]);
     let calls = caller.recorded_calls();
     assert_eq!(calls.len(), 2);
     // Round two carries the assistant tool-call message and the tool result.
@@ -283,9 +245,8 @@ async fn executed_tool_results_feed_back_into_the_next_round() {
 #[tokio::test]
 async fn unknown_tools_report_back_to_the_model() {
     let dir = tempfile::tempdir().unwrap();
-    let prepare = agent_prepare();
     let run_tool = serde_json::json!({"content": "Unknown tool: bogus_tool", "suspended": false});
-    let (runner, _methods) = started_runner(dir.path(), prepare, &[run_tool]).await;
+    let (runner, _methods) = started_runner(dir.path(), &[run_tool]).await;
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
         tool_calls_result(&[("bogus_tool", serde_json::json!({}))]),
         final_result("recovered"),
@@ -295,7 +256,7 @@ async fn unknown_tools_report_back_to_the_model() {
         .run_turn("hello", &route_result(), "cli", "", caller.clone())
         .await
         .expect("turn succeeds");
-    assert_eq!(reply, "finished");
+    assert_eq!(reply, "recovered");
     let calls = caller.recorded_calls();
     assert!(calls[1]
         .iter()
@@ -305,9 +266,8 @@ async fn unknown_tools_report_back_to_the_model() {
 #[tokio::test]
 async fn the_loop_stops_after_the_round_cap() {
     let dir = tempfile::tempdir().unwrap();
-    let prepare = agent_prepare();
     let run_tool = serde_json::json!({"content": "tool output", "suspended": false});
-    let (runner, _methods) = started_runner(dir.path(), prepare, &[run_tool]).await;
+    let (runner, _methods) = started_runner(dir.path(), &[run_tool]).await;
     // Use an unknown tool so every round goes through the python run_tool
     // RPC (a registry tool like `shell` would suspend on round one).
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(
@@ -322,17 +282,15 @@ async fn the_loop_stops_after_the_round_cap() {
         .run_turn("hello", &route_result(), "cli", "", caller.clone())
         .await
         .expect("turn succeeds");
-    assert_eq!(reply, "finished");
-    let captured = std::fs::read_to_string(dir.path().join("finish_capture.json")).unwrap();
     assert!(
-        captured.contains("I stopped after 3 rounds of tool calls"),
-        "{captured}"
+        reply.contains("I stopped after 3 rounds of tool calls"),
+        "{reply}"
     );
     assert_eq!(caller.recorded_calls().len(), 3);
 }
 
 #[tokio::test]
-async fn a_failing_prepare_writes_an_error_trace_line() {
+async fn a_failing_run_tool_writes_an_error_trace_line() {
     let dir = tempfile::tempdir().unwrap();
     // A brain that only answers ping — everything else errors.
     let script = r#"
@@ -358,14 +316,20 @@ done
     }));
     brain.start().await.expect("brain starts");
     let runner = TurnRunner::with_max_rounds(brain, dir.path(), 3);
-    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![]));
+    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
+        tool_calls_result(&[("legacy_rpc_tool", serde_json::json!({}))]),
+    ]));
 
-    let err = runner
+    // Loop failures degrade gracefully; the trace line records the error.
+    let reply = runner
         .run_turn("hello", &route_result(), "cli", "", caller.clone())
         .await
-        .expect_err("prepare fails");
+        .expect("turn degrades");
 
-    assert!(err.to_string().contains("boom"), "{err}");
+    assert!(
+        reply.contains("I hit a problem reaching the model"),
+        "{reply}"
+    );
     let trace_path = dir.path().join("personal").join("logs").join("trace.jsonl");
     let line = std::fs::read_to_string(&trace_path).expect("trace written");
     let record: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
@@ -377,7 +341,7 @@ done
 #[tokio::test]
 async fn successful_turns_write_a_trace_line_with_the_routing_fields() {
     let dir = tempfile::tempdir().unwrap();
-    let (runner, _methods) = started_runner(dir.path(), agent_prepare(), &[]).await;
+    let (runner, _methods) = started_runner(dir.path(), &[]).await;
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
         final_result("ok"),
     ]));
@@ -393,10 +357,102 @@ async fn successful_turns_write_a_trace_line_with_the_routing_fields() {
     assert_eq!(record["channel"], "telegram");
     assert_eq!(record["scope"], "telegram-42");
     assert_eq!(record["tier"], 0);
-    assert_eq!(record["model"], "claude-cli:fake");
+    // The model comes from the local tier selection (config default).
+    assert_eq!(record["model"], "claude-cli:opus");
     assert_eq!(record["provider"], "fake");
     assert_eq!(record["error"], serde_json::Value::Null);
     assert!(record["duration_ms"].as_f64().unwrap() >= 0.0);
+}
+
+// --- pending commands (confirm / cancel), now matched locally ---
+
+#[tokio::test]
+async fn a_late_confirm_is_caught_by_the_prepare_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    // The MCP server (a separate process) queued an action before the turn.
+    let store = crate::tools::pending_store::PendingActionStore::new(dir.path());
+    store
+        .add(
+            "current_time",
+            serde_json::json!({}),
+            "for the test",
+            "",
+            "cli",
+            "",
+            "",
+        )
+        .unwrap();
+    let (runner, methods) = started_runner(dir.path(), &[]).await;
+    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![]));
+
+    let reply = runner
+        .run_turn("confirm 1", &route_result(), "cli", "", caller.clone())
+        .await
+        .expect("turn succeeds");
+
+    assert!(reply.contains("Executed pending action #1"), "{reply}");
+    assert!(reply.contains("current_time"), "{reply}");
+    // No model call, no leaf RPC.
+    assert!(read_log(&methods).await.is_empty());
+    assert!(caller.recorded_calls().is_empty());
+    assert!(store.list().is_empty());
+}
+
+#[tokio::test]
+async fn casual_words_never_touch_queued_actions() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = crate::tools::pending_store::PendingActionStore::new(dir.path());
+    store
+        .add(
+            "current_time",
+            serde_json::json!({}),
+            "for the test",
+            "",
+            "cli",
+            "",
+            "",
+        )
+        .unwrap();
+    let (runner, _methods) = started_runner(dir.path(), &[]).await;
+    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
+        final_result("yes, sure"),
+    ]));
+
+    // A bare "yes" is chat, not a confirmation.
+    let reply = runner
+        .run_turn("yes", &route_result(), "cli", "", caller.clone())
+        .await
+        .expect("turn succeeds");
+    assert_eq!(reply, "yes, sure");
+    assert_eq!(store.list().len(), 1);
+}
+
+#[tokio::test]
+async fn cancel_discards_a_queued_action() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = crate::tools::pending_store::PendingActionStore::new(dir.path());
+    store
+        .add(
+            "shell",
+            serde_json::json!({"command": "rm it"}),
+            "risky",
+            "",
+            "cli",
+            "",
+            "",
+        )
+        .unwrap();
+    let (runner, _methods) = started_runner(dir.path(), &[]).await;
+    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![]));
+
+    let reply = runner
+        .run_turn("cancel 1", &route_result(), "cli", "", caller.clone())
+        .await
+        .expect("turn succeeds");
+
+    assert!(reply.contains("Cancelled pending action #1"), "{reply}");
+    assert!(store.list().is_empty());
+    assert!(caller.recorded_calls().is_empty());
 }
 
 #[test]

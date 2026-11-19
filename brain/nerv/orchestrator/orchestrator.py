@@ -19,11 +19,12 @@ from typing import Any
 
 import httpx
 
-from nerv.config import get_workspace_root
+# Registration side effect: the capability registry pulls in the builtin
+# tools (including evolution/productivity) on import.
+from nerv.capabilities import capability_registry  # noqa: F401
+from nerv.config import get_tier_models, get_workspace_root
 from nerv.memory.manager import scope_for, use_scope
-from nerv.models import RouteResult
 from nerv.orchestrator.registry import AgentDefinition, AgentRegistry
-from nerv.orchestrator.runtime_policy import build_system_prompt
 from nerv.proactive import ProactiveMonitor
 from nerv.security import (
     PendingActionStore,
@@ -31,7 +32,6 @@ from nerv.security import (
     confirmation_reason,
     executing_confirmed,
 )
-from nerv.skills.registry import SkillRegistry
 from nerv.workflows.registry import ReviewQueue, WorkflowRegistry
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,6 @@ class Orchestrator:
         self._project_root = project_root
         self.registry = AgentRegistry(project_root)
         self.workflow_registry = WorkflowRegistry(project_root)
-        self.skill_registry = SkillRegistry(project_root)
         self.review_queue = ReviewQueue(project_root)
         self.base_url = os.environ.get("NERV_OLLAMA_URL", DEFAULT_OLLAMA_URL)
         self._client = httpx.AsyncClient(timeout=OLLAMA_TIMEOUT)
@@ -73,9 +72,8 @@ class Orchestrator:
     ) -> str | None:
         """Handle ``confirm <id>`` / ``cancel <id>`` without any routing.
 
-        Returns the reply, or None when ``message`` is not a pending-action
-        command for this scope (the caller then routes it normally). The
-        trace line is written by the Rust facade, which owns the timing.
+        Kept for python-side callers (the workflow executor's approval flow);
+        the turn path handles pending commands in Rust.
         """
         scope = scope_for(channel, sender)
         with use_scope(scope):
@@ -84,97 +82,60 @@ class Orchestrator:
             )
             return reply or None
 
-    async def prepare_turn(
+    def queue_notifications(self, notifications: list[str]) -> None:
+        """Accept background alerts from the Rust turn loop so the heartbeat
+        drain delivers them, exactly as the old finish_turn RPC did."""
+        self._pending_notifications.extend(notifications or [])
+
+    async def try_workflow_fallback(
         self,
         message: str,
-        route_result: RouteResult,
-        channel: str = "",
-        sender: str = "",
+        tier: int,
+        model: str,
+        agent_data: dict[str, Any],
+        scope: str = "",
     ) -> dict[str, Any]:
-        """Everything before the model call, for the Rust turn loop.
+        """The Rust prepare stage's fallback-workflow gate (RPC wrapper).
 
-        Returns a status dict: pending/review/direct/workflow_fallback carry a
-        reply (no model call); "agent" carries the agent, model, assembled
-        messages, tool schemas and the pending-action snapshot so the Rust
-        loop drives the model call itself.
+        The WorkflowExecutor is still python; the Rust prepare stage calls
+        this when the selected model is unavailable. An empty reply means no
+        fallback is needed or available (drop to the tier-0 model).
         """
-        scope = scope_for(channel, sender)
-        with use_scope(scope):
-            # confirm/cancel and review commands never reach a model call; a
-            # late confirm is caught here too (one may have been queued by the
-            # MCP server since check_pending ran).
-            pending_response = await self._handle_pending_action_command(
-                message, sender=sender, channel=channel
-            )
-            if pending_response:
-                # The facade remembers the turn (memory is rust-owned now).
-                return {"status": "pending", "reply": pending_response}
+        agent = AgentDefinition(
+            name=agent_data.get("name", "General"),
+            description=agent_data.get("description", ""),
+            tags=agent_data.get("tags", []),
+            model_tier=agent_data.get("model_tier", [0]),
+            system_prompt=agent_data.get("system_prompt", ""),
+            tools=agent_data.get("tools", []),
+            max_context_tokens=agent_data.get("max_context_tokens", 4000),
+            summary_strategy=agent_data.get("summary_strategy", "rolling"),
+            created_by=agent_data.get("created_by", "preset"),
+        )
+        with use_scope(scope or "default"):
+            reply = await self._try_workflow_fallback(agent, message, tier, model)
+            return {"reply": reply or ""}
 
-            review_response = self._handle_review_queue_command(message)
-            if review_response:
-                return {"status": "review", "reply": review_response}
+    async def execute_pending_record(
+        self,
+        action_id: int,
+        tool_name: str = "",
+        arguments: dict[str, Any] | None = None,
+        justification: str = "",
+    ) -> dict[str, Any]:
+        """Execute one confirmed action for the Rust pending flow (RPC wrapper).
 
-            # If the router already provided a direct reply, use it
-            if route_result.reply:
-                return {"status": "direct", "reply": route_result.reply}
-
-            # Find the matching agent, or manufacture one
-            agent = await self._find_agent(route_result, message)
-            logger.info(
-                "Dispatching to agent '%s' (intent=%s, tier=%d)",
-                agent.name,
-                route_result.intent,
-                route_result.model_tier,
-            )
-
-            # Select model based on tier
-            model = self._select_model(route_result.model_tier)
-
-            # ── Fallback Workflow Gate ──
-            # For tier >= 1: if the selected model is unavailable, attempt to
-            # fulfil the request via a user-configured fallback workflow.
-            if route_result.model_tier >= 1:
-                fallback_response = await self._try_workflow_fallback(
-                    agent, message, route_result.model_tier, model
-                )
-                if fallback_response is not None:
-                    return {
-                        "status": "workflow_fallback",
-                        "reply": fallback_response,
-                    }
-
-            # Build tools payload if agent has any
-            tools_schemas = None
-            if agent.tools:
-                from nerv.capabilities import capability_registry
-
-                tools_schemas = capability_registry.get_schemas(agent.tools)
-
-            # Actions already waiting before this turn; anything new afterwards
-            # was queued during it (possibly by the MCP server process).
-            known_pending = [
-                asdict(a) for a in self._visible_pending_actions(sender, channel)
-            ]
-
-            # Memory lives in Rust now: the facade persists the user message,
-            # assembles the prompt window (facts, summaries, budgeted history)
-            # and needs the prompt parts from here.
-            return {
-                "status": "agent",
-                "agent": {
-                    "name": agent.name,
-                    "tools": list(agent.tools),
-                    "system_prompt": build_system_prompt(agent),
-                    "max_context_tokens": agent.max_context_tokens,
-                },
-                "model": model,
-                "catalogs": [
-                    self.workflow_registry.render_catalog(agent),
-                    self.skill_registry.render_catalog(agent),
-                ],
-                "tools_schemas": tools_schemas,
-                "known_pending": known_pending,
-            }
+        Python-only tools confirmed by the user run here; the record is
+        rebuilt from the RPC payload so no store round trip is needed.
+        """
+        record = PendingRecord(
+            id=action_id,
+            tool_name=tool_name,
+            arguments=arguments or {},
+            justification=justification,
+        )
+        content = await self._execute_pending_action(record)
+        return {"content": content}
 
     async def run_tool(
         self,
@@ -188,7 +149,6 @@ class Orchestrator:
 
         Mirrors the per-tool-call block of the old `_call_model`.
         """
-        from nerv.capabilities import capability_registry
 
         resolution = capability_registry.resolve(name)
         if not resolution:
@@ -246,9 +206,8 @@ class Orchestrator:
         known_pending: list[dict[str, Any]] | None = None,
         notifications: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Finalize a turn for the Rust loop: surface pendings queued during
-        it and merge background alerts. Memory append and the summary
-        backfill happen in Rust."""
+        """Deprecated wrapper: finalization now runs in Rust. Kept only for
+        in-process callers until the sidecar retires."""
         known_ids = {int(item["id"]) for item in (known_pending or []) if "id" in item}
         final_reply, pending_created = self._append_new_pending(
             reply, known_ids, sender, channel
@@ -345,47 +304,14 @@ class Orchestrator:
         lines.append('Reply "confirm <id>" to run one, or "cancel <id>" to discard it.')
         return response + "\n".join(lines), True
 
-    async def _find_agent(
-        self, route_result: RouteResult, message_hint: str
-    ) -> AgentDefinition:
-        """Find the best matching agent for the routing result, or create one if missing."""
-        agent = self.registry.find_by_type(route_result.agent_type)
-        if agent:
-            return agent
-
-        logger.info(
-            "Agent '%s' not found. Manufacturing via AgentFactory...",
-            route_result.agent_type,
-        )
-
-        # Avoid circular import at top level
-        from nerv.orchestrator.factory import AgentFactory
-
-        factory = AgentFactory(self._project_root)
-        # The user's original message is a hint for persona creation
-        new_agent = await factory.create_agent(route_result.agent_type, message_hint)
-
-        if new_agent:
-            # Hot-reload the new agent into memory
-            self.registry._agents[new_agent.name] = new_agent
-            logger.info(
-                "Successfully birthed and registered new expert: '%s'", new_agent.name
-            )
-            return new_agent
-
-        logger.warning(
-            "AgentFactory failed for type '%s', using default general fallback",
-            route_result.agent_type,
-        )
-        return self.registry.get_default()
-
     def _select_model(self, tier: int) -> str:
-        """Select a provider-prefixed model string for a tier (from config)."""
-        from nerv.config import get_tier_models
+        """Select a provider-prefixed model string for a tier (from config).
 
+        Shared with the python WorkflowExecutor; the turn path selects models
+        in Rust.
+        """
         tier_models = get_tier_models(self._project_root)
         model = tier_models.get(tier, tier_models[0])
-        logger.debug("Selected model for tier %d: %s", tier, model)
         return model
 
     async def _model_available(self, model: str) -> bool:
