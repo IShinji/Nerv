@@ -30,7 +30,6 @@ def test_gate_reads_requires_confirmation_flag(tmp_path: Path) -> None:
         "evolve_agent",
         "rollback_agent",
         "shell",
-        "send_email",
     ],
 )
 def test_dangerous_tools_are_flagged(name: str) -> None:

@@ -258,7 +258,6 @@ done
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        std::env::set_var("NERV_CONFIG", &cfg);
 
         // A user-configured browser-tagged workflow serves as the fallback.
         std::fs::create_dir_all(dir.path().join("personal/workflows")).unwrap();

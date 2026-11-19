@@ -39,11 +39,4 @@ def test_notes_write_read_list() -> None:
 def test_capabilities_resolve_to_productivity_tools() -> None:
     assert capability_registry.resolve("calendar.add").provider_name == "calendar_add"
     assert capability_registry.resolve("notes.write").provider_name == "note_write"
-    assert capability_registry.resolve("email.send").provider_name == "send_email"
-
-
-@pytest.mark.asyncio
-async def test_send_email_without_provider_degrades_gracefully() -> None:
-    result = await productivity.send_email("a@b.com", "Hi", "Body")
-    assert result.is_error
-    assert "No email provider is configured" in result.content
+    # email.send moved to the rust registry (native send_email).

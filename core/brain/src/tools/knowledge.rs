@@ -289,3 +289,155 @@ pub fn list_review_queue() -> ToolDefinition {
         },
     }
 }
+
+/// List builtin MCP presets, or render one preset's config snippet.
+pub fn mcp_presets() -> ToolDefinition {
+    ToolDefinition {
+        name: "mcp_presets",
+        description: "Inspect builtin MCP integrations or generate a ready-to-copy config snippet for a known server.",
+        requires_confirmation: false,
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "preset_name": {"type": "string"}
+            },
+            "required": []
+        }),
+        func: |_ctx, args| {
+            let preset_name = args
+                .get("preset_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            Box::pin(async move {
+                use crate::mcp::presets::{
+                    get_builtin_mcp_preset, list_builtin_mcp_presets, render_mcp_preset_snippet,
+                };
+                if preset_name.is_empty() {
+                    let presets = list_builtin_mcp_presets();
+                    if presets.is_empty() {
+                        return ToolResult::ok("No builtin MCP presets are available.");
+                    }
+                    let mut lines = vec!["Builtin MCP presets:".to_string()];
+                    for preset in presets {
+                        let capabilities = if preset.capabilities.is_empty() {
+                            "none".to_string()
+                        } else {
+                            preset.capabilities.join(", ")
+                        };
+                        lines.push(format!("- {}: {}", preset.name, preset.description));
+                        lines.push(format!("  Capabilities: {capabilities}"));
+                        lines.push(format!("  Source: {}", preset.source_url));
+                    }
+                    return ToolResult::ok(lines.join("\n"));
+                }
+                let Some(preset) = get_builtin_mcp_preset(&preset_name) else {
+                    return ToolResult::error(format!("Unknown MCP preset: {preset_name}"));
+                };
+                let mut lines = vec![
+                    format!("Preset: {}", preset.name),
+                    preset.description.to_string(),
+                    format!("Source: {}", preset.source_url),
+                ];
+                if !preset.default_action_map.is_empty() {
+                    let mut mapped: Vec<String> = preset
+                        .default_action_map
+                        .iter()
+                        .map(|(action, tool)| format!("{action}->{tool}"))
+                        .collect();
+                    mapped.sort();
+                    lines.push(format!("Mapped actions: {}", mapped.join(", ")));
+                }
+                if !preset.notes.is_empty() {
+                    lines.push("Notes:".to_string());
+                    lines.extend(preset.notes.iter().map(|n| format!("- {n}")));
+                }
+                lines.push("Config snippet:".to_string());
+                lines.push(render_mcp_preset_snippet(preset, "chrome"));
+                ToolResult::ok(lines.join("\n"))
+            })
+        },
+    }
+}
+
+/// Report MCP server configuration and health.
+pub fn mcp_status() -> ToolDefinition {
+    ToolDefinition {
+        name: "mcp_status",
+        description: "Inspect configured MCP servers, their health, bound capabilities, and available remote tools. Optionally pass a specific server name.",
+        requires_confirmation: false,
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "server_name": {"type": "string"}
+            },
+            "required": []
+        }),
+        func: |ctx, args| {
+            let server_name = args
+                .get("server_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let project_root = ctx.project_root.clone();
+            Box::pin(async move {
+                let manager = crate::mcp::get_mcp_manager(&project_root);
+                let statuses = match manager.lock().await.get_status(&server_name).await {
+                    Ok(statuses) => statuses,
+                    Err(e) => return ToolResult::error(e.to_string()),
+                };
+                if statuses.is_empty() {
+                    return ToolResult::ok("No MCP servers are configured.");
+                }
+                let mut lines = vec!["MCP server status:".to_string()];
+                for status in statuses {
+                    let mut health = if status.healthy { "healthy" } else { "unhealthy" };
+                    if !status.enabled {
+                        health = "disabled";
+                    }
+                    lines.push(format!("- {}: {health}", status.name));
+                    lines.push(format!("  Transport: {}", status.transport));
+                    let command = if status.command.is_empty() {
+                        "(unset)"
+                    } else {
+                        &status.command
+                    };
+                    lines.push(format!("  Command: {command}"));
+                    let args = if status.args.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        status.args.join(" ")
+                    };
+                    lines.push(format!("  Args: {args}"));
+                    if !status.preset.is_empty() {
+                        lines.push(format!("  Preset: {}", status.preset));
+                    }
+                    let capabilities = if status.capabilities.is_empty() {
+                        "none".to_string()
+                    } else {
+                        status.capabilities.join(", ")
+                    };
+                    lines.push(format!("  Capabilities: {capabilities}"));
+                    if !status.action_map.is_empty() {
+                        let mut mapped: Vec<String> = status
+                            .action_map
+                            .iter()
+                            .map(|(a, t)| format!("{a}->{t}"))
+                            .collect();
+                        mapped.sort();
+                        lines.push(format!("  Action map: {}", mapped.join(", ")));
+                    }
+                    if !status.available_tools.is_empty() {
+                        lines.push(format!("  Remote tools: {}", status.available_tools.join(", ")));
+                    }
+                    if !status.error.is_empty() {
+                        lines.push(format!("  Error: {}", status.error));
+                    }
+                }
+                ToolResult::ok(lines.join("\n"))
+            })
+        },
+    }
+}

@@ -6,9 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
+use serde_json::{json, Value};
 
-use super::registry::{ToolDefinition, ToolResult};
+use super::registry::{ToolContext, ToolDefinition, ToolResult};
 
 fn calendar_path(project_root: &Path) -> PathBuf {
     let path = project_root.join("personal").join("calendar.ics");
@@ -311,5 +311,66 @@ pub fn note_read() -> ToolDefinition {
                 }
             })
         },
+    }
+}
+
+/// Send an email through a configured MCP email server (capability
+/// `email.send`); degrades gracefully when none is configured.
+pub fn send_email() -> ToolDefinition {
+    ToolDefinition {
+        name: "send_email",
+        description: "Send an email. Requires a configured email MCP server.",
+        requires_confirmation: true,
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "to": {"type": "string"},
+                "subject": {"type": "string"},
+                "body": {"type": "string"}
+            },
+            "required": ["to", "subject", "body"]
+        }),
+        func: |ctx, args| {
+            let ctx = ToolContext {
+                project_root: ctx.project_root.clone(),
+                workspace_root: ctx.workspace_root.clone(),
+                scope: ctx.scope.clone(),
+                brain: ctx.brain.clone(),
+                confirmed: ctx.confirmed.clone(),
+            };
+            let args = args.clone();
+            Box::pin(async move { send_email_impl(&ctx, &args).await })
+        },
+    }
+}
+
+async fn send_email_impl(ctx: &ToolContext, args: &Value) -> ToolResult {
+    let manager = crate::mcp::get_mcp_manager(&ctx.project_root);
+    let mut manager = manager.lock().await;
+    if !manager.has_capability_binding("email.send") {
+        return ToolResult::error(
+            "No email provider is configured. Add an email MCP server under \
+             `mcp.servers` in config (bound to capability `email.send`) to \
+             enable sending. Drafted message was not sent.",
+        );
+    }
+    let arguments = json!({
+        "to": args.get("to").and_then(|v| v.as_str()).unwrap_or(""),
+        "subject": args.get("subject").and_then(|v| v.as_str()).unwrap_or(""),
+        "body": args.get("body").and_then(|v| v.as_str()).unwrap_or(""),
+    });
+    match manager
+        .invoke_capability_action("email.send", "send", &arguments)
+        .await
+    {
+        Ok(Some(result)) => ToolResult {
+            content: result.content,
+            is_error: result.is_error,
+            is_pending: false,
+        },
+        Ok(None) => {
+            ToolResult::error("The configured email server could not handle the send action.")
+        }
+        Err(e) => ToolResult::error(format!("Email provider failed: {e}")),
     }
 }

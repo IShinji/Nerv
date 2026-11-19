@@ -21,7 +21,7 @@ async def _list_tools(tmp_path: Path) -> dict[str, types.Tool]:
 
 async def test_confirmable_tools_offer_justification(tmp_path: Path) -> None:
     tools = await _list_tools(tmp_path)
-    for name in ("shell", "send_email", "write_file_full", "desktop_control"):
+    for name in ("shell", "screenshot", "write_file_full", "desktop_control"):
         props = tools[name].inputSchema["properties"]
         assert props["justification"]["type"] == "string", name
         assert "justification" not in tools[name].inputSchema.get("required", [])
