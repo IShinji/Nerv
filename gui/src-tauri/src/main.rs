@@ -4,7 +4,6 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use nerv_brain::handle::BrainHandle;
 use serde::Serialize;
@@ -53,7 +52,7 @@ async fn send_message(state: State<'_, AppState>, text: String) -> Result<String
 }
 
 #[tauri::command]
-async fn check_heartbeat(state: State<'_, AppState>) -> Result<String, String> {
+async fn check_heartbeat() -> Result<String, String> {
     // The heartbeat drain is native now: surface queued background alerts.
     Ok(nerv_brain::proactive::drain_notifications().join("\n"))
 }
@@ -125,9 +124,11 @@ fn resolve_project_root(env_root: Option<OsString>, cwd: Option<PathBuf>) -> Pat
     PathBuf::from("..")
 }
 
-/// PATH for the brain child. An app started from Finder inherits a minimal
-/// PATH, so `uv`/`python` installed by Homebrew, uv or rustup would not be
-/// found; prepend the usual user bin dirs (without duplicating entries).
+/// PATH for a child process. An app started from Finder inherits a minimal
+/// PATH, so Homebrew/uv/rustup binaries would not be found; prepend the
+/// usual user bin dirs (without duplicating entries). Retained with its
+/// tests after the python sidecar retired.
+#[allow(dead_code)]
 fn child_path(existing: Option<&str>, home: Option<&Path>) -> String {
     let mut dirs: Vec<String> = vec!["/opt/homebrew/bin".into(), "/usr/local/bin".into()];
     if let Some(home) = home {
@@ -214,16 +215,6 @@ mod tests {
     }
 
     #[test]
-    fn spawn_config_sets_path_env() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let spawn = brain_spawn_config(dir.path());
-        assert!(spawn
-            .env
-            .iter()
-            .any(|(k, v)| k == "PATH" && v.starts_with("/opt/homebrew/bin")));
-    }
-
-    #[test]
     fn extract_field_reads_a_quoted_value() {
         let yaml = "name: \"Coder\"\ndescription: 'Writes code'\n";
         assert_eq!(extract_field(yaml, "name").as_deref(), Some("Coder"));
@@ -237,51 +228,5 @@ mod tests {
     fn extract_field_ignores_missing_and_empty_values() {
         assert_eq!(extract_field("name:\n", "name"), None);
         assert_eq!(extract_field("other: 1\n", "name"), None);
-    }
-
-    #[test]
-    fn brain_spawn_config_falls_back_when_config_is_absent() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let spawn = brain_spawn_config(dir.path());
-
-        assert_eq!(spawn.command, "uv run python");
-        assert_eq!(spawn.args, vec!["-m", "nerv"]);
-        assert_eq!(spawn.working_dir, dir.path().join("brain"));
-        assert!(spawn
-            .env
-            .iter()
-            .any(|(k, v)| k == "NERV_PROJECT_ROOT" && v == &dir.path().to_string_lossy()));
-    }
-
-    #[test]
-    fn brain_spawn_config_follows_the_shared_config_file() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(dir.path().join("core")).unwrap();
-        std::fs::write(
-            dir.path().join("core").join("config.default.yaml"),
-            r#"
-channels:
-  cli:
-    enabled: true
-models:
-  router:
-    model: "claude-cli:opus"
-brain:
-  python_command: "python3"
-  module: "nerv"
-  call_timeout_secs: 42
-"#,
-        )
-        .unwrap();
-
-        let spawn = brain_spawn_config(dir.path());
-
-        // The GUI must honor the same interpreter the gateway would use.
-        assert_eq!(spawn.command, "python3");
-        assert_eq!(spawn.call_timeout, Duration::from_secs(42));
-        assert!(spawn
-            .env
-            .iter()
-            .any(|(k, v)| k == "NERV_MODEL_TIER0" && v == "claude-cli:opus"));
     }
 }
