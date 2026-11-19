@@ -187,32 +187,6 @@ class Orchestrator:
             self._pending_notifications.extend(notifications)
         return {"reply": final_reply, "pending_created": pending_created}
 
-    async def browser_mcp_attempt(self, action: str, arguments: dict) -> dict | None:
-        """Try the configured MCP browser provider for one browser action.
-
-        The rust `browser_interactive` tool calls this first; None means no
-        MCP browser provider handled the action and the rust chrome fallback
-        should run.
-        """
-        from nerv.ipc import _get_project_root
-        from nerv.mcp import get_mcp_manager
-
-        try:
-            manager = await get_mcp_manager(_get_project_root())
-            result = await manager.invoke_capability_action(
-                "browser.interactive", action, arguments
-            )
-        except Exception as exc:
-            logger.warning(
-                "browser_interactive MCP path failed for action %s: %s",
-                action,
-                exc,
-            )
-            return None
-        if result is None:
-            return None
-        return {"content": result.content, "is_error": result.is_error}
-
     async def complete_turn(
         self,
         messages: list[dict[str, Any]],

@@ -30,6 +30,11 @@ pub struct NervConfig {
     pub security: SecurityConfig,
     #[serde(default)]
     pub delegation: DelegationConfig,
+    /// Raw MCP provider config (`mcp.servers.*`), normalized by the brain's
+    /// MCP manager (presets, action maps). Untyped on purpose — the shape is
+    /// owned by nerv-brain.
+    #[serde(default)]
+    pub mcp: serde_json::Value,
 }
 
 /// Delegation of coding tasks to native coding-agent CLIs (PRD v2 E1).

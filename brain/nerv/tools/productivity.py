@@ -156,34 +156,3 @@ def note_read(title: str) -> ToolResult:
     if not path.exists():
         return ToolResult(content=f"No note titled '{title}'.", is_error=True)
     return ToolResult(content=path.read_text(encoding="utf-8"))
-
-
-@registry.register(
-    name="send_email",
-    description="Send an email. Requires a configured email MCP server.",
-    requires_confirmation=True,
-)
-async def send_email(to: str, subject: str, body: str) -> ToolResult:
-    """Send email via a configured MCP server (MCP-first, graceful fallback)."""
-    from nerv.mcp.manager import get_mcp_manager
-
-    manager = await get_mcp_manager(_get_project_root())
-    if not manager.has_capability_binding("email.send"):
-        return ToolResult(
-            content=(
-                "No email provider is configured. Add an email MCP server under "
-                "`mcp.servers` in config (bound to capability `email.send`) to "
-                "enable sending. Drafted message was not sent."
-            ),
-            is_error=True,
-        )
-
-    result = await manager.invoke_capability_action(
-        "email.send", "send", {"to": to, "subject": subject, "body": body}
-    )
-    if result is None:
-        return ToolResult(
-            content="The configured email server could not handle the send action.",
-            is_error=True,
-        )
-    return result

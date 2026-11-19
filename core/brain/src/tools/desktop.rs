@@ -489,28 +489,20 @@ async fn browser_interactive_impl(ctx: &ToolContext, args: &Value) -> ToolResult
     let arguments = arguments.unwrap_or_else(|| json!({}));
     let normalized = action.trim().to_lowercase();
 
-    // MCP-first: the MCP manager is still python; give it the first shot via
-    // the RPC and fall back to the native chrome control when unavailable.
-    if let Some(brain) = ctx.brain.as_ref() {
-        if let Ok(attempt) = brain
-            .call(
-                "browser_mcp_attempt",
-                json!({
-                    "action": normalized,
-                    "arguments": arguments,
-                }),
-            )
-            .await
-        {
-            // python returns null when no MCP browser provider handled it.
-            if !attempt.is_null() {
-                return ToolResult {
-                    content: attempt["content"].as_str().unwrap_or("").to_string(),
-                    is_error: attempt["is_error"].as_bool().unwrap_or(false),
-                    is_pending: false,
-                };
-            }
-        }
+    // MCP-first: a configured MCP browser provider gets the first shot; the
+    // native chrome control is the fallback (the manager is native now).
+    let manager = crate::mcp::get_mcp_manager(&ctx.project_root);
+    let attempt = manager
+        .lock()
+        .await
+        .invoke_capability_action("browser.interactive", &normalized, &arguments)
+        .await;
+    if let Ok(Some(result)) = attempt {
+        return ToolResult {
+            content: result.content,
+            is_error: result.is_error,
+            is_pending: false,
+        };
     }
 
     chrome_browser_impl(ctx, &normalized, &arguments).await

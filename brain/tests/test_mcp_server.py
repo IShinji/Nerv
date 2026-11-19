@@ -22,7 +22,7 @@ async def test_server_exposes_productivity_tools(tmp_path: Path) -> None:
     handler = server.request_handlers[types.ListToolsRequest]
     res = await handler(types.ListToolsRequest(method="tools/list"))
     names = {t.name for t in res.root.tools}
-    assert {"calendar_add", "note_write", "send_email", "evolve_agent"} <= names
+    assert {"calendar_add", "note_write", "evolve_agent"} <= names
 
 
 @pytest.mark.asyncio
