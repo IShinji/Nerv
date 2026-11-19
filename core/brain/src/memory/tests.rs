@@ -765,28 +765,29 @@ async fn concurrent_backfills_summarise_each_day_once() {
 
 // --- hybrid retrieval (PRD v2 E10) ---
 
-/// Deterministic char-hash embedder: same text always gets the same vector,
-/// so the test can assert stable rankings without a real model.
-struct CharHashEmbedder;
+/// Deterministic embedder: anything containing "apple" gets vector A,
+/// everything else vector B — so the test can assert stable rankings
+/// without a real model.
+struct TopicEmbedder;
 
-impl Embedder for CharHashEmbedder {
+impl Embedder for TopicEmbedder {
     fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, super::embeddings::EmbedError> {
         Ok(texts
             .iter()
             .map(|text| {
-                let mut v = vec![0.0f32; 8];
-                for (i, c) in text.chars().enumerate() {
-                    v[(i + c as usize) % 8] += 1.0;
+                if text.to_lowercase().contains("apple") {
+                    vec![1.0, 0.0, 0.0, 0.0]
+                } else {
+                    vec![0.0, 1.0, 0.0, 0.0]
                 }
-                v
             })
             .collect())
     }
     fn model_name(&self) -> &str {
-        "char-hash"
+        "topic"
     }
     fn dim(&self) -> u32 {
-        8
+        4
     }
 }
 
@@ -794,7 +795,7 @@ impl Embedder for CharHashEmbedder {
 fn hybrid_search_fuses_keyword_and_vector_paths() {
     let tmp = tempfile::tempdir().unwrap();
     let manager =
-        MemoryManager::new(tmp.path(), DEFAULT_SCOPE).with_embedder(Arc::new(CharHashEmbedder));
+        MemoryManager::new(tmp.path(), DEFAULT_SCOPE).with_embedder(Arc::new(TopicEmbedder));
     manager.append_message("user", "I love eating apples every day");
     manager.append_message("user", "量子计算机需要极低温环境运行");
 
