@@ -472,7 +472,8 @@ pub fn browser_interactive() -> ToolDefinition {
                 workspace_root: ctx.workspace_root.clone(),
                 scope: ctx.scope.clone(),
                 brain: ctx.brain.clone(),
-            };
+            confirmed: None,
+        };
             let args = args.clone();
             Box::pin(async move { browser_interactive_impl(&ctx, &args).await })
         },
@@ -577,7 +578,8 @@ pub fn chrome_browser() -> ToolDefinition {
                         workspace_root: PathBuf::new(),
                         scope: String::new(),
                         brain: None,
-                    },
+            confirmed: None,
+        },
                     &normalized,
                     &arguments,
                 )

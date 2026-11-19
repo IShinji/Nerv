@@ -122,7 +122,8 @@ impl TaskRunStore {
             updated_at: now_secs(),
             schema_version: CURRENT_SCHEMA_VERSION,
         };
-        self.save(&run);
+        let mut run = run;
+        self.save(&mut run);
         run
     }
 
@@ -160,11 +161,12 @@ impl TaskRunStore {
         }
         match std::fs::read_to_string(path) {
             Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-                Ok(data) => data
-                    .get("schema_version")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(1)
-                    > CURRENT_SCHEMA_VERSION,
+                Ok(data) => {
+                    data.get("schema_version")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(1)
+                        > CURRENT_SCHEMA_VERSION
+                }
                 Err(_) => false,
             },
             Err(_) => false,
@@ -200,9 +202,9 @@ impl TaskRunStore {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                    if let Some(run) = self.get(
-                        path.file_stem().unwrap_or_default().to_string_lossy().as_str(),
-                    ) {
+                    if let Some(run) =
+                        self.get(&path.file_stem().unwrap_or_default().to_string_lossy())
+                    {
                         if run.status == RUNNING {
                             runs.push(run);
                         }
@@ -216,6 +218,7 @@ impl TaskRunStore {
 
 /// Whether `data` was written by a newer version; logs an error if so.
 /// Shared with `tools::pending_store` (same state-version contract).
+#[allow(dead_code)]
 pub(crate) fn is_newer_schema(data: &serde_json::Value, path: &Path) -> bool {
     let version = data
         .get("schema_version")

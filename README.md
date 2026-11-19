@@ -72,7 +72,7 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 | **Agent memory** — conversation history partitioned by day *and* by sender/channel scope (JSON Lines, append-only, file-locked across processes), a long-term `facts.md` shared by the owner across channels, and a context manager that assembles a token-budgeted window (system prompt + facts + newest-first history, truncated to fit) rather than replaying full history | ✅ Built | `brain/nerv/memory/` |
 | **Context summarization** — past days outside the recency window are kept as rolling summaries, generated off the reply path | ✅ Built | `brain/nerv/memory/summarizer.py` |
 | **Pluggable model backends** — provider-prefix scheme (`claude-cli:` / `local:` / `litellm:`) so swapping providers is a config edit, not a code change | ✅ Built | `brain/nerv/llm/` |
-| **Skills / Workflows** — markdown skill guidelines and YAML workflows run by a native executor | ✅ Built | `brain/nerv/skills/`, `brain/nerv/workflows/` |
+| **Skills / Workflows** — markdown skill guidelines and YAML workflows run by a native executor (once-per-run approval for gated steps, resumable runs) | ✅ Built (executor migrated to Rust) | `core/brain/src/skills.rs`, `core/brain/src/workflows/` |
 | **Gateway** — Rust daemon, channel adapters, IPC to the brain | ✅ Built | `core/` |
 | **GUI** — Tauri desktop shell | 🚧 Early | `gui/` |
 | **Agent evolution** — self-updating agent knowledge with version history and rollback | 🚧 Partial | `brain/nerv/evolution.py` |
@@ -84,8 +84,8 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 
 | Suite | Command | Tests |
 |---|---|---|
-| Brain | `cd brain && uv run pytest` | 231 |
-| Core (Rust) | `cd core && cargo test --workspace` | 219 |
+| Brain | `cd brain && uv run pytest` | 213 |
+| Core (Rust) | `cd core && cargo test --workspace` | 231 |
 | GUI (Rust) | `cd gui/src-tauri && cargo test` | 9 |
 
 CI also enforces `ruff check`, `ruff format --check`, `cargo fmt --check`, and

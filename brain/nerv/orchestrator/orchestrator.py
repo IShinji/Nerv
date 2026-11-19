@@ -24,7 +24,7 @@ import httpx
 from nerv.capabilities import capability_registry  # noqa: F401
 from nerv.config import get_tier_models, get_workspace_root
 from nerv.memory.manager import scope_for, use_scope
-from nerv.orchestrator.registry import AgentDefinition, AgentRegistry
+from nerv.orchestrator.registry import AgentRegistry
 from nerv.proactive import ProactiveMonitor
 from nerv.security import (
     PendingActionStore,
@@ -86,35 +86,6 @@ class Orchestrator:
         """Accept background alerts from the Rust turn loop so the heartbeat
         drain delivers them, exactly as the old finish_turn RPC did."""
         self._pending_notifications.extend(notifications or [])
-
-    async def try_workflow_fallback(
-        self,
-        message: str,
-        tier: int,
-        model: str,
-        agent_data: dict[str, Any],
-        scope: str = "",
-    ) -> dict[str, Any]:
-        """The Rust prepare stage's fallback-workflow gate (RPC wrapper).
-
-        The WorkflowExecutor is still python; the Rust prepare stage calls
-        this when the selected model is unavailable. An empty reply means no
-        fallback is needed or available (drop to the tier-0 model).
-        """
-        agent = AgentDefinition(
-            name=agent_data.get("name", "General"),
-            description=agent_data.get("description", ""),
-            tags=agent_data.get("tags", []),
-            model_tier=agent_data.get("model_tier", [0]),
-            system_prompt=agent_data.get("system_prompt", ""),
-            tools=agent_data.get("tools", []),
-            max_context_tokens=agent_data.get("max_context_tokens", 4000),
-            summary_strategy=agent_data.get("summary_strategy", "rolling"),
-            created_by=agent_data.get("created_by", "preset"),
-        )
-        with use_scope(scope or "default"):
-            reply = await self._try_workflow_fallback(agent, message, tier, model)
-            return {"reply": reply or ""}
 
     async def execute_pending_record(
         self,
@@ -351,74 +322,6 @@ class Orchestrator:
             if vendor.startswith(prefix):
                 return bool(os.environ.get(env_var))
         return False
-
-    async def _try_workflow_fallback(
-        self,
-        agent: "AgentDefinition",
-        user_message: str,
-        tier: int,
-        selected_model: str,
-    ) -> str | None:
-        """Attempt to fulfil a request via a user-configured fallback workflow.
-
-        When the selected model is unavailable (not installed locally or
-        missing API credentials), this method searches for a matching
-        workflow in the user's workflow library and executes it instead.
-        Returns None if no fallback is needed or available.
-        """
-        model_available = await self._model_available(selected_model)
-
-        if model_available:
-            logger.debug(
-                "Model '%s' is available, skipping workflow fallback.", selected_model
-            )
-            return None
-
-        # Model is NOT available → search for a fallback workflow
-        logger.info(
-            "Model '%s' not available for tier %d. Searching for fallback workflow...",
-            selected_model,
-            tier,
-        )
-
-        fallback_wf = None
-
-        # Search workflows relevant to this agent
-        candidates = self.workflow_registry.find_for_agent(agent)
-        for wf in candidates:
-            tags = set(getattr(wf, "tags", []))
-            if "browser" in tags:
-                fallback_wf = wf
-                break
-
-        # Broader search: any workflow tagged with 'browser'
-        if not fallback_wf:
-            for wf in self.workflow_registry.list_workflows():
-                tags = set(getattr(wf, "tags", []))
-                if "browser" in tags:
-                    fallback_wf = wf
-                    break
-
-        if not fallback_wf:
-            logger.warning("No fallback workflow found. Falling back to tier 0 model.")
-            return None
-
-        logger.info("Workflow fallback → '%s' for user request.", fallback_wf.name)
-
-        from nerv.workflows.executor import WorkflowExecutor, WorkflowNeedsApproval
-
-        executor = WorkflowExecutor(self)
-        try:  # the fallback gate does not know the channel/sender here
-            result = await executor.execute(fallback_wf, user_message)
-            return result
-        except WorkflowNeedsApproval as pending:
-            # The user has to approve first: ask, rather than quietly dropping to
-            # a weaker model.
-            return pending.user_message
-        except Exception as e:
-            logger.error("Fallback workflow '%s' failed: %s", fallback_wf.name, e)
-            logger.info("Falling back to tier 0 model after workflow failure.")
-            return None
 
     def _queue_pending_action(
         self,

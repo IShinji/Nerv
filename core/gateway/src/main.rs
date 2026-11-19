@@ -120,7 +120,15 @@ async fn main() -> Result<()> {
     // Targeted notifications (E0): brain `notify` messages flow out through
     // this channel into a pump that routes them by channel + sender.
     let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<NotifyMessage>();
-    brain.set_notify_handler(notify_tx);
+    brain.set_notify_handler(notify_tx.clone());
+    // Rust-side events (workflow progress) reach the same pump (E0 定向通知).
+    nerv_brain::tools::set_notify_sink(std::sync::Arc::new(move |channel, sender, text| {
+        let _ = notify_tx.send(NotifyMessage {
+            channel: channel.to_string(),
+            sender: sender.to_string(),
+            text: text.to_string(),
+        });
+    }));
     brain.start().await?;
     let brain_handle = Arc::new(
         BrainHandle::new(brain.clone(), &project_root).context("loading the router prompts")?,

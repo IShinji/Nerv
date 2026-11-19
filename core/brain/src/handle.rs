@@ -234,11 +234,8 @@ done
     }
 
     #[tokio::test]
-    async fn a_failing_brain_surfaces_its_error() {
+    async fn the_fallback_gate_executes_a_browser_workflow_natively() {
         let dir = tempfile::tempdir().unwrap();
-        // The workflow-fallback gate is the one prepare step that still
-        // calls python: a tier-1 route whose litellm model has no API key
-        // hands over through the RPC, and its failure surfaces.
         // The config loader always reads core/config.default.yaml from the
         // project root first, so stage a minimal one.
         std::fs::create_dir_all(dir.path().join("core")).unwrap();
@@ -255,8 +252,6 @@ done
             "models:\n  tiers:\n    tier1: \"litellm:gpt-4o\"\n",
         )
         .unwrap();
-        // NERV_CONFIG points the config loader at our tier override; the
-        // loader refuses world-readable files, so keep it owner-only.
         let cfg = dir.path().join("config.yaml");
         #[cfg(unix)]
         {
@@ -264,6 +259,15 @@ done
             std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         std::env::set_var("NERV_CONFIG", &cfg);
+
+        // A user-configured browser-tagged workflow serves as the fallback.
+        std::fs::create_dir_all(dir.path().join("personal/workflows")).unwrap();
+        std::fs::write(
+            dir.path().join("personal/workflows/fallback.yaml"),
+            "name: FallbackDemo\ndescription: d\ntags: [browser]\nsteps:\n  - \"web_search nervous systems\"\n",
+        )
+        .unwrap();
+
         let brain = Arc::new(BrainClient::new(fake_brain()));
         brain.start().await.expect("brain starts");
         let handle = BrainHandle::with_parts(
@@ -273,11 +277,20 @@ done
             dir.path(),
         );
 
-        // A code-generation route is tier 1 — the gate applies.
-        let err = handle
+        // The litellm model has no API key: the gate runs the workflow with
+        // the native executor instead of dropping to tier 0. The reply comes
+        // from the workflow run, not the model caller.
+        let result = handle
             .reply("help me debug this python function", "cli", "u")
             .await
-            .expect_err("workflow_fallback errors");
-        assert!(err.to_string().contains("boom"), "{err}");
+            .expect("the fallback run completes");
+        // The executor ran the workflow: its reply names the workflow (a
+        // reasoning step needs the real backend, so offline CI reports the
+        // step failure — either way the run happened, not a model call).
+        let reply = result["reply"].as_str().unwrap_or("");
+        assert!(
+            reply.contains("Step 1 Result") || reply.contains("failed at step 1"),
+            "{reply}"
+        );
     }
 }

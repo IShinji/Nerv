@@ -6,6 +6,7 @@
 //! whose YAML layout is the interface to the python side (the review
 //! approve/reject commands still run there until the orchestrator migrates).
 
+pub mod executor;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};

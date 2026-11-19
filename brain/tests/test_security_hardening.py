@@ -49,31 +49,6 @@ def test_protected_paths_need_confirmation_even_inside_workspace(
     assert is_protected_path(str(tmp_path / "personal"), tmp_path)
 
 
-@pytest.mark.asyncio
-async def test_workflow_tool_step_goes_through_gate(tmp_path: Path) -> None:
-    from nerv.workflows.executor import WorkflowExecutor
-
-    orch = Orchestrator(tmp_path)
-    executor = WorkflowExecutor(orch)
-    tool_def = registry.get_tool("chrome_browser")
-    assert tool_def is not None
-    original = tool_def.func
-    called = {"n": 0}
-
-    async def spy(**kwargs):
-        called["n"] += 1
-        return ToolResult(content="ran")
-
-    tool_def.func = spy
-    try:
-        out = await executor._call_tool_gated(tool_def, {"action": "open_url"})
-    finally:
-        tool_def.func = original
-    assert "ACTION SUSPENDED" in out
-    assert called["n"] == 0
-    assert len(orch._pending_store.list()) == 1
-
-
 # --- file tools -------------------------------------------------------------
 def test_secret_files_unreadable(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("NERV_PROJECT_ROOT", str(tmp_path))
@@ -188,37 +163,6 @@ async def test_pending_sync_tool_runs_off_event_loop(tmp_path: Path) -> None:
 
 
 # --- small bugs -------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_execute_workflow_awaits_orchestrator(tmp_path: Path, monkeypatch):
-    from nerv.tools import knowledge
-    from nerv.workflows.models import WorkflowDefinition
-
-    seen = {}
-
-    class FakeExecutor:
-        def __init__(self, orch, channel="", sender=""):
-            seen["orch"] = orch
-
-        async def execute(self, workflow, inputs):
-            return "done"
-
-    async def fake_get():
-        return "ORCH"
-
-    import nerv.ipc
-    import nerv.workflows.executor as executor_mod
-
-    monkeypatch.setattr(nerv.ipc, "_get_orchestrator", fake_get)
-    monkeypatch.setattr(executor_mod, "WorkflowExecutor", FakeExecutor)
-    wf = WorkflowDefinition(name="w", description="d", steps=["web_search x"])
-    monkeypatch.setattr(
-        "nerv.workflows.registry.WorkflowRegistry.find", lambda self, n: wf
-    )
-    result = await knowledge.execute_workflow("w", "in")
-    assert not result.is_error, result.content
-    assert seen["orch"] == "ORCH"
-
-
 def test_mcp_config_carries_memory_scope(tmp_path: Path) -> None:
     import json
 
