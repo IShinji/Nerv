@@ -223,5 +223,4 @@ mod tests {
             .map(|mut d| d.next().is_none())
             .unwrap_or(true));
     }
-
 }
