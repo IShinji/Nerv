@@ -16,7 +16,10 @@ use crate::memory::MemoryManager;
 const SNIPPET_CHARS: usize = 400;
 
 fn memory(ctx: &ToolContext, scope: &str) -> MemoryManager {
-    MemoryManager::new(&ctx.project_root, scope)
+    let vector = nerv_shared::config::NervConfig::load(&ctx.project_root)
+        .map(|c| c.brain.vector_retrieval)
+        .unwrap_or(false);
+    MemoryManager::manager_for(&ctx.project_root, scope, vector)
 }
 
 pub fn search_memory() -> ToolDefinition {
@@ -60,7 +63,7 @@ fn search_memory_impl(ctx: &ToolContext, args: &Value) -> ToolResult {
     let role = args.get("role").and_then(|v| v.as_str()).unwrap_or("");
 
     let manager = memory(ctx, &ctx.scope);
-    let hits = manager.search_messages(query, limit, since, until, role);
+    let hits = manager.search_messages_hybrid(query, limit, since, until, role);
 
     if hits.is_empty() {
         return ToolResult::ok(format!("No past messages match {query:?}."));

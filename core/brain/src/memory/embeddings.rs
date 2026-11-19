@@ -11,6 +11,8 @@ use std::sync::Mutex;
 pub const DEFAULT_MODEL: &str = "intfloat/multilingual-e5-small";
 /// The vector dimension for the default model.
 pub const DEFAULT_DIM: u32 = 384;
+/// Long-text chunk size for indexing (chars).
+pub const DEFAULT_CHUNK_CHARS: usize = 400;
 
 /// Errors from the embedding pipeline.
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +41,48 @@ pub struct FastembedEmbedder {
     inner: Mutex<fastembed::TextEmbedding>,
     model_name: String,
     dim: u32,
+}
+
+/// An embedder that loads the fastembed model on first use. Construction is
+/// free — the ~470MB model download/session init happens inside the first
+/// `embed` call, so enabling vector retrieval never slows startup.
+pub struct LazyEmbedder {
+    inner: std::sync::OnceLock<Result<FastembedEmbedder, String>>,
+}
+
+impl LazyEmbedder {
+    pub fn new() -> Self {
+        Self {
+            inner: std::sync::OnceLock::new(),
+        }
+    }
+}
+
+impl Default for LazyEmbedder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Embedder for LazyEmbedder {
+    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbedError> {
+        let inner = self
+            .inner
+            .get_or_init(|| FastembedEmbedder::new(None).map_err(|e| e.to_string()));
+        match inner {
+            Ok(embedder) => embedder.embed(texts),
+            Err(e) => Err(EmbedError::Unavailable(e.clone())),
+        }
+    }
+
+    fn model_name(&self) -> &str {
+        // The model is fixed even before the inner embedder exists.
+        DEFAULT_MODEL
+    }
+
+    fn dim(&self) -> u32 {
+        DEFAULT_DIM
+    }
 }
 
 impl FastembedEmbedder {

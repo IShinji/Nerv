@@ -10,6 +10,7 @@ pub mod context;
 pub mod embeddings;
 pub mod manager;
 pub mod models;
+pub mod retrieval;
 pub mod summarizer;
 pub mod vector_store;
 
@@ -17,8 +18,9 @@ pub mod vector_store;
 mod tests;
 
 pub use context::{estimate_tokens as context_estimate_tokens, AgentPrompt, ContextManager};
-pub use embeddings::{chunk_text, cosine_similarity, Embedder, FastembedEmbedder};
+pub use embeddings::{chunk_text, cosine_similarity, Embedder, FastembedEmbedder, LazyEmbedder};
 pub use manager::{MemoryManager, SearchHit, DEFAULT_SCOPE};
 pub use models::{DailyConversation, StoredChatMessage};
+pub use retrieval::{doc_id, parse_doc_id, rrf_fuse, HybridRetriever};
 pub use summarizer::{backfill_summaries, ArcCaller};
 pub use vector_store::VectorStore;

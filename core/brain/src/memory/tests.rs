@@ -762,3 +762,59 @@ async fn concurrent_backfills_summarise_each_day_once() {
     );
     assert_eq!(caller.prompts.lock().unwrap().len(), 2);
 }
+
+// --- hybrid retrieval (PRD v2 E10) ---
+
+/// Deterministic char-hash embedder: same text always gets the same vector,
+/// so the test can assert stable rankings without a real model.
+struct CharHashEmbedder;
+
+impl Embedder for CharHashEmbedder {
+    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, super::embeddings::EmbedError> {
+        Ok(texts
+            .iter()
+            .map(|text| {
+                let mut v = vec![0.0f32; 8];
+                for (i, c) in text.chars().enumerate() {
+                    v[(i + c as usize) % 8] += 1.0;
+                }
+                v
+            })
+            .collect())
+    }
+    fn model_name(&self) -> &str {
+        "char-hash"
+    }
+    fn dim(&self) -> u32 {
+        8
+    }
+}
+
+#[test]
+fn hybrid_search_fuses_keyword_and_vector_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manager =
+        MemoryManager::new(tmp.path(), DEFAULT_SCOPE).with_embedder(Arc::new(CharHashEmbedder));
+    manager.append_message("user", "I love eating apples every day");
+    manager.append_message("user", "量子计算机需要极低温环境运行");
+
+    // The first hybrid search backfills the index from the day files.
+    let hits = manager.search_messages_hybrid("apple", 5, "", "", "");
+    assert!(!hits.is_empty(), "hybrid search must return the apple day");
+    assert!(
+        hits[0].message.content.contains("apples"),
+        "the message in both rankings must lead, got {}",
+        hits[0].message.content
+    );
+}
+
+#[test]
+fn keyword_only_manager_has_no_vector_side_effects() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manager = manager(tmp.path());
+    manager.append_message("user", "apples again");
+    let hits = manager.search_messages("apple", 5, "", "", "");
+    assert_eq!(hits.len(), 1);
+    // No vector store was ever created for a manager without an embedder.
+    assert!(!tmp.path().join("personal/memory/vectors").exists());
+}
