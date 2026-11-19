@@ -1,4 +1,8 @@
 pub mod cli;
+#[cfg(feature = "email")]
+pub mod email;
+#[cfg(feature = "slack")]
+pub mod slack;
 #[cfg(feature = "telegram")]
 pub mod telegram;
 

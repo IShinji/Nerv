@@ -183,6 +183,10 @@ pub struct ChannelsConfig {
     pub cli: CliChannelConfig,
     #[serde(default)]
     pub telegram: TelegramChannelConfig,
+    #[serde(default)]
+    pub email: EmailChannelConfig,
+    #[serde(default)]
+    pub slack: SlackChannelConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +240,101 @@ impl Default for TelegramChannelConfig {
 
 fn default_document_dirs() -> Vec<String> {
     vec!["personal/workspace".to_string()]
+}
+
+/// Email channel (`channels.email.*`): IMAP polling for inbound mail,
+/// SMTP for replies (PRD v2 2.4, EmailAdapter).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailChannelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub imap_host: String,
+    #[serde(default = "default_imap_port")]
+    pub imap_port: u16,
+    pub smtp_host: String,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    pub username: String,
+    pub password: String,
+    #[serde(default = "default_mailbox")]
+    pub mailbox: String,
+    /// Sender addresses permitted to talk to this instance. Fails closed:
+    /// an empty list authorizes nobody.
+    #[serde(default)]
+    pub allowed_senders: Vec<String>,
+    /// How often to poll the mailbox for new mail (seconds).
+    #[serde(default = "default_email_poll_secs")]
+    pub poll_interval_secs: u64,
+}
+
+impl Default for EmailChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            imap_host: String::new(),
+            imap_port: default_imap_port(),
+            smtp_host: String::new(),
+            smtp_port: default_smtp_port(),
+            username: String::new(),
+            password: String::new(),
+            mailbox: default_mailbox(),
+            allowed_senders: Vec::new(),
+            poll_interval_secs: default_email_poll_secs(),
+        }
+    }
+}
+
+fn default_imap_port() -> u16 {
+    993
+}
+fn default_smtp_port() -> u16 {
+    587
+}
+fn default_mailbox() -> String {
+    "INBOX".to_string()
+}
+fn default_email_poll_secs() -> u64 {
+    120
+}
+
+impl EmailChannelConfig {
+    /// Whether `sender` (an email address) may talk to this instance.
+    pub fn is_allowed(&self, sender: &str) -> bool {
+        let sender = sender.trim().to_lowercase();
+        !sender.is_empty()
+            && self
+                .allowed_senders
+                .iter()
+                .any(|allowed| allowed.trim().to_lowercase() == sender)
+    }
+}
+
+/// Slack channel (`channels.slack.*`): Socket Mode for inbound events,
+/// chat.postMessage for replies (PRD v2 2.4, SlackAdapter).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SlackChannelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Socket Mode app token (`xapp-…`).
+    pub app_token: String,
+    /// Bot token (`xoxb-…`) for the Web API replies.
+    pub bot_token: String,
+    /// Slack member ids permitted to talk to this instance. Fails closed:
+    /// an empty list authorizes nobody.
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+}
+
+impl SlackChannelConfig {
+    /// Whether `sender` (a Slack member id) may talk to this instance.
+    pub fn is_allowed(&self, sender: &str) -> bool {
+        let sender = sender.trim();
+        !sender.is_empty()
+            && self
+                .allowed_users
+                .iter()
+                .any(|allowed| allowed.trim() == sender)
+    }
 }
 
 impl TelegramChannelConfig {
