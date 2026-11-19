@@ -10,8 +10,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use regex::Regex;
-use serde_json::json;
-use tracing::{error, info};
+use tracing::info;
 
 use super::pending::format_pending_action;
 use super::scope_for;
@@ -154,43 +153,16 @@ async fn execute_pending_action(
             let result = (tool.func)(&tool_ctx, &action.arguments).await;
             result.content
         }
-        None => match execute_pending_via_python(brain, action).await {
-            Ok(content) => content,
-            Err(e) => {
-                error!("execute_pending RPC failed for #{}: {e}", action.id);
-                format!(
-                    "Pending action #{} could not be executed because tool {} is unavailable.",
-                    action.id, action.tool_name
-                )
-            }
-        },
+        None => format!(
+            "Pending action #{} could not be executed because tool {} is unavailable.",
+            action.id, action.tool_name
+        ),
     };
 
     format!(
         "Executed pending action #{}: {}\n{}",
         action.id, summary, result
     )
-}
-
-/// The confirmation gate is skipped: the user just approved this action.
-/// (Python wraps the call in `executing_confirmed(action)` so its tools
-/// recognise the approved call.)
-async fn execute_pending_via_python(
-    brain: &std::sync::Arc<BrainClient>,
-    action: &PendingRecord,
-) -> Result<String, BrainError> {
-    let response = brain
-        .call(
-            "execute_pending",
-            json!({
-                "id": action.id,
-                "tool_name": action.tool_name,
-                "arguments": action.arguments,
-                "justification": action.justification,
-            }),
-        )
-        .await?;
-    Ok(response["content"].as_str().unwrap_or("").to_string())
 }
 
 /// Pending actions that belong to exactly this sender/channel (port of

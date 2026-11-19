@@ -1,14 +1,14 @@
 {
   "schemaVersion": "mimosa-hook-status/v1",
-  "recordedAt": "2026-11-19T19:11:15.732Z",
+  "recordedAt": "2026-11-19T19:39:42.386Z",
   "sessionId": "sess_d355867a-736c-485b-b14e-8921a53e305a",
   "event": "PostToolUse",
   "toolName": "Edit",
-  "file": "tests/test_ipc_confirm.py",
+  "file": "nerv/__main__.py",
   "outcome": "clear",
   "coverage": "complete",
   "findingCount": 0,
-  "durationMs": 6,
+  "durationMs": 4,
   "hostState": "hook_complete",
   "reportHint": ".mimosa/reports/"
 }

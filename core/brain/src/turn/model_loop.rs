@@ -266,23 +266,16 @@ async fn execute_tool_calls(
         let func_name = tc.function.name.clone();
         ctx.trace.tools_called.push(func_name.clone());
 
+        // Every registered tool executes natively; an unregistered name is a
+        // model hallucination and is reported back as such (the old python
+        // run_tool RPC did the same through its registry).
         let response = match native_run_tool(ctx, &func_name, &tc.function.arguments).await {
             Ok(Some(response)) => response,
             Err(e) => return Err(TurnError::Brain(e)),
-            Ok(None) => ctx
-                .brain
-                .call(
-                    "run_tool",
-                    json!({
-                        "name": func_name,
-                        "arguments": tc.function.arguments,
-                        "sender": ctx.sender,
-                        "channel": ctx.channel,
-                        "scope": ctx.scope,
-                    }),
-                )
-                .await
-                .map_err(TurnError::from)?,
+            Ok(None) => serde_json::json!({
+                "content": format!("Unknown tool: {func_name}"),
+                "suspended": false,
+            }),
         };
 
         let suspended = response["suspended"].as_bool().unwrap_or(false);

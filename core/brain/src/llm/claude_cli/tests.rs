@@ -248,12 +248,6 @@ async fn tool_names_bridge_through_the_mcp_config() {
         server["command"]
     );
     assert_eq!(server["args"][0], "--mcp-server");
-    let python_server = &config["mcpServers"]["nervpy"];
-    assert_eq!(python_server["command"], "uv");
-    assert_eq!(
-        python_server["cwd"].as_str(),
-        Some(project_root.path().join("brain").to_string_lossy().as_ref())
-    );
     assert_eq!(server["env"]["NERV_MEMORY_SCOPE"], "telegram:42");
     assert_eq!(
         server["env"]["NERV_PROJECT_ROOT"].as_str(),

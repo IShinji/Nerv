@@ -19,8 +19,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from nerv.orchestrator.orchestrator import Orchestrator
-
 logger = logging.getLogger(__name__)
 
 #: Longest single JSON-RPC line accepted from stdin (asyncio's default is 64 KiB).
@@ -29,8 +27,6 @@ MAX_LINE_BYTES = 64 * 1024 * 1024
 #: Upper bound on requests being handled at once.
 MAX_CONCURRENT_REQUESTS = 8
 
-_orchestrator: Orchestrator | None = None
-_init_lock: asyncio.Lock | None = None
 _stdout_lock: asyncio.Lock | None = None
 
 
@@ -45,61 +41,52 @@ def _get_project_root() -> Path:
     return Path.cwd().parent if Path.cwd().name == "brain" else Path.cwd()
 
 
-def _get_init_lock() -> asyncio.Lock:
-    global _init_lock
-    if _init_lock is None:
-        _init_lock = asyncio.Lock()
-    return _init_lock
+async def _complete_turn(
+    messages: list[dict[str, Any]],
+    model: str,
+    tools: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """One python llm call for the backends the Rust client doesn't serve.
 
+    Only the litellm path routes here (a python-only dependency); the
+    claude-cli and local providers run in Rust. Python loads the user's
+    personal API keys before calling cloud providers.
+    """
+    env_path = _get_project_root() / "personal" / "api_keys.env"
+    if env_path.exists():
+        from dotenv import load_dotenv
 
-async def _get_orchestrator() -> Orchestrator:
-    """Return the shared Orchestrator, constructing it once even under concurrency."""
-    global _orchestrator
-    if _orchestrator is None:
-        async with _get_init_lock():
-            if _orchestrator is None:
-                _orchestrator = Orchestrator(_get_project_root())
-    return _orchestrator
+        load_dotenv(env_path)
+
+    from nerv.llm import complete
+
+    result = await complete(messages, model=model, tools=tools)
+    return {
+        "content": result.content,
+        "tool_calls": result.tool_calls,
+        "runs_own_tool_loop": result.runs_own_tool_loop,
+        "provider": result.provider,
+        "duration_ms": result.duration_ms,
+        "cost_usd": result.cost_usd,
+        "usage": result.usage,
+    }
 
 
 async def handle_request(method: str, params: dict[str, Any] | None) -> Any:
     """Dispatch a JSON-RPC method call to the appropriate handler.
 
-    The router, the turn's pre-model stages and its finalization live in Rust
-    (``core/brain``). Python keeps the leaf operations that have not migrated:
-    ``run_tool`` (unported tools), ``execute_pending`` (python-only
-    confirmed tools) and ``complete_turn`` (python-only model backends).
+    Nearly everything lives in Rust (``core/brain``): the router, the whole
+    turn flow, the tool registry, memory, workflows, the MCP stack and the
+    proactive heartbeat. This sidecar remains only for the litellm cloud
+    backends — a python-only dependency the Rust client does not serve.
     """
-    if method == "run_tool":
-        if params is None:
-            raise ValueError("run_tool method requires params")
-        orchestrator = await _get_orchestrator()
-        return await orchestrator.run_tool(
-            params.get("name", ""),
-            params.get("arguments", {}),
-            sender=params.get("sender", ""),
-            channel=params.get("channel", ""),
-            scope=params.get("scope", ""),
-        )
-    elif method == "execute_pending":
-        if params is None:
-            raise ValueError("execute_pending method requires params")
-        orchestrator = await _get_orchestrator()
-        return await orchestrator.execute_pending_record(
-            params.get("id", 0),
-            tool_name=params.get("tool_name", ""),
-            arguments=params.get("arguments") or {},
-            justification=params.get("justification", ""),
-        )
-    elif method == "complete_turn":
+    if method == "complete_turn":
         if params is None:
             raise ValueError("complete_turn method requires params")
-        orchestrator = await _get_orchestrator()
-        return await orchestrator.complete_turn(
+        return await _complete_turn(
             params.get("messages", []),
             params.get("model", ""),
-            tools=params.get("tools") or None,
-            scope=params.get("scope", ""),
+            params.get("tools") or None,
         )
     elif method == "ping":
         return {"status": "ok"}
@@ -176,17 +163,6 @@ async def _process_request(
             await write_response_async(make_error(-32000, str(e), request_id))
 
 
-async def _shutdown() -> None:
-    """Release resources held by the long-lived singletons."""
-    global _orchestrator
-    if _orchestrator is not None:
-        try:
-            await _orchestrator.aclose()
-        except Exception:
-            logger.debug("Orchestrator shutdown failed", exc_info=True)
-        _orchestrator = None
-
-
 async def run_jsonrpc_loop() -> None:
     """Main loop: read JSON-RPC requests from stdin, process, write responses."""
     logger.info("JSON-RPC loop started, waiting for requests on stdin...")
@@ -248,4 +224,3 @@ async def run_jsonrpc_loop() -> None:
         if in_flight:
             logger.info("Draining %d in-flight request(s)", len(in_flight))
             await asyncio.gather(*in_flight, return_exceptions=True)
-        await _shutdown()

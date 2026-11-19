@@ -1,7 +1,7 @@
 //! Everyday productivity tools: local calendar (ICS) and notes (Markdown).
 //!
 //! Port of the file-based half of `brain/nerv/tools/productivity.py`.
-//! `send_email` stays python-served (nervpy): it routes through the MCP
+//! `send_email` routes through the MCP
 //! manager, which has not migrated.
 
 use std::path::{Path, PathBuf};

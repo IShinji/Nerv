@@ -213,12 +213,10 @@ async fn suspended_tool_calls_queue_a_pending_and_notify() {
 #[tokio::test]
 async fn executed_tool_results_feed_back_into_the_next_round() {
     let dir = tempfile::tempdir().unwrap();
-    let run_tool = serde_json::json!({"content": "tool output", "suspended": false});
-    let (runner, methods) = started_runner(dir.path(), &[run_tool]).await;
-    // `web_search` is native now; use an unported tool name so this round
-    // still exercises the python run_tool RPC path.
+    // `current_time` is native with a deterministic, harmless result.
+    let (runner, methods) = started_runner(dir.path(), &[]).await;
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
-        tool_calls_result(&[("legacy_rpc_tool", serde_json::json!({"query": "x"}))]),
+        tool_calls_result(&[("current_time", serde_json::json!({}))]),
         final_result("answer with tools"),
     ]));
 
@@ -228,7 +226,7 @@ async fn executed_tool_results_feed_back_into_the_next_round() {
         .expect("turn succeeds");
 
     assert_eq!(reply, "answer with tools");
-    assert_eq!(read_log(&methods).await, vec!["run_tool"]);
+    assert!(read_log(&methods).await.is_empty());
     let calls = caller.recorded_calls();
     assert_eq!(calls.len(), 2);
     // Round two carries the assistant tool-call message and the tool result.
@@ -238,14 +236,13 @@ async fn executed_tool_results_feed_back_into_the_next_round() {
         .any(|m| m.role == "assistant" && m.tool_calls.is_some()));
     assert!(second
         .iter()
-        .any(|m| m.role == "tool" && m.content == "tool output"));
+        .any(|m| m.role == "tool" && !m.content.is_empty()));
 }
 
 #[tokio::test]
 async fn unknown_tools_report_back_to_the_model() {
     let dir = tempfile::tempdir().unwrap();
-    let run_tool = serde_json::json!({"content": "Unknown tool: bogus_tool", "suspended": false});
-    let (runner, _methods) = started_runner(dir.path(), &[run_tool]).await;
+    let (runner, methods) = started_runner(dir.path(), &[]).await;
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
         tool_calls_result(&[("bogus_tool", serde_json::json!({}))]),
         final_result("recovered"),
@@ -256,6 +253,7 @@ async fn unknown_tools_report_back_to_the_model() {
         .await
         .expect("turn succeeds");
     assert_eq!(reply, "recovered");
+    assert!(read_log(&methods).await.is_empty());
     let calls = caller.recorded_calls();
     assert!(calls[1]
         .iter()
@@ -265,10 +263,9 @@ async fn unknown_tools_report_back_to_the_model() {
 #[tokio::test]
 async fn the_loop_stops_after_the_round_cap() {
     let dir = tempfile::tempdir().unwrap();
-    let run_tool = serde_json::json!({"content": "tool output", "suspended": false});
-    let (runner, _methods) = started_runner(dir.path(), &[run_tool]).await;
-    // Use an unknown tool so every round goes through the python run_tool
-    // RPC (a registry tool like `shell` would suspend on round one).
+    let (runner, _methods) = started_runner(dir.path(), &[]).await;
+    // An unknown tool keeps the loop going without suspending (a registry
+    // tool like `shell` would suspend on round one).
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(
         std::iter::repeat_with(|| {
             tool_calls_result(&[("bogus_round_tool", serde_json::json!({}))])
@@ -289,35 +286,24 @@ async fn the_loop_stops_after_the_round_cap() {
 }
 
 #[tokio::test]
-async fn a_failing_run_tool_writes_an_error_trace_line() {
+async fn a_failing_model_writes_an_error_trace_line() {
     let dir = tempfile::tempdir().unwrap();
-    // A brain that only answers ping — everything else errors.
-    let script = r#"
-while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":[[:space:]]*\([0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"ping"'*)
-      printf '{"jsonrpc":"2.0","result":{"status":"ok"},"id":%s}\n' "$id" ;;
-    *)
-      printf '{"jsonrpc":"2.0","error":{"code":-32000,"message":"boom"},"id":%s}\n' "$id" ;;
-  esac
-done
-"#;
-    let brain = Arc::new(BrainClient::new(BrainSpawnConfig {
-        command: "/bin/sh".to_string(),
-        args: vec!["-c".to_string(), script.to_string()],
-        working_dir: std::env::temp_dir(),
-        env: Vec::new(),
-        restart_max: 0,
-        restart_window: Duration::from_secs(600),
-        restart_backoff: Duration::from_millis(10),
-        call_timeout: Duration::from_secs(5),
-    }));
-    brain.start().await.expect("brain starts");
-    let runner = TurnRunner::with_max_rounds(brain, dir.path(), 3);
-    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
-        tool_calls_result(&[("legacy_rpc_tool", serde_json::json!({}))]),
-    ]));
+    struct AlwaysFail;
+    #[async_trait::async_trait]
+    impl crate::turn::ModelCaller for AlwaysFail {
+        async fn complete(
+            &self,
+            _messages: &[crate::llm::ChatMessage],
+            _model: &str,
+            _tools: Option<&[serde_json::Value]>,
+            _tool_names: &[String],
+            _scope: &str,
+        ) -> Result<crate::llm::CompletionResult, crate::llm::LlmError> {
+            Err(crate::llm::LlmError::Unsupported("boom".into()))
+        }
+    }
+    let (runner, _methods) = started_runner(dir.path(), &[]).await;
+    let caller = std::sync::Arc::new(AlwaysFail);
 
     // Loop failures degrade gracefully; the trace line records the error.
     let reply = runner
@@ -332,7 +318,7 @@ done
     let trace_path = dir.path().join("personal").join("logs").join("trace.jsonl");
     let line = std::fs::read_to_string(&trace_path).expect("trace written");
     let record: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(record["error"], "BrainError");
+    assert_eq!(record["error"], "LlmError");
     assert_eq!(record["channel"], "cli");
     assert_eq!(record["scope"], "cli");
 }

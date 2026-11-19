@@ -153,15 +153,9 @@ pub async fn complete_with(
         args.push("--mcp-config".to_string());
         args.push(path.to_string_lossy().to_string());
         args.push("--allowedTools".to_string());
-        // Namespaced per server: ported tools run on the rust server
-        // (mcp__nerv__*), the rest stay on the python sidecar (mcp__nervpy__*).
+        // Namespaced per server: every tool runs on the native rust server.
         for name in &provider_names {
-            let server = if crate::tools::ToolRegistry.get_tool(name).is_some() {
-                mcp::MCP_SERVER_NAME
-            } else {
-                mcp::PYTHON_SERVER_NAME
-            };
-            args.push(format!("mcp__{server}__{name}"));
+            args.push(format!("mcp__{}__{name}", mcp::MCP_SERVER_NAME));
         }
     }
 
