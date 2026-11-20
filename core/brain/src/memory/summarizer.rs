@@ -98,7 +98,7 @@ async fn summarize_day_inner(
 
     let prompt = PROMPT.replace("{body}", &body);
     let result = caller
-        .complete(&[ChatMessage::user(prompt)], model, None, &[], "")
+        .complete(&[ChatMessage::user(prompt)], model, None, &[], "", None)
         .await;
 
     let summary = match result {

@@ -127,8 +127,23 @@ async fn main() -> Result<()> {
                     text.chars().count()
                 );
 
+                // The 流式推送 feed: the adapter's typewriter channel becomes
+                // the progress callback for the turn.
+                let progress_cb: Option<nerv_brain::llm::ProgressCallbackArc> =
+                    incoming.progress_tx.as_ref().map(|tx| {
+                        let tx = tx.clone();
+                        std::sync::Arc::new(move |snapshot: &str| {
+                            let _ = tx.send(snapshot.to_string());
+                        }) as nerv_brain::llm::ProgressCallbackArc
+                    });
+
                 let response_text = match brain_handle
-                    .reply(&text, &channel.to_string(), &sender)
+                    .reply_with_progress(
+                        &text,
+                        &channel.to_string(),
+                        &sender,
+                        progress_cb.as_deref(),
+                    )
                     .await
                 {
                     Ok(result) => {

@@ -38,6 +38,7 @@ fn request<'a>(
         tool_names,
         project_root,
         scope,
+        progress: None,
     }
 }
 

@@ -16,6 +16,9 @@ pub struct IncomingMessage {
     pub message: Message,
     /// Channel to send the response back through the originating adapter.
     pub reply_tx: mpsc::Sender<Message>,
+    /// The 流式推送 typewriter feed: full-text snapshots pushed by the brain
+    /// while the turn runs. None for channels without streaming support.
+    pub progress_tx: Option<mpsc::UnboundedSender<String>>,
 }
 
 /// Channel adapter trait — each messaging channel implements this interface.

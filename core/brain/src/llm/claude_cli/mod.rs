@@ -46,7 +46,7 @@ const ISOLATION_ARGS: &[&str] = &[
 ];
 
 /// Everything one claude-cli turn needs beyond the backend parameters.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ClaudeCliRequest<'a> {
     pub model_name: &'a str,
     pub json_mode: bool,
@@ -57,6 +57,10 @@ pub struct ClaudeCliRequest<'a> {
     /// The conversation scope for this request (the MCP server's memory
     /// tools read it from NERV_MEMORY_SCOPE).
     pub scope: &'a str,
+    /// The 流式推送 typewriter feed: when set, the CLI runs with
+    /// `--output-format stream-json` and every assistant turn's accumulated
+    /// text is forwarded here as a full snapshot.
+    pub progress: Option<&'a crate::llm::ProgressCallback>,
 }
 
 /// Backend parameters, injectable for tests (fake `claude` executable, zero
@@ -119,6 +123,7 @@ pub async fn complete_with(
         .to_string();
     }
 
+    let streaming = request.progress.is_some();
     let mut args: Vec<String> = vec![
         "-p".to_string(),
         "--model".to_string(),
@@ -129,8 +134,16 @@ pub async fn complete_with(
         }
         .to_string(),
         "--output-format".to_string(),
-        "json".to_string(),
+        if streaming {
+            "stream-json".to_string()
+        } else {
+            "json".to_string()
+        },
     ];
+    if streaming {
+        // stream-json requires --verbose in print mode.
+        args.push("--verbose".to_string());
+    }
     args.extend(ISOLATION_ARGS.iter().map(|s| s.to_string()));
     if !system_prompt.is_empty() {
         args.push("--system-prompt".to_string());
@@ -171,7 +184,14 @@ pub async fn complete_with(
         }
         attempt += 1;
 
-        match invoke::invoke_once(&backend.bin, &args, &conversation, timeout).await {
+        let outcome = match request.progress {
+            Some(progress) => {
+                invoke::invoke_once_streaming(&backend.bin, &args, &conversation, timeout, progress)
+                    .await
+            }
+            None => invoke::invoke_once(&backend.bin, &args, &conversation, timeout).await,
+        };
+        match outcome {
             Err(e) => {
                 last_error = e.message.clone();
                 warn!(

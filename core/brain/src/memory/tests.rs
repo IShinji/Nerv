@@ -652,6 +652,7 @@ impl ModelCaller for ScriptedCaller {
         _tools: Option<&[serde_json::Value]>,
         _tool_names: &[String],
         _scope: &str,
+        _progress: Option<&crate::llm::ProgressCallback>,
     ) -> Result<CompletionResult, LlmError> {
         self.prompts.lock().unwrap().push(
             messages

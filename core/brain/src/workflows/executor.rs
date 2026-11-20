@@ -562,7 +562,7 @@ impl WorkflowExecutor {
         let result = self
             .ctx
             .caller
-            .complete(&messages, model, None, &[], &self.ctx.scope)
+            .complete(&messages, model, None, &[], &self.ctx.scope, None)
             .await
             .map_err(|e| e.to_string())?;
         let args = parse_json_args(&result.content);
@@ -654,7 +654,7 @@ impl WorkflowExecutor {
         let result = self
             .ctx
             .caller
-            .complete(&messages, model, None, &[], &self.ctx.scope)
+            .complete(&messages, model, None, &[], &self.ctx.scope, None)
             .await
             .map_err(|e| e.to_string())?;
         Ok(result.content)
@@ -945,6 +945,7 @@ mod tests {
                 _tools: Option<&[serde_json::Value]>,
                 _tool_names: &[String],
                 _scope: &str,
+                _progress: Option<&crate::llm::ProgressCallback>,
             ) -> Result<crate::llm::CompletionResult, crate::llm::LlmError> {
                 let mut n = self.0.lock().unwrap();
                 *n += 1;
@@ -983,6 +984,7 @@ mod tests {
                 _tools: Option<&[serde_json::Value]>,
                 _tool_names: &[String],
                 _scope: &str,
+                _progress: Option<&crate::llm::ProgressCallback>,
             ) -> Result<crate::llm::CompletionResult, crate::llm::LlmError> {
                 Err(crate::llm::LlmError::Unsupported("boom".into()))
             }

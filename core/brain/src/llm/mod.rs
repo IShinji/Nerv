@@ -161,9 +161,25 @@ pub fn parse_model(model: &str) -> (&str, &str) {
 }
 
 /// Run one assistant turn against the configured backend.
+/// The 流式推送 typewriter feed: a full-text snapshot per assistant turn.
+pub type ProgressCallback = dyn Fn(&str) + Send + Sync;
+/// An owned, shared handle to the typewriter feed.
+pub type ProgressCallbackArc = std::sync::Arc<ProgressCallback>;
+
 pub async fn complete(
     messages: &[ChatMessage],
     opts: &CompleteOptions<'_>,
+) -> Result<CompletionResult, LlmError> {
+    complete_with_progress(messages, opts, None).await
+}
+
+/// Like [`complete`], with the 流式推送 typewriter feed: every assistant
+/// turn's accumulated text from the claude-cli backend is forwarded to
+/// `progress` as a full snapshot.
+pub async fn complete_with_progress(
+    messages: &[ChatMessage],
+    opts: &CompleteOptions<'_>,
+    progress: Option<&ProgressCallback>,
 ) -> Result<CompletionResult, LlmError> {
     let (provider, model_name) = parse_model(opts.model);
     match provider {
@@ -174,6 +190,7 @@ pub async fn complete(
                 tool_names: opts.tool_names,
                 project_root: opts.project_root,
                 scope: opts.scope,
+                progress,
             };
             claude_cli::complete(messages, &request, opts.timeout).await
         }

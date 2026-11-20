@@ -144,7 +144,11 @@ impl super::ChannelAdapter for SlackAdapter {
                 let message = Message::new_text(ChannelType::Slack, &user, &text);
                 let (reply_tx, _reply_rx) = mpsc::channel::<Message>(1);
                 if gateway_tx
-                    .send(IncomingMessage { message, reply_tx })
+                    .send(IncomingMessage {
+                        message,
+                        reply_tx,
+                        progress_tx: None,
+                    })
                     .await
                     .is_err()
                 {

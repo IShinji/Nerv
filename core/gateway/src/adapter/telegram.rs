@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -34,6 +35,9 @@ const TELEGRAM_MAX_CHARS: usize = 4096;
 
 /// How often to refresh the "typing..." indicator (it lasts about 5 s).
 const TYPING_REFRESH: Duration = Duration::from_secs(4);
+
+/// Minimum spacing between streaming preview edits (Telegram rate limits).
+const EDIT_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Split `text` into chunks of at most `max_chars` characters, never inside a
 /// character, preferring to break after a newline (then a space) when one
@@ -183,7 +187,50 @@ impl super::ChannelAdapter for TelegramAdapter {
                 let message = Message::new_text(ChannelType::Telegram, &sender, &text);
                 let (reply_tx, mut reply_rx) = mpsc::channel::<Message>(1);
 
-                let incoming = IncomingMessage { message, reply_tx };
+                // The 流式推送 typewriter: the brain pushes full-text
+                // snapshots while the turn runs; the spool task sends the
+                // first snapshot as a message and throttles edits to
+                // EDIT_INTERVAL afterwards.
+                let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<String>();
+                let streamed: Arc<std::sync::Mutex<Option<teloxide::types::MessageId>>> =
+                    Arc::new(std::sync::Mutex::new(None));
+                let spool_bot = bot.clone();
+                let spool_chat = chat_id;
+                let spool_streamed = Arc::clone(&streamed);
+                let spool = tokio::spawn(async move {
+                    let mut last_edit = tokio::time::Instant::now() - EDIT_INTERVAL;
+                    let mut last_text = String::new();
+                    while let Some(snapshot) = progress_rx.recv().await {
+                        if snapshot == last_text {
+                            continue;
+                        }
+                        last_text = snapshot.clone();
+                        // Read the id, drop the guard, then await the API
+                        // call (a std MutexGuard is not Send across await).
+                        let current = *spool_streamed.lock().expect("streamed lock");
+                        match current {
+                            None => match spool_bot.send_message(spool_chat, snapshot).await {
+                                Ok(sent) => {
+                                    *spool_streamed.lock().expect("streamed lock") = Some(sent.id);
+                                }
+                                Err(e) => error!("Failed to send the streaming preview: {e}"),
+                            },
+                            Some(msg_id) if last_edit.elapsed() >= EDIT_INTERVAL => {
+                                last_edit = tokio::time::Instant::now();
+                                let _ = spool_bot
+                                    .edit_message_text(spool_chat, msg_id, snapshot)
+                                    .await;
+                            }
+                            Some(_) => {}
+                        }
+                    }
+                });
+
+                let incoming = IncomingMessage {
+                    message,
+                    reply_tx,
+                    progress_tx: Some(progress_tx),
+                };
 
                 if gateway_tx.send(incoming).await.is_err() {
                     error!("Gateway channel closed");
@@ -203,6 +250,9 @@ impl super::ChannelAdapter for TelegramAdapter {
                         }
                     }
                 };
+                // The gateway drops its progress sender when the turn ends,
+                // which closes the channel and finishes the spool task.
+                let _ = spool.await;
 
                 if let Some(response) = reply {
                     if let Some(response_text) = response.text() {
@@ -229,9 +279,22 @@ impl super::ChannelAdapter for TelegramAdapter {
                             final_text = document.remaining_text;
                         }
 
+                        // A streamed preview exists: edit it to the final
+                        // text instead of sending a duplicate message.
+                        let streamed_id = streamed.lock().expect("streamed lock").take();
+                        if let Some(msg_id) = streamed_id {
+                            let _ = bot
+                                .edit_message_text(chat_id, msg_id, final_text.clone())
+                                .await;
+                        }
+
                         for chunk in chunk_text(&final_text, TELEGRAM_MAX_CHARS) {
                             if chunk.trim().is_empty() {
                                 continue;
+                            }
+                            if streamed_id.is_some() {
+                                // Already delivered through the streaming edit.
+                                break;
                             }
                             match bot.send_message(chat_id, chunk).await {
                                 Ok(_) => info!("Sent reply to Telegram"),

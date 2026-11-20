@@ -199,7 +199,11 @@ async fn poll_once(
             let message = Message::new_text(ChannelType::Email, &sender, &text);
             let (reply_tx, _reply_rx) = mpsc::channel::<Message>(1);
             if gateway_tx
-                .send(IncomingMessage { message, reply_tx })
+                .send(IncomingMessage {
+                    message,
+                    reply_tx,
+                    progress_tx: None,
+                })
                 .await
                 .is_err()
             {
