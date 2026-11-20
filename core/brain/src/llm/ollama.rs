@@ -99,7 +99,7 @@ fn ollama_options(temperature: f64) -> serde_json::Value {
 /// Port of `_get_total_ram_gb` (macOS `sysctl hw.memsize`, Linux
 /// `/proc/meminfo`, conservative 8 GB fallback).
 #[cfg(target_os = "macos")]
-fn total_ram_gb() -> u64 {
+pub fn total_ram_gb() -> u64 {
     if let Ok(output) = std::process::Command::new("sysctl")
         .args(["-n", "hw.memsize"])
         .output()
@@ -115,7 +115,7 @@ fn total_ram_gb() -> u64 {
 }
 
 #[cfg(target_os = "linux")]
-fn total_ram_gb() -> u64 {
+pub fn total_ram_gb() -> u64 {
     if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
         for line in meminfo.lines() {
             if let Some(rest) = line.strip_prefix("MemTotal:") {
@@ -134,7 +134,7 @@ fn total_ram_gb() -> u64 {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn total_ram_gb() -> u64 {
+pub fn total_ram_gb() -> u64 {
     warn!("Could not determine system RAM on this platform, assuming 8 GB");
     8
 }
@@ -142,7 +142,7 @@ fn total_ram_gb() -> u64 {
 /// Port of `_is_apple_silicon` (`sysctl machdep.cpu.brand_string` contains
 /// "Apple").
 #[cfg(target_os = "macos")]
-fn is_apple_silicon() -> bool {
+pub fn is_apple_silicon() -> bool {
     std::process::Command::new("sysctl")
         .args(["-n", "machdep.cpu.brand_string"])
         .output()
@@ -151,7 +151,7 @@ fn is_apple_silicon() -> bool {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn is_apple_silicon() -> bool {
+pub fn is_apple_silicon() -> bool {
     false
 }
 
@@ -175,5 +175,92 @@ mod tests {
         } else {
             assert!(threads.is_none());
         }
+    }
+}
+
+/// The hardware profile for the setup wizard (port of
+/// `get_hardware_profile`): recommended router model scales with RAM.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HardwareProfile {
+    pub os_name: String,
+    pub arch: String,
+    pub ram_gb: u64,
+    pub has_apple_silicon: bool,
+    pub recommended_router_model: String,
+}
+
+/// The router model recommendation from the old python table:
+/// ≥32 GB → qwen2.5:3b, otherwise the conservative qwen2.5:1.5b.
+pub fn recommended_router_model(ram_gb: u64) -> &'static str {
+    if ram_gb >= 32 {
+        "qwen2.5:3b"
+    } else {
+        "qwen2.5:1.5b"
+    }
+}
+
+/// The full profile for the wizard UI.
+pub fn hardware_profile() -> HardwareProfile {
+    let ram_gb = total_ram_gb();
+    HardwareProfile {
+        os_name: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        ram_gb,
+        has_apple_silicon: is_apple_silicon(),
+        recommended_router_model: recommended_router_model(ram_gb).to_string(),
+    }
+}
+
+/// The models installed in the local Ollama instance (`/api/tags`), or an
+/// empty list when the server is unreachable.
+pub async fn ollama_installed_models(base_url: &str) -> Vec<String> {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return Vec::new(),
+    };
+    let Ok(response) = client.get(format!("{base_url}/api/tags")).send().await else {
+        return Vec::new();
+    };
+    let Ok(data) = response.json::<serde_json::Value>().await else {
+        return Vec::new();
+    };
+    data.get("models")
+        .and_then(|v| v.as_array())
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|m| {
+                    m.get("name")
+                        .or_else(|| m.get("model"))
+                        .and_then(|n| n.as_str())
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Pull a model through the Ollama HTTP API (blocking until done). Returns
+/// whether it succeeded; the wizard shows progress through the CLI instead
+/// when it needs a progress bar.
+pub async fn ollama_pull(base_url: &str, model: &str) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{base_url}/api/pull"))
+        .json(&serde_json::json!({"name": model}))
+        .timeout(Duration::from_secs(1800))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "ollama pull failed with status {}",
+            response.status()
+        ))
     }
 }

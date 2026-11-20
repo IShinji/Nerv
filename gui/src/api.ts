@@ -46,3 +46,23 @@ export async function saveAgent(name: string, yaml: string): Promise<void> {
 export async function systemStats(): Promise<SystemStats> {
   return invoke<SystemStats>("system_stats");
 }
+
+export interface HardwareProfile {
+  os_name: string;
+  arch: string;
+  ram_gb: number;
+  has_apple_silicon: boolean;
+  recommended_router_model: string;
+}
+
+export async function hardwareProfile(): Promise<HardwareProfile> {
+  return invoke<HardwareProfile>("hardware_profile");
+}
+
+export async function ollamaModels(): Promise<string[]> {
+  return invoke<string[]>("ollama_models");
+}
+
+export async function ollamaPull(model: string): Promise<void> {
+  return invoke<void>("ollama_pull", { model });
+}
