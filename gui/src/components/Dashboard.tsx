@@ -1,16 +1,42 @@
 import { useEffect, useState } from "react";
-import { systemStats, type SystemStats } from "../api";
+import {
+  memoryStats,
+  ollamaLoaded,
+  systemStats,
+  taskQueue,
+  type MemoryStats,
+  type SystemStats,
+  type TaskRow,
+} from "../api";
 
-/// The system dashboard: request/token/cost totals plus the most recent
-/// turns, read from the trace log.
+/// The system dashboard (PRD 4.4): request/token/cost totals, the most
+/// recent turns, live memory/CPU, loaded Ollama models and the background
+/// task queue.
 export function Dashboard() {
   const [stats, setStats] = useState<SystemStats | null>(null);
+  const [mem, setMem] = useState<MemoryStats | null>(null);
+  const [loaded, setLoaded] = useState<string[]>([]);
+  const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [error, setError] = useState("");
 
   useEffect(() => {
     systemStats()
       .then(setStats)
       .catch((e) => setError(String(e)));
+    const refresh = () => {
+      memoryStats()
+        .then(setMem)
+        .catch(() => {});
+      ollamaLoaded()
+        .then(setLoaded)
+        .catch(() => {});
+      taskQueue()
+        .then(setTasks)
+        .catch(() => {});
+    };
+    refresh();
+    const id = setInterval(refresh, 5000);
+    return () => clearInterval(id);
   }, []);
 
   if (error) {
@@ -37,7 +63,39 @@ export function Dashboard() {
           <div className="stat-value">${stats.cost_usd.toFixed(4)}</div>
           <div className="stat-label">Tracked cost</div>
         </div>
+        {mem && (
+          <div className="stat-card">
+            <div className="stat-value">
+              {mem.used_ram_gb.toFixed(1)}/{mem.total_ram_gb.toFixed(0)} GB
+            </div>
+            <div className="stat-label">RAM · CPU {Math.round(mem.cpu_percent)}%</div>
+          </div>
+        )}
       </div>
+
+      <div className="dash-columns">
+        <div className="dash-panel">
+          <div className="panel-title">Loaded models (Ollama)</div>
+          {loaded.length === 0 && (
+            <div className="panel-empty">No models loaded.</div>
+          )}
+          {loaded.map((name) => (
+            <div className="panel-row" key={name}>
+              {name}
+            </div>
+          ))}
+        </div>
+        <div className="dash-panel">
+          <div className="panel-title">Task queue</div>
+          {tasks.length === 0 && <div className="panel-empty">Empty.</div>}
+          {tasks.map((t) => (
+            <div className="panel-row" key={t.id}>
+              {t.status === "running" ? "▶" : "⏳"} {t.kind} {t.id} — {t.status}
+            </div>
+          ))}
+        </div>
+      </div>
+
       <table className="requests-table">
         <thead>
           <tr>

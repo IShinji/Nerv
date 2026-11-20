@@ -42,6 +42,17 @@ export async function installAgent(url: string, name?: string): Promise<string> 
   return invoke<string>("install_agent", { url, name: name ?? "" });
 }
 
+export interface FilePayload {
+  name: string;
+  text: string | null;
+  size_bytes: number;
+  truncated: boolean;
+}
+
+export async function readDroppedFile(path: string): Promise<FilePayload> {
+  return invoke<FilePayload>("read_dropped_file", { path });
+}
+
 export async function listAgents(): Promise<Agent[]> {
   return invoke<Agent[]>("list_agents");
 }
@@ -80,4 +91,36 @@ export async function ollamaModels(): Promise<string[]> {
 
 export async function ollamaPull(model: string): Promise<void> {
   return invoke<void>("ollama_pull", { model });
+}
+
+export interface MemoryStats {
+  total_ram_gb: number;
+  used_ram_gb: number;
+  cpu_percent: number;
+}
+
+export async function memoryStats(): Promise<MemoryStats> {
+  return invoke<MemoryStats>("memory_stats");
+}
+
+export async function ollamaLoaded(): Promise<string[]> {
+  return invoke<string[]>("ollama_loaded");
+}
+
+export interface TaskRow {
+  id: string;
+  kind: string;
+  status: string;
+}
+
+export async function taskQueue(): Promise<TaskRow[]> {
+  return invoke<TaskRow[]>("task_queue");
+}
+
+export async function saveApiKeys(keys: Record<string, string>): Promise<void> {
+  return invoke<void>("save_api_keys", { keys });
+}
+
+export async function saveChannels(channels: Record<string, unknown>): Promise<void> {
+  return invoke<void>("save_channels", { channels });
 }
