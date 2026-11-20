@@ -37,19 +37,70 @@ struct Agent {
     description: String,
 }
 
+/// Send a message; the full result (reply + model/provider/tokens/cost
+/// metadata) goes back for the per-message annotation.
 #[tauri::command]
-async fn send_message(state: State<'_, AppState>, text: String) -> Result<String, String> {
-    let result = state
+async fn send_message(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<serde_json::Value, String> {
+    state
         .handle()
         .await?
         .reply(&text, "gui", "gui-user")
         .await
-        .map_err(|e| e.to_string())?;
-    Ok(result
-        .get("reply")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// Install an agent YAML from a URL (Agent Store client capability): fetch,
+/// validate by parsing, save into personal/agents.
+#[tauri::command]
+async fn install_agent(
+    state: State<'_, AppState>,
+    url: String,
+    name: String,
+) -> Result<String, String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("url must be an http(s) URL".into());
+    }
+    let client = reqwest::Client::new();
+    let body = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| format!("fetch failed: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("read failed: {e}"))?;
+    let agent: nerv_brain::orchestrator::AgentDefinition =
+        serde_yaml::from_str(&body).map_err(|e| format!("Invalid agent YAML: {e}"))?;
+    if agent.name.trim().is_empty() {
+        return Err("the agent has no name".into());
+    }
+    let slug = name
+        .trim()
+        .to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let dir = state.project_root.join("personal").join("agents");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!(
+        "{}.yaml",
+        if slug.is_empty() {
+            agent.name.to_lowercase().replace(' ', "-")
+        } else {
+            slug
+        }
+    ));
+    std::fs::write(&path, &body).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "Agent '{}' installed into {}",
+        agent.name,
+        path.display()
+    ))
 }
 
 /// The full YAML of one agent (for the agent editor).
@@ -304,6 +355,7 @@ fn main() {
             list_agents,
             get_agent,
             save_agent,
+            install_agent,
             system_stats,
             hardware_profile,
             ollama_models,

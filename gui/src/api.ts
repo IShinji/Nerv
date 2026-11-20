@@ -23,8 +23,23 @@ export interface SystemStats {
   recent: RequestRecord[];
 }
 
-export async function sendMessage(text: string): Promise<string> {
-  return invoke<string>("send_message", { text });
+export interface ReplyMeta {
+  reply: string;
+  model?: string;
+  provider?: string;
+  est_input_tokens?: number;
+  cost_usd?: number | null;
+  duration_ms?: number;
+  intent?: string;
+}
+
+export async function sendMessage(text: string): Promise<ReplyMeta> {
+  return invoke<ReplyMeta>("send_message", { text });
+}
+
+/// Install an agent YAML from a URL (Agent Store client capability).
+export async function installAgent(url: string, name?: string): Promise<string> {
+  return invoke<string>("install_agent", { url, name: name ?? "" });
 }
 
 export async function listAgents(): Promise<Agent[]> {
