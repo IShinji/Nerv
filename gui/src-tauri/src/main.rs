@@ -52,6 +52,68 @@ async fn send_message(
         .map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+pub struct FilePayload {
+    pub name: String,
+    /// UTF-8 content when the file is a readable text file; None for binary.
+    pub text: Option<String>,
+    pub size_bytes: u64,
+    pub truncated: bool,
+}
+
+/// The most text we inline into a prompt from a dropped file.
+const DROP_FILE_MAX_BYTES: u64 = 256 * 1024;
+
+/// Read a dropped file for the chat composer: text files are inlined
+/// (capped), binary files come back as `text: None` and Nerv reads them
+/// through its own file tools by path instead.
+#[tauri::command]
+async fn read_dropped_file(path: String) -> Result<FilePayload, String> {
+    let candidate = std::path::PathBuf::from(&path);
+    let meta = std::fs::metadata(&candidate).map_err(|e| format!("{}: {e}", path))?;
+    if !meta.is_file() {
+        return Err(format!("{path} is not a regular file"));
+    }
+    let size = meta.len();
+    let name = candidate
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.clone());
+
+    if size > DROP_FILE_MAX_BYTES {
+        return Ok(FilePayload {
+            name,
+            text: None,
+            size_bytes: size,
+            truncated: false,
+        });
+    }
+    let bytes = std::fs::read(&candidate).map_err(|e| format!("{}: {e}", path))?;
+    // Binary heuristic: a NUL byte in the head disqualifies inlining.
+    let head = &bytes[..bytes.len().min(8192)];
+    let binary = bytes.is_empty() || head.contains(&0u8);
+    if binary {
+        return Ok(FilePayload {
+            name,
+            text: None,
+            size_bytes: size,
+            truncated: false,
+        });
+    }
+    let mut text = String::from_utf8_lossy(&bytes).to_string();
+    let mut truncated = false;
+    if text.chars().count() > 100_000 {
+        text = text.chars().take(100_000).collect::<String>() + "\n… [truncated]";
+        truncated = true;
+    }
+    Ok(FilePayload {
+        name,
+        text: Some(text),
+        size_bytes: size,
+        truncated,
+    })
+}
+
 /// Install an agent YAML from a URL (Agent Store client capability): fetch,
 /// validate by parsing, save into personal/agents.
 #[tauri::command]
@@ -233,6 +295,146 @@ async fn ollama_pull(state: State<'_, AppState>, model: String) -> Result<(), St
     nerv_brain::llm::ollama::ollama_pull(&config.models.router.base_url, &model).await
 }
 
+/// Wizard step 3: persist cloud API keys into personal/api_keys.env
+/// (merged; existing values not in this submission are kept).
+#[tauri::command]
+async fn save_api_keys(
+    state: State<'_, AppState>,
+    keys: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    let path = state.project_root.join("personal").join("api_keys.env");
+    let mut existing: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if let Ok(body) = std::fs::read_to_string(&path) {
+        for line in body.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                existing.insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
+    }
+    for (k, v) in keys {
+        let v = v.trim().to_string();
+        if v.is_empty() {
+            continue;
+        }
+        existing.insert(k, v);
+    }
+    std::fs::create_dir_all(path.parent().expect("has parent")).map_err(|e| e.to_string())?;
+    let mut lines: Vec<String> = existing.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    lines.sort();
+    std::fs::write(&path, lines.join("\n") + "\n").map_err(|e| e.to_string())
+}
+
+/// Wizard step 4: write the channels block into the user config (merged
+/// into the existing YAML; file mode tightened to 0600 — it holds tokens).
+#[tauri::command]
+async fn save_channels(
+    state: State<'_, AppState>,
+    channels: serde_json::Value,
+) -> Result<(), String> {
+    let path = state.project_root.join("config.yaml");
+    let mut merged: serde_yaml::Value = if path.exists() {
+        serde_yaml::from_str(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("existing config.yaml is not valid YAML: {e}"))?
+    } else {
+        serde_yaml::Value::Mapping(Default::default())
+    };
+    let channels_json = serde_json::to_string(&channels).map_err(|e| e.to_string())?;
+    let channels_value: serde_yaml::Value =
+        serde_yaml::from_str(&channels_json).map_err(|e| e.to_string())?;
+    if let serde_yaml::Value::Mapping(root) = &mut merged {
+        if let serde_yaml::Value::Mapping(block) = channels_value {
+            for (k, v) in block {
+                root.insert(k, v);
+            }
+        }
+    } else {
+        return Err("config.yaml root must be a mapping".into());
+    }
+    let body = serde_yaml::to_string(&merged).map_err(|e| e.to_string())?;
+    std::fs::write(&path, body).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Dashboard: real-time memory/CPU + RAM total.
+#[tauri::command]
+async fn memory_stats() -> Result<serde_json::Value, String> {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    sys.refresh_cpu_usage();
+    Ok(serde_json::json!({
+        "total_ram_gb": sys.total_memory() as f64 / 1024.0 / 1024.0 / 1024.0,
+        "used_ram_gb": sys.used_memory() as f64 / 1024.0 / 1024.0 / 1024.0,
+        "cpu_percent": sys.global_cpu_usage(),
+    }))
+}
+
+/// Dashboard: models loaded in the local Ollama instance (/api/ps).
+#[tauri::command]
+async fn ollama_loaded(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let config = NervConfig::load(&state.project_root).map_err(|e| e.to_string())?;
+    let base = config.models.router.base_url;
+    let body: serde_json::Value = reqwest::Client::new()
+        .get(format!("{base}/api/ps"))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(body
+        .get("models")
+        .and_then(|v| v.as_array())
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Dashboard: the background-task queue (delegations and the like).
+#[derive(Serialize)]
+pub struct TaskRow {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+}
+
+#[tauri::command]
+async fn task_queue(state: State<'_, AppState>) -> Result<Vec<TaskRow>, String> {
+    let store = nerv_shared::background_tasks::BackgroundTaskStore::new(&state.project_root);
+    let mut rows: Vec<TaskRow> = store
+        .list_by_status(nerv_shared::background_tasks::QUEUED)
+        .into_iter()
+        .map(|t| TaskRow {
+            id: t.id,
+            kind: t.kind,
+            status: t.status,
+        })
+        .collect();
+    rows.extend(
+        store
+            .list_by_status(nerv_shared::background_tasks::RUNNING)
+            .into_iter()
+            .map(|t| TaskRow {
+                id: t.id,
+                kind: t.kind,
+                status: t.status,
+            }),
+    );
+    Ok(rows)
+}
+
 #[tauri::command]
 async fn check_heartbeat() -> Result<String, String> {
     // The heartbeat drain is native now: surface queued background alerts.
@@ -356,10 +558,16 @@ fn main() {
             get_agent,
             save_agent,
             install_agent,
+            read_dropped_file,
             system_stats,
             hardware_profile,
             ollama_models,
-            ollama_pull
+            ollama_pull,
+            save_api_keys,
+            save_channels,
+            memory_stats,
+            ollama_loaded,
+            task_queue
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Nerv GUI");

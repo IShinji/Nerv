@@ -1,5 +1,12 @@
-import { useRef, useState } from "react";
-import { sendMessage, type ReplyMeta } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { readDroppedFile, sendMessage, type FilePayload, type ReplyMeta } from "../api";
+
+interface Attachment {
+  name: string;
+  content: string;
+}
 
 interface Message {
   role: "user" | "assistant";
@@ -26,17 +33,86 @@ function annotate(meta: ReplyMeta | undefined): string | null {
 export function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const [streamText, setStreamText] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
+  // 流式推送: while a send is in flight, the backend emits full-text
+  // snapshots as `turn-progress` events; show the latest as a live bubble.
+  useEffect(() => {
+    if (!busy) return;
+    let unlisten: UnlistenFn | undefined;
+    listen<string>("turn-progress", (event) => {
+      setStreamText(event.payload);
+    }).then((off) => {
+      unlisten = off;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [busy]);
+
+  // 文件拖拽发送 (PRD 4.1): dropped paths are read and attached to the
+  // next message. Text files inline; binaries attach as path references.
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          setDragging(true);
+        } else if (event.payload.type === "leave") {
+          setDragging(false);
+        } else if (event.payload.type === "drop") {
+          setDragging(false);
+          for (const path of event.payload.paths) {
+            readDroppedFile(path)
+              .then((file: FilePayload) => {
+                if (file.text != null) {
+                  setAttachments((a) => [
+                    ...a,
+                    { name: file.name, content: file.text as string },
+                  ]);
+                } else {
+                  setAttachments((a) => [
+                    ...a,
+                    {
+                      name: file.name,
+                      content: `[binary file: ${file.name} (${file.size_bytes} bytes) — Nerv can read it with file_io at its path]`,
+                    },
+                  ]);
+                }
+              })
+              .catch((e) => console.error("drop read failed:", e));
+          }
+        }
+      })
+      .then((off) => {
+        unlisten = off;
+      });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
   async function send() {
     const text = input.trim();
-    if (!text || busy) return;
+    if ((!text && attachments.length === 0) || busy) return;
+    let composed = text;
+    if (attachments.length > 0) {
+      const parts = attachments.map(
+        (a, i) => `[Attachment ${i + 1}: ${a.name}]\n${a.content}`,
+      );
+      composed = [text, ...parts].filter(Boolean).join("\n\n");
+      setAttachments([]);
+    }
     setInput("");
-    setMessages((m) => [...m, { role: "user", text }]);
+    setMessages((m) => [...m, { role: "user", text: composed }]);
     setBusy(true);
+    setStreamText(null);
     try {
-      const result = await sendMessage(text);
+      const result = await sendMessage(composed);
       setMessages((m) => [
         ...m,
         { role: "assistant", text: result.reply, meta: result },
@@ -47,6 +123,7 @@ export function Chat() {
         { role: "assistant", text: `⚠️ ${String(e)}` },
       ]);
     } finally {
+      setStreamText(null);
       setBusy(false);
       requestAnimationFrame(() =>
         endRef.current?.scrollIntoView({ behavior: "smooth" }),
@@ -54,8 +131,12 @@ export function Chat() {
     }
   }
 
+  function removeAttachment(index: number) {
+    setAttachments((a) => a.filter((_, i) => i !== index));
+  }
+
   return (
-    <div className="chat">
+    <div className={"chat" + (dragging ? " drag-over" : "")}>
       <div className="messages">
         {messages.length === 0 && (
           <div className="placeholder">Ask Nerv anything…</div>
@@ -69,13 +150,33 @@ export function Chat() {
             </div>
           );
         })}
-        {busy && <div className="bubble assistant typing">…</div>}
+        {busy && streamText != null && (
+          <div className="bubble assistant streaming">{streamText}</div>
+        )}
+        {busy && streamText == null && (
+          <div className="bubble assistant typing">…</div>
+        )}
         <div ref={endRef} />
       </div>
+      {attachments.length > 0 && (
+        <div className="attachments">
+          {attachments.map((a, i) => (
+            <span className="attachment-chip" key={i}>
+              📄 {a.name}
+              <button
+                className="attachment-remove"
+                onClick={() => removeAttachment(i)}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="composer">
         <textarea
           value={input}
-          placeholder="Message Nerv…"
+          placeholder={dragging ? "Drop files here…" : "Message Nerv…"}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {

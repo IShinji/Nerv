@@ -13,6 +13,7 @@ export function App() {
   const [notice, setNotice] = useState<string>("");
   const [tab, setTab] = useState<Tab>("chat");
   const [editing, setEditing] = useState<Agent | null>(null);
+  const [creating, setCreating] = useState(false);
   // First launch: no agents configured at all → open the wizard.
   const [firstLaunch, setFirstLaunch] = useState(false);
 
@@ -98,10 +99,32 @@ export function App() {
           <div className="agents-page">
             <AgentList
               agents={agents}
-              onPick={(agent) => setEditing(agent)}
+              onPick={(agent) => {
+                setEditing(agent);
+                setCreating(false);
+              }}
               picked={editing?.name}
             />
-            <AgentEditor agent={editing} onSaved={refreshAgents} />
+            <div className="agents-toolbar">
+              <button
+                className={creating ? "tab active" : "tab"}
+                onClick={() => {
+                  setCreating(!creating);
+                  setEditing(null);
+                }}
+              >
+                + New agent
+              </button>
+            </div>
+            <AgentEditor
+              agent={creating ? null : editing}
+              creating={creating}
+              onSaved={() => {
+                refreshAgents();
+                setCreating(false);
+              }}
+              onCancelNew={() => setCreating(false)}
+            />
           </div>
         )}
         {tab === "dashboard" && <Dashboard />}
