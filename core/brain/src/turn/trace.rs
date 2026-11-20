@@ -31,7 +31,7 @@ pub struct TraceRecord {
     pub pending_created: bool,
     pub delegated: bool,
     pub error: String,
-    started: std::time::Instant,
+    pub(crate) started: std::time::Instant,
 }
 
 impl Default for TraceRecord {
@@ -73,11 +73,11 @@ impl TraceRecord {
             "model": self.model,
             "provider": self.provider,
             "est_input_tokens": self.est_input_tokens,
+            "duration_ms": round1(self.started.elapsed().as_secs_f64() * 1000.0),
             "tools_called": self.tools_called,
             "cost_usd": self.cost_usd,
             "pending_created": self.pending_created,
             "delegated": self.delegated,
-            "duration_ms": round1(self.started.elapsed().as_secs_f64() * 1000.0),
             "error": if self.error.is_empty() {
                 serde_json::Value::Null
             } else {
@@ -89,6 +89,8 @@ impl TraceRecord {
     /// Append the request's line; log a warning and return on any failure.
     /// Port of `write_trace` — file lock, size-capped rotation, mode 0600.
     pub fn write(&self, project_root: &Path) {
+        // Elapsed is finalized at write time (the turn's end).
+        // `write` takes &self; callers treat the record as done by then.
         let outcome = (|| -> std::io::Result<()> {
             let path = project_root.join(TRACE_RELATIVE_PATH);
             let dir = path

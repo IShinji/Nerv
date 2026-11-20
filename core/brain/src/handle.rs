@@ -101,7 +101,7 @@ impl BrainHandle {
         let route_result = self.router.classify(message).await;
 
         let runner = TurnRunner::new(&self.project_root);
-        let reply = runner
+        let (reply, turn_meta) = runner
             .run_turn(
                 message,
                 &route_result,
@@ -114,6 +114,12 @@ impl BrainHandle {
 
         let mut result = serde_json::to_value(&route_result).expect("serializes");
         result["reply"] = json!(reply);
+        // Per-message annotation (PRD 4.1): model/provider/tokens/cost.
+        if let Some(meta) = turn_meta.as_object() {
+            for (key, value) in meta {
+                result[key.as_str()] = value.clone();
+            }
+        }
         Ok(result)
     }
 }

@@ -120,7 +120,7 @@ pub async fn run_model_loop(
     agent_tools: &[String],
     intent: &str,
     tier: i64,
-) -> Result<String, TurnError> {
+) -> Result<(String, serde_json::Value), TurnError> {
     if ctx.trace.model.is_empty() {
         ctx.trace.model = model.to_string();
     }
@@ -159,7 +159,7 @@ async fn loop_body(
     messages: &mut Vec<ChatMessage>,
     tools_schemas: Option<&[serde_json::Value]>,
     agent_tools: &[String],
-) -> Result<String, TurnError> {
+) -> Result<(String, serde_json::Value), TurnError> {
     let max_rounds = ctx.max_rounds.max(1);
     for _round in 0..max_rounds {
         let result = ctx
@@ -190,36 +190,68 @@ async fn loop_body(
 
         // claude-cli already executed any tools internally via MCP.
         if result.runs_own_tool_loop {
-            return Ok(if result.content.is_empty() {
+            let meta = turn_meta(ctx, &result);
+            let reply = if result.content.is_empty() {
                 EMPTY_RESPONSE_MESSAGE.to_string()
             } else {
                 result.content
-            });
+            };
+            return Ok((reply, meta));
         }
 
         if !result.tool_calls.is_empty() {
             info!("Model requested {} tool calls", result.tool_calls.len());
             let queued = execute_tool_calls(ctx, messages, &result.tool_calls).await?;
             if !queued.is_empty() {
-                return Ok(build_pending_action_reply(&queued));
+                return Ok((build_pending_action_reply(&queued), turn_meta(ctx, &result)));
             }
             // Loop continues, querying the model with the new tool context.
             continue;
         }
 
-        return Ok(if result.content.is_empty() {
+        let meta = turn_meta(ctx, &result);
+        let reply = if result.content.is_empty() {
             EMPTY_RESPONSE_MESSAGE.to_string()
         } else {
             result.content
-        });
+        };
+        return Ok((reply, meta));
     }
 
     warn!("Tool loop stopped after {max_rounds} rounds");
-    Ok(format!(
+    let reply = format!(
         "I stopped after {max_rounds} rounds of tool calls without reaching \
          a final answer. Try a narrower request, or raise \
          orchestrator.max_tool_iterations in the config."
+    );
+    Ok((
+        reply.clone(),
+        turn_meta(
+            ctx,
+            &CompletionResult {
+                content: reply,
+                tool_calls: Vec::new(),
+                runs_own_tool_loop: false,
+                provider: String::new(),
+                duration_ms: None,
+                cost_usd: None,
+                usage: None,
+            },
+        ),
     ))
+}
+
+/// Per-turn metadata for the GUI's per-message annotation (PRD 4.1):
+/// model, provider, duration, estimated input tokens, cost.
+fn turn_meta(ctx: &LoopContext<'_>, result: &CompletionResult) -> serde_json::Value {
+    serde_json::json!({
+        "model": if ctx.trace.model.is_empty() { "unknown" } else { &ctx.trace.model },
+        "provider": result.provider,
+        "duration_ms": ctx.trace.started.elapsed().as_secs_f64() * 1000.0,
+        "est_input_tokens": ctx.trace.est_input_tokens,
+        "cost_usd": result.cost_usd,
+        "usage": result.usage,
+    })
 }
 
 /// Execute one round's tool calls — natively for the tools the rust brain

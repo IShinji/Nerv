@@ -136,7 +136,7 @@ impl super::ChannelAdapter for SlackAdapter {
                     warn!("Rejected Slack message from unauthorized sender {user}");
                     continue;
                 }
-                let channel_id = event
+                let _channel_id = event
                     .get("channel")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")

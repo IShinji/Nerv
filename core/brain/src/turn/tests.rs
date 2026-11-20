@@ -63,7 +63,7 @@ async fn agent_turn_runs_locally_and_returns_the_model_answer() {
         final_result("agent answer"),
     ]));
 
-    let reply = runner
+    let (reply, _meta) = runner
         .run_turn("hello", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
@@ -92,7 +92,7 @@ async fn direct_reply_skips_the_model_caller() {
         reply: "hi there".to_string(),
         ..route_result()
     };
-    let reply = runner
+    let (reply, _meta) = runner
         .run_turn("你好", &route, "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
@@ -109,7 +109,7 @@ async fn suspended_tool_calls_queue_a_pending_and_notify() {
         tool_calls_result(&[("shell", serde_json::json!({"command": "rm -rf /"}))]),
     ]));
 
-    let reply = runner
+    let (reply, _meta) = runner
         .run_turn("rm it", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
@@ -143,7 +143,7 @@ async fn executed_tool_results_feed_back_into_the_next_round() {
         final_result("answer with tools"),
     ]));
 
-    let reply = runner
+    let (reply, _meta) = runner
         .run_turn("hello", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
@@ -170,7 +170,7 @@ async fn unknown_tools_report_back_to_the_model() {
         final_result("recovered"),
     ]));
 
-    let reply = runner
+    let (reply, _meta) = runner
         .run_turn("hello", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
@@ -195,7 +195,7 @@ async fn the_loop_stops_after_the_round_cap() {
         .collect(),
     ));
 
-    let reply = runner
+    let (reply, _meta) = runner
         .run_turn("hello", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
@@ -228,7 +228,7 @@ async fn a_failing_model_writes_an_error_trace_line() {
     let caller = std::sync::Arc::new(AlwaysFail);
 
     // Loop failures degrade gracefully; the trace line records the error.
-    let reply = runner
+    let (reply, _meta) = runner
         .run_turn("hello", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn degrades");
@@ -299,7 +299,7 @@ async fn a_late_confirm_is_caught_by_the_prepare_stage() {
     let runner = started_runner(dir.path());
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![]));
 
-    let reply = runner
+    let (reply, _meta) = runner
         .run_turn(
             "confirm 1",
             &route_result(),
@@ -339,7 +339,7 @@ async fn casual_words_never_touch_queued_actions() {
     ]));
 
     // A bare "yes" is chat, not a confirmation.
-    let reply = runner
+    let (reply, _meta) = runner
         .run_turn("yes", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
@@ -365,7 +365,7 @@ async fn cancel_discards_a_queued_action() {
     let runner = started_runner(dir.path());
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![]));
 
-    let reply = runner
+    let (reply, _meta) = runner
         .run_turn("cancel 1", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");

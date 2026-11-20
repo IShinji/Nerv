@@ -117,12 +117,12 @@ impl TurnRunner {
         sender: &str,
         caller: std::sync::Arc<dyn ModelCaller>,
         progress: Option<&crate::llm::ProgressCallback>,
-    ) -> Result<String, BrainError> {
+    ) -> Result<(String, serde_json::Value), BrainError> {
         let scope = scope_for(channel, sender);
         let mut trace = TraceRecord::new(channel, &scope);
         trace.tier = Some(route_result.model_tier);
 
-        let outcome: Result<String, TurnError> = async {
+        let outcome: Result<(String, serde_json::Value), TurnError> = async {
             // Everything before the model call, decided locally (pending
             // commands, review queue, agent selection, model selection).
             let prepared =
@@ -168,9 +168,9 @@ impl TurnRunner {
         .await;
 
         match outcome {
-            Ok(reply) => {
+            Ok((reply, meta)) => {
                 trace.write(&self.project_root);
-                Ok(reply)
+                Ok((reply, meta))
             }
             Err(e) => {
                 trace.error = error_kind(&e);
@@ -192,7 +192,7 @@ impl TurnRunner {
         sender: &str,
         reply: &str,
         trace: &mut TraceRecord,
-    ) -> Result<String, TurnError> {
+    ) -> Result<(String, serde_json::Value), TurnError> {
         let scope = scope_for(channel, sender);
         let memory = Arc::new(crate::memory::MemoryManager::manager_for(
             &self.project_root,
@@ -206,7 +206,7 @@ impl TurnRunner {
             trace.pending_created = true;
         }
         memory.append_message("assistant", &final_reply);
-        Ok(final_reply)
+        Ok((final_reply, serde_json::json!({})))
     }
 
     /// The agent path: run the model loop, then finalize the turn locally.
@@ -228,7 +228,7 @@ impl TurnRunner {
         caller_arc: crate::memory::summarizer::ArcCaller,
         trace: &mut TraceRecord,
         progress: Option<&crate::llm::ProgressCallback>,
-    ) -> Result<String, TurnError> {
+    ) -> Result<(String, serde_json::Value), TurnError> {
         let agent_name = agent.name.clone();
         let agent_tools = agent.tools.clone();
 
@@ -281,14 +281,17 @@ impl TurnRunner {
         };
         // Graceful degradation: a model failure surfaces a clean, user-facing
         // message rather than a stack trace (port of the _dispatch catch).
-        let reply = match loop_outcome {
-            Ok(reply) => reply,
+        let (reply, turn_meta) = match loop_outcome {
+            Ok((reply, meta)) => (reply, meta),
             Err(e) => {
                 tracing::error!("Model call failed: {e}");
                 trace.error = error_kind(&e);
-                "I hit a problem reaching the model and couldn't complete that \
-                 just now. Please try again in a moment."
-                    .to_string()
+                (
+                    "I hit a problem reaching the model and couldn't complete that \
+                     just now. Please try again in a moment."
+                        .to_string(),
+                    serde_json::json!({}),
+                )
             }
         };
 
@@ -314,7 +317,7 @@ impl TurnRunner {
             tier0_model,
             caller_arc,
         );
-        Ok(final_reply)
+        Ok((final_reply, turn_meta))
     }
 }
 
