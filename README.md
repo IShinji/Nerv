@@ -77,7 +77,10 @@ Nerv is a working system, not a design doc. What exists today, and where to read
 | **Agent evolution** — self-updating agent knowledge with version history and rollback | 🚧 Partial | `brain/nerv/evolution.py` |
 | **Agent Store** | 📋 Roadmap | — |
 | **Multilingual retrieval** (hybrid keyword + local embeddings; Chinese and English first, Japanese later) | ✅ Built — RRF-fused keyword + vector search over chat history, opt-in via `brain.vector_retrieval` (local multilingual-e5-small embeddings, SQLite store) | `core/brain/src/memory/retrieval.rs` |
-| **Rust brain** — migrating the Python brain into Rust one module at a time | ✅ Complete — router, turn flow, tools, memory (incl. vector retrieval), orchestrator, workflows, MCP, proactive heartbeat all run in Rust; the python sidecar remains only for the litellm cloud backends | `core/brain/` |
+| **Rust brain** — the whole brain in Rust | ✅ Complete — router, turn flow, tools, memory (incl. vector retrieval), orchestrator, workflows, MCP, litellm cloud backends and the proactive heartbeat all run natively; no python | `core/brain/` |
+| **Typewriter streaming** — claude-cli stream-json snapshots edit a Telegram placeholder in place (1/s throttle); other channels follow the same progress contract | ✅ Built | `core/brain/src/llm/claude_cli/invoke.rs`, `core/gateway/src/adapter/` |
+| **Channel adapters** — Telegram, Email (IMAP/SMTP), Slack (Socket Mode), CLI | ✅ Built | `core/gateway/src/adapter/` |
+| **Self-evolution trigger** — per-agent dispatch counters; the proactive heartbeat nudges `evolve_agent` at the threshold | ✅ Built | `core/brain/src/tools/usage_tracker.rs` |
 
 **Size:** 100% Rust — 22k lines in `core/` (gateway + brain + shared) and the Tauri GUI. The python brain is fully retired. A CI workflow lives in `.github/workflows/ci.yml`; this README does not claim it is passing. Test counts (re-run locally after the latest changes):
 
