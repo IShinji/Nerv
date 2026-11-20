@@ -237,6 +237,10 @@ async fn evolve_agent_impl(
         return ToolResult::error(format!("No agent named '{agent_name}'."));
     };
 
+    // A successful evolution resets the dispatch counter that feeds the
+    // self-evolution reminder.
+    crate::tools::UsageTracker::new(project_root).reset(agent_name);
+
     let current_yaml = std::fs::read_to_string(&file).unwrap_or_default();
     let tier2 = nerv_shared::config::NervConfig::load(project_root)
         .map(|config| config.models.tiers.tier2)

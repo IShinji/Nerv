@@ -84,6 +84,12 @@ impl ProactiveMonitor {
             }
         }
 
+        for (key, message) in self.evolution_nudges() {
+            if notified.insert(key) {
+                reminders.push(message);
+            }
+        }
+
         if !reminders.is_empty() {
             save_notified(&self.state_path, &notified);
         }
@@ -127,6 +133,34 @@ impl ProactiveMonitor {
             }
         }
         due
+    }
+
+    /// Deterministic self-evolution nudges (Agent 自我进化系统): an agent
+    /// that has handled `evolution_threshold` dispatches since its last
+    /// update is due for `evolve_agent` with recent knowledge. The dedup key
+    /// pins the count bucket, so the same agent re-nudges at the next
+    /// multiple of the threshold after an evolution resets the counter.
+    fn evolution_nudges(&self) -> Vec<(String, String)> {
+        let threshold = nerv_shared::config::NervConfig::load(&self.root)
+            .map(|c| c.proactive.evolution_threshold)
+            .unwrap_or(25);
+        if threshold == 0 {
+            return Vec::new();
+        }
+        crate::tools::UsageTracker::new(&self.root)
+            .over_threshold(threshold)
+            .into_iter()
+            .map(|(agent, count)| {
+                let bucket = count / threshold * threshold;
+                (
+                    format!("evo:{agent}:{bucket}"),
+                    format!(
+                        "📈 Agent '{agent}' has handled {count} tasks since its last update. \
+                         Consider `evolve_agent` to fold in what you learned."
+                    ),
+                )
+            })
+            .collect()
     }
 
     /// Surface workflow runs that were interrupted and can be resumed.
@@ -334,6 +368,86 @@ mod tests {
                 .any(|m| m.contains(&run.id) && m.contains("Unfinished")),
             "{messages:?}"
         );
+    }
+
+    #[test]
+    fn evolution_nudge_fires_at_the_threshold_and_dedups() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("core")).unwrap();
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("config.default.yaml"),
+            tmp.path().join("core/config.default.yaml"),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("config.yaml"),
+            "proactive:\n  evolution_threshold: 3\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                tmp.path().join("config.yaml"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+        let tracker = crate::tools::UsageTracker::new(tmp.path());
+        for _ in 0..3 {
+            tracker.record("Coder");
+        }
+
+        let monitor = ProactiveMonitor::new(tmp.path());
+        let first = monitor.check(None);
+        assert!(
+            first
+                .iter()
+                .any(|m| m.contains("Coder") && m.contains("evolve_agent")),
+            "{first:?}"
+        );
+
+        // Dedup pins the count bucket: the same bucket never re-fires.
+        let second = monitor.check(None);
+        assert!(
+            second.iter().all(|m| !m.contains("evolve_agent")),
+            "{second:?}"
+        );
+    }
+
+    #[test]
+    fn evolution_nudge_disabled_at_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("core")).unwrap();
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("config.default.yaml"),
+            tmp.path().join("core/config.default.yaml"),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("config.yaml"),
+            "proactive:\n  evolution_threshold: 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                tmp.path().join("config.yaml"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+        let tracker = crate::tools::UsageTracker::new(tmp.path());
+        tracker.record("Coder");
+        let monitor = ProactiveMonitor::new(tmp.path());
+        assert!(monitor.check(None).is_empty());
     }
 
     #[test]

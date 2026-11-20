@@ -46,6 +46,10 @@ pub struct ProactiveConfig {
     pub enabled: bool,
     #[serde(default = "default_reminder_minutes")]
     pub calendar_reminder_minutes: i64,
+    /// Dispatches to one agent before an evolution reminder fires
+    /// (Agent 自我进化系统, PRD Phase 2). 0 disables the reminder.
+    #[serde(default = "default_evolution_threshold")]
+    pub evolution_threshold: u32,
 }
 
 impl Default for ProactiveConfig {
@@ -53,8 +57,13 @@ impl Default for ProactiveConfig {
         Self {
             enabled: true,
             calendar_reminder_minutes: 60,
+            evolution_threshold: 25,
         }
     }
+}
+
+fn default_evolution_threshold() -> u32 {
+    25
 }
 
 fn default_reminder_minutes() -> i64 {
