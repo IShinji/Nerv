@@ -2922,6 +2922,7 @@ dependencies = [
  "chrono-tz",
  "ego-tree",
  "fastembed",
+ "futures-util",
  "half",
  "libc",
  "nerv-shared",

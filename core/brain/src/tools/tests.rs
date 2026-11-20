@@ -320,3 +320,31 @@ fn get_fact_section_tool_lists_and_reads() {
         .block_on((tool.func)(&ctx, &json!({"title": "Hobbies"})));
     assert!(miss.is_error && miss.content.contains("Work"));
 }
+
+// ── import_skill (slug + install layout) ────────────────────────────────────
+
+#[test]
+fn skill_slug_is_filesystem_safe() {
+    use super::knowledge::skill_slug;
+    assert_eq!(skill_slug("Code Review"), "code-review");
+    assert_eq!(skill_slug("Data/Analysis::v2"), "data-analysis-v2");
+    assert_eq!(skill_slug("---weird---name---"), "weird-name");
+    assert_eq!(skill_slug("中文 技能"), "");
+}
+
+#[test]
+fn skill_markdown_import_layout_is_picked_up_by_the_registry() {
+    let dir = tempfile::tempdir().unwrap();
+    // Install a skill the way import_skill_impl would (fetch → slug → write).
+    let body = "---\nname: My Skill\ndescription: A test pack\n---\nDo things.\n";
+    let slug = super::knowledge::skill_slug("My Skill");
+    let skill_dir = dir.path().join("personal").join("skills").join(slug);
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(skill_dir.join("SKILL.md"), body).unwrap();
+
+    // The registry loads personal/skills after the preset dir.
+    let registry = crate::skills::SkillRegistry::new(dir.path());
+    let skill = registry.find("my skill").expect("personal skill loads");
+    assert_eq!(skill.description, "A test pack");
+    assert!(skill.body.contains("Do things."));
+}

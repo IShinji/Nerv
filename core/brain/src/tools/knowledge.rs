@@ -4,6 +4,8 @@
 //! `execute_workflow` (WorkflowExecutor), `mcp_status` and `mcp_presets`
 //! (MCP manager) and `send_email` stay python-served until those migrate.
 
+use std::path::Path;
+
 use serde_json::json;
 
 use super::helpers::{parse_csv_or_lines, truncate};
@@ -440,4 +442,115 @@ pub fn mcp_status() -> ToolDefinition {
             })
         },
     }
+}
+
+/// One-click skill import (PRD Phase 2 生态格式兼容转换器): fetch a
+/// SKILL.md-formatted skill from a URL (a raw GitHub URL, a ClawHub skill
+/// endpoint or any URL serving the markdown) and save it into
+/// `personal/skills/<slug>/SKILL.md` so the registry picks it up.
+pub fn import_skill() -> ToolDefinition {
+    ToolDefinition {
+        name: "import_skill",
+        description: "Import a skill pack from a URL (e.g. a ClawHub skill or a raw SKILL.md on GitHub) and install it into personal/skills for reuse. Args: url, name (optional slug override).",
+        requires_confirmation: false,
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "name": {"type": "string"}
+            },
+            "required": ["url"]
+        }),
+        func: |ctx, args| {
+            let url = args
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let name_override = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let project_root = ctx.project_root.clone();
+            Box::pin(async move {
+                import_skill_impl(&project_root, &url, &name_override).await
+            })
+        },
+    }
+}
+
+/// Filesystem-safe slug for a skill's install directory: lowercase, any
+/// separator run collapsed to a single `-`.
+pub(crate) fn skill_slug(name: &str) -> String {
+    name.to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+async fn import_skill_impl(project_root: &Path, url: &str, name_override: &str) -> ToolResult {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return ToolResult::error("Error: url must be an http(s) URL.");
+    }
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => return ToolResult::error(format!("Error: http client: {e}")),
+    };
+    let body = match client.get(url).send().await {
+        Ok(response) => match response.text().await {
+            Ok(text) => text,
+            Err(e) => return ToolResult::error(format!("Error: failed to read {url}: {e}")),
+        },
+        Err(e) => return ToolResult::error(format!("Error: failed to fetch {url}: {e}")),
+    };
+
+    let fallback = || name_override.to_string();
+    let Some(mut skill) = crate::skills::skill_from_markdown(&body, fallback) else {
+        return ToolResult::error(
+            "Error: the URL did not return a SKILL.md-formatted document \
+             (expected optional YAML frontmatter with name/description).",
+        );
+    };
+    if !name_override.is_empty() {
+        skill.name = name_override.to_string();
+    }
+    if skill.name.trim().is_empty() {
+        return ToolResult::error(
+            "Error: the skill has no name (frontmatter `name:` or the `name` argument).",
+        );
+    }
+
+    // Filesystem-safe slug: lowercase, separators collapsed to `-`.
+    let slug = skill_slug(&skill.name);
+    if slug.is_empty() {
+        return ToolResult::error("Error: the skill name cannot be turned into a directory name.");
+    }
+
+    let dir = project_root.join("personal").join("skills").join(&slug);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return ToolResult::error(format!("Error: could not create {dir:?}: {e}"));
+    }
+    let path = dir.join("SKILL.md");
+    if let Err(e) = std::fs::write(&path, &body) {
+        return ToolResult::error(format!("Error: could not write {path:?}: {e}"));
+    }
+
+    ToolResult::ok(format!(
+        "Skill '{}' imported into {} (description: {}). It is available on the \
+         next turn; `list_skills` shows it after the registry reloads.",
+        skill.name,
+        path.display(),
+        if skill.description.is_empty() {
+            "(none)"
+        } else {
+            &skill.description
+        }
+    ))
 }

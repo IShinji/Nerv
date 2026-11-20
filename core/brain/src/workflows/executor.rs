@@ -317,8 +317,42 @@ impl WorkflowExecutor {
 
             let step_idx = run.steps[index].idx;
             let step_desc = run.steps[index].description.clone();
-            match self
-                .run_step_with_retries(
+            let outcome = if let Some(rest) = step_desc.strip_prefix("parallel:") {
+                // 复杂任务图并行调度: sub-steps separated by `|` run
+                // concurrently; the first suspension or error wins, otherwise
+                // the outputs merge in declaration order.
+                let sub_steps: Vec<&str> = rest
+                    .split('|')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if sub_steps.len() > 1 {
+                    let futures: Vec<_> = sub_steps
+                        .iter()
+                        .map(|sub| {
+                            self.run_step_with_retries(
+                                sub,
+                                step_idx,
+                                &workflow.name,
+                                &model,
+                                &history_context,
+                            )
+                        })
+                        .collect();
+                    let results = futures_util::future::join_all(futures).await;
+                    merge_parallel_outputs(&sub_steps, results).map(StepOutput::Text)
+                } else {
+                    self.run_step_with_retries(
+                        &step_desc,
+                        step_idx,
+                        &workflow.name,
+                        &model,
+                        &history_context,
+                    )
+                    .await
+                }
+            } else {
+                self.run_step_with_retries(
                     &step_desc,
                     step_idx,
                     &workflow.name,
@@ -326,7 +360,8 @@ impl WorkflowExecutor {
                     &history_context,
                 )
                 .await
-            {
+            };
+            match outcome {
                 Ok(StepOutput::Text(output)) => {
                     run.steps[index].result = output.clone();
                     run.steps[index].status = DONE.to_string();
@@ -731,6 +766,26 @@ pub fn parse_json_args(content: &str) -> serde_json::Value {
     serde_json::from_str(&content[start..=end]).unwrap_or(json!({}))
 }
 
+/// Merge the outputs of a parallel step group: a suspension or failure in
+/// any branch wins (the group did not fully complete), otherwise the branch
+/// outputs join in declaration order under per-branch headers.
+fn merge_parallel_outputs(
+    sub_steps: &[&str],
+    results: Vec<Result<StepOutput, String>>,
+) -> Result<String, String> {
+    let mut sections: Vec<String> = Vec::new();
+    for (sub, result) in sub_steps.iter().zip(results) {
+        match result {
+            Ok(StepOutput::Text(text)) => {
+                sections.push(format!("── {sub} ──\n{text}"));
+            }
+            Ok(StepOutput::Suspended { text, .. }) => return Err(text),
+            Err(e) => return Err(format!("parallel branch {sub:?} failed: {e}")),
+        }
+    }
+    Ok(sections.join("\n\n"))
+}
+
 fn initial_input_from(history_context: &[String]) -> String {
     for ctx in history_context {
         if let Some(rest) = ctx.strip_prefix("Initial Input:") {
@@ -1133,5 +1188,71 @@ mod tests {
             StepOutput::Text(text) => assert!(text.contains("workflow-gate-test"), "{text}"),
             StepOutput::Suspended { .. } => panic!("approved call must not suspend"),
         }
+    }
+
+    #[test]
+    fn parallel_steps_merge_branch_outputs_in_order() {
+        let sub_steps = vec!["branch one", "branch two"];
+        let results = vec![
+            Ok(StepOutput::Text("out-1".to_string())),
+            Ok(StepOutput::Text("out-2".to_string())),
+        ];
+        let merged = merge_parallel_outputs(&sub_steps, results).unwrap();
+        assert!(merged.contains("── branch one ──"), "{merged}");
+        assert!(merged.contains("out-1"));
+        assert!(merged.contains("── branch two ──"), "{merged}");
+        // Declaration order, not completion order.
+        assert!(merged.find("out-1").unwrap() < merged.find("out-2").unwrap());
+    }
+
+    #[test]
+    fn a_suspended_branch_fails_the_parallel_group() {
+        let sub_steps = vec!["a", "b"];
+        let results = vec![
+            Ok(StepOutput::Text("ok".to_string())),
+            Ok(StepOutput::Suspended {
+                pending_id: 7,
+                text: "[ACTION SUSPENDED #7] gated".to_string(),
+            }),
+        ];
+        let err = merge_parallel_outputs(&sub_steps, results).unwrap_err();
+        assert!(err.contains("ACTION SUSPENDED #7"), "{err}");
+    }
+
+    #[test]
+    fn a_failed_branch_names_the_branch() {
+        let sub_steps = vec!["alpha", "beta"];
+        let results = vec![
+            Ok(StepOutput::Text("ok".to_string())),
+            Err("boom".to_string()),
+        ];
+        let err = merge_parallel_outputs(&sub_steps, results).unwrap_err();
+        assert!(err.contains("parallel branch"), "{err}");
+        assert!(err.contains("beta"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_parallel_step_runs_all_branches() {
+        let dir = tempfile::tempdir().unwrap();
+        // Three reasoning branches against the scripted caller (one response
+        // per branch, in order).
+        let wf = WorkflowDefinition {
+            name: "demo".to_string(),
+            description: "d".to_string(),
+            steps: vec!["parallel: summarize | translate | critique".to_string()],
+            ..Default::default()
+        };
+        let caller = Arc::new(FakeModelCaller::new(vec![
+            completion("summary-output"),
+            completion("translate-output"),
+            completion("critique-output"),
+        ]));
+        let mut ex = WorkflowExecutor::new(executor_ctx(dir.path(), caller));
+
+        let out = ex.execute(&wf, "the input", None).await.unwrap();
+        assert!(out.contains("── summarize ──"), "{out}");
+        assert!(out.contains("summary-output"), "{out}");
+        assert!(out.contains("── critique ──"), "{out}");
+        assert!(out.contains("critique-output"), "{out}");
     }
 }
