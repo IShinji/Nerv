@@ -382,6 +382,8 @@ pub async fn prepare_turn(
         "Dispatching to agent '{}' (intent={}, tier={})",
         agent.name, route_result.intent, route_result.model_tier
     );
+    // Usage tracking feeds the self-evolution reminder (PRD Phase 2).
+    crate::tools::UsageTracker::new(project_root).record(&agent.name);
 
     let model = select_model(project_root, route_result.model_tier);
 

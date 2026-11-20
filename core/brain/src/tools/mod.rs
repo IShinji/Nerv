@@ -15,6 +15,7 @@ pub mod productivity;
 pub mod registry;
 pub mod sandbox;
 pub mod system;
+pub mod usage_tracker;
 pub mod web;
 pub mod workflow_exec;
 
@@ -22,6 +23,7 @@ pub mod workflow_exec;
 mod tests;
 
 pub use registry::{ToolContext, ToolDefinition, ToolRegistry, ToolResult};
+pub use usage_tracker::{UsageTracker, DEFAULT_EVOLUTION_THRESHOLD};
 
 /// The targeted-notify sink: set once by the gateway so Rust-side events
 /// (workflow progress) reach the requesting channel (E0 定向通知).
