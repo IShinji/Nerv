@@ -15,6 +15,7 @@ nerv-brain = { path = "../../core/brain" }
 nerv-shared = { path = "../../core/shared", features = ["brain-client"] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
 serde_json = "1"
 tokio = { version = "1", features = ["sync"] }
 

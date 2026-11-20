@@ -51,6 +51,116 @@ async fn send_message(state: State<'_, AppState>, text: String) -> Result<String
         .to_string())
 }
 
+/// The full YAML of one agent (for the agent editor).
+#[tauri::command]
+async fn get_agent(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    // Personal first, then preset — same precedence as the registry.
+    let personal = state.project_root.join("personal").join("agents");
+    let preset = state.project_root.join("agents");
+    for dir in [personal, preset] {
+        let path = dir.join(format!(
+            "{}.yaml",
+            name.trim().to_lowercase().replace(' ', "-")
+        ));
+        if path.exists() {
+            return std::fs::read_to_string(&path).map_err(|e| e.to_string());
+        }
+    }
+    Err(format!("No agent named '{name}'."))
+}
+
+/// Save an edited agent YAML into personal/agents (validated by parsing).
+#[tauri::command]
+async fn save_agent(state: State<'_, AppState>, name: String, yaml: String) -> Result<(), String> {
+    // Parse first: an invalid YAML must never reach the registry.
+    let _: nerv_brain::orchestrator::AgentDefinition =
+        serde_yaml::from_str(&yaml).map_err(|e| format!("Invalid agent YAML: {e}"))?;
+    let dir = state.project_root.join("personal").join("agents");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let slug = name.trim().to_lowercase().replace(' ', "-");
+    std::fs::write(dir.join(format!("{slug}.yaml")), yaml).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct RequestRecord {
+    pub tier: Option<i64>,
+    pub model: String,
+    pub provider: String,
+    pub est_input_tokens: i64,
+    pub cost_usd: Option<f64>,
+    pub duration_ms: f64,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct SystemStats {
+    pub requests: u64,
+    pub est_input_tokens: i64,
+    pub cost_usd: f64,
+    pub recent: Vec<RequestRecord>,
+}
+
+/// Token/cost dashboard from the trace log (the newest entries win).
+#[tauri::command]
+async fn system_stats(state: State<'_, AppState>) -> Result<SystemStats, String> {
+    let path = state
+        .project_root
+        .join("personal")
+        .join("logs")
+        .join("trace.jsonl");
+    let Ok(body) = std::fs::read_to_string(&path) else {
+        return Ok(SystemStats {
+            requests: 0,
+            est_input_tokens: 0,
+            cost_usd: 0.0,
+            recent: Vec::new(),
+        });
+    };
+    let mut records: Vec<RequestRecord> = Vec::new();
+    for line in body.lines().rev() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        records.push(RequestRecord {
+            tier: value.get("tier").and_then(|v| v.as_i64()),
+            model: value
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string(),
+            provider: value
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string(),
+            est_input_tokens: value
+                .get("est_input_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0),
+            cost_usd: value.get("cost_usd").and_then(|v| v.as_f64()),
+            duration_ms: value
+                .get("duration_ms")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
+            error: value
+                .get("error")
+                .filter(|e| !e.is_null())
+                .and_then(|e| e.as_str())
+                .map(str::to_string),
+        });
+    }
+    let requests = records.len() as u64;
+    let est_input_tokens = records.iter().map(|r| r.est_input_tokens).sum();
+    let cost_usd = records.iter().filter_map(|r| r.cost_usd).sum();
+    records.truncate(20);
+    Ok(SystemStats {
+        requests,
+        est_input_tokens,
+        cost_usd,
+        recent: records,
+    })
+}
+
 #[tauri::command]
 async fn check_heartbeat() -> Result<String, String> {
     // The heartbeat drain is native now: surface queued background alerts.
@@ -170,7 +280,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             send_message,
             check_heartbeat,
-            list_agents
+            list_agents,
+            get_agent,
+            save_agent,
+            system_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Nerv GUI");
