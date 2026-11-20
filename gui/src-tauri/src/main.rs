@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nerv_brain::handle::BrainHandle;
+use nerv_shared::config::NervConfig;
 use serde::Serialize;
 use tauri::State;
 use tokio::sync::Mutex;
@@ -161,6 +162,26 @@ async fn system_stats(state: State<'_, AppState>) -> Result<SystemStats, String>
     })
 }
 
+/// Hardware profile + model recommendation for the setup wizard.
+#[tauri::command]
+async fn hardware_profile() -> Result<nerv_brain::llm::ollama::HardwareProfile, String> {
+    Ok(nerv_brain::llm::ollama::hardware_profile())
+}
+
+/// The models installed in the local Ollama instance.
+#[tauri::command]
+async fn ollama_models(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let config = NervConfig::load(&state.project_root).map_err(|e| e.to_string())?;
+    Ok(nerv_brain::llm::ollama::ollama_installed_models(&config.models.router.base_url).await)
+}
+
+/// One-click model download through the local Ollama instance.
+#[tauri::command]
+async fn ollama_pull(state: State<'_, AppState>, model: String) -> Result<(), String> {
+    let config = NervConfig::load(&state.project_root).map_err(|e| e.to_string())?;
+    nerv_brain::llm::ollama::ollama_pull(&config.models.router.base_url, &model).await
+}
+
 #[tauri::command]
 async fn check_heartbeat() -> Result<String, String> {
     // The heartbeat drain is native now: surface queued background alerts.
@@ -283,7 +304,10 @@ fn main() {
             list_agents,
             get_agent,
             save_agent,
-            system_stats
+            system_stats,
+            hardware_profile,
+            ollama_models,
+            ollama_pull
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Nerv GUI");
