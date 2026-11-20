@@ -4,6 +4,7 @@
 
 use std::process::Stdio;
 use std::time::Duration;
+use tokio::io::AsyncBufReadExt;
 
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -174,4 +175,159 @@ pub async fn invoke_once(
             ),
         }),
     }
+}
+
+/// The same spawn contract as [`invoke_once`], but reading `stream-json`
+/// output line by line: each `assistant` event's text accumulates into a
+/// growing snapshot forwarded to `progress` (the typewriter feed), and the
+/// final `result` line is returned as the response value. Used by the
+/// 流式推送 path; the plain `json` path is unchanged.
+pub async fn invoke_once_streaming(
+    bin: &str,
+    args: &[String],
+    conversation: &str,
+    timeout: Duration,
+    progress: &crate::llm::ProgressCallback,
+) -> Result<Value, ClaudeCliError> {
+    let mut child = None;
+    for attempt in 0..3 {
+        match tokio::process::Command::new(bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .current_dir(std::env::temp_dir())
+            .kill_on_drop(true)
+            .spawn()
+        {
+            Ok(c) => {
+                child = Some(c);
+                break;
+            }
+            Err(e) if e.raw_os_error() == Some(26) && attempt < 2 => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(e) => {
+                return Err(ClaudeCliError {
+                    kind: FailureKind::Fatal,
+                    message: format!("failed to spawn claude CLI: {e}"),
+                });
+            }
+        }
+    }
+    let mut child = child.expect("spawn loop exits with a child or an error");
+
+    let mut stdin = child.stdin.take().ok_or_else(|| ClaudeCliError {
+        kind: FailureKind::Fatal,
+        message: "claude CLI stdin unavailable".to_string(),
+    })?;
+    let stdout_pipe = child.stdout.take().ok_or_else(|| ClaudeCliError {
+        kind: FailureKind::Fatal,
+        message: "claude CLI stdout unavailable".to_string(),
+    })?;
+    let mut stderr_pipe = child.stderr.take().ok_or_else(|| ClaudeCliError {
+        kind: FailureKind::Fatal,
+        message: "claude CLI stderr unavailable".to_string(),
+    })?;
+
+    let _ = stdin.write_all(conversation.as_bytes()).await;
+    let _ = stdin.shutdown().await;
+    drop(stdin);
+
+    let read_stdout = async {
+        let mut lines = tokio::io::BufReader::new(stdout_pipe).lines();
+        let mut result_json: Option<Value> = None;
+        let mut accumulated = String::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            match value.get("type").and_then(|t| t.as_str()) {
+                // stream-json emits complete assistant messages per turn; the
+                // text blocks accumulate into the typewriter snapshot.
+                Some("assistant") => {
+                    let text = value
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                        .map(|blocks| {
+                            blocks
+                                .iter()
+                                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("")
+                        })
+                        .unwrap_or_default();
+                    if !text.is_empty() {
+                        accumulated.push_str(&text);
+                        progress(accumulated.trim());
+                    }
+                }
+                Some("result") => result_json = Some(value),
+                _ => {}
+            }
+        }
+        result_json
+    };
+
+    let read_stderr = async {
+        let mut stderr_buf = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut stderr_buf).await;
+        stderr_buf
+    };
+
+    let io = async {
+        let (result_json, stderr_buf) = tokio::join!(read_stdout, read_stderr);
+        (result_json, stderr_buf)
+    };
+    let (result_json, stderr_buf) = match tokio::time::timeout(timeout, io).await {
+        Ok(parts) => parts,
+        Err(_) => {
+            let _ = child.kill().await;
+            return Err(ClaudeCliError {
+                kind: FailureKind::Retry,
+                message: format!("claude CLI timed out after {}s", timeout.as_secs_f64()),
+            });
+        }
+    };
+
+    let status = child.wait().await;
+    if let Some(value) = result_json {
+        if !status.as_ref().map(|s| s.success()).unwrap_or(false)
+            && !super::is_truthy(value.get("is_error"))
+        {
+            let err = String::from_utf8_lossy(&stderr_buf).trim().to_string();
+            let (kind, _) = classify_failure(None, "", &err);
+            return Err(ClaudeCliError {
+                kind,
+                message: format!(
+                    "claude CLI exited {}: {}",
+                    status
+                        .as_ref()
+                        .ok()
+                        .and_then(|s| s.code())
+                        .map_or_else(|| "None".to_string(), |c| c.to_string()),
+                    truncate(&err, 500)
+                ),
+            });
+        }
+        return Ok(value);
+    }
+
+    // No result line: fall back to the stderr/exit classification.
+    let err = String::from_utf8_lossy(&stderr_buf).trim().to_string();
+    let (kind, _) = classify_failure(None, "", &err);
+    Err(ClaudeCliError {
+        kind,
+        message: format!(
+            "claude CLI produced no result line (exit {}): {}",
+            status
+                .as_ref()
+                .ok()
+                .and_then(|s| s.code())
+                .map_or_else(|| "None".to_string(), |c| c.to_string()),
+            truncate(&err, 500)
+        ),
+    })
 }

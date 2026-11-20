@@ -18,6 +18,19 @@ use crate::llm::claude_cli::ClaudeCliBackend;
 use crate::router::{RouteResult, Router, RouterInitError};
 use crate::turn::{ModelCaller, ProviderCaller, TraceRecord, TurnRunner};
 
+impl BrainHandle {
+    /// Classify and run one user message without a typewriter feed.
+    pub async fn reply(
+        &self,
+        message: &str,
+        channel: &str,
+        sender: &str,
+    ) -> Result<serde_json::Value, BrainError> {
+        self.reply_with_progress(message, channel, sender, None)
+            .await
+    }
+}
+
 pub struct BrainHandle {
     router: Router,
     caller: Arc<dyn ModelCaller>,
@@ -52,11 +65,13 @@ impl BrainHandle {
 
     /// Classify and run one user message, returning the same JSON shape the
     /// old `route` method answered (routing fields + final `reply`).
-    pub async fn reply(
+    /// `progress` is the 流式推送 typewriter feed; None keeps the turn quiet.
+    pub async fn reply_with_progress(
         &self,
         message: &str,
         channel: &str,
         sender: &str,
+        progress: Option<&crate::llm::ProgressCallback>,
     ) -> Result<serde_json::Value, BrainError> {
         // confirm/cancel <id> is handled before classification, so approving
         // a queued action never depends on a model call succeeding. The
@@ -87,7 +102,14 @@ impl BrainHandle {
 
         let runner = TurnRunner::new(&self.project_root);
         let reply = runner
-            .run_turn(message, &route_result, channel, sender, self.caller.clone())
+            .run_turn(
+                message,
+                &route_result,
+                channel,
+                sender,
+                self.caller.clone(),
+                progress,
+            )
             .await?;
 
         let mut result = serde_json::to_value(&route_result).expect("serializes");

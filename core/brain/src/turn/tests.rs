@@ -64,7 +64,7 @@ async fn agent_turn_runs_locally_and_returns_the_model_answer() {
     ]));
 
     let reply = runner
-        .run_turn("hello", &route_result(), "cli", "", caller.clone())
+        .run_turn("hello", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
 
@@ -93,7 +93,7 @@ async fn direct_reply_skips_the_model_caller() {
         ..route_result()
     };
     let reply = runner
-        .run_turn("你好", &route, "cli", "", caller.clone())
+        .run_turn("你好", &route, "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
 
@@ -110,7 +110,7 @@ async fn suspended_tool_calls_queue_a_pending_and_notify() {
     ]));
 
     let reply = runner
-        .run_turn("rm it", &route_result(), "cli", "", caller.clone())
+        .run_turn("rm it", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
 
@@ -144,7 +144,7 @@ async fn executed_tool_results_feed_back_into_the_next_round() {
     ]));
 
     let reply = runner
-        .run_turn("hello", &route_result(), "cli", "", caller.clone())
+        .run_turn("hello", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
 
@@ -171,7 +171,7 @@ async fn unknown_tools_report_back_to_the_model() {
     ]));
 
     let reply = runner
-        .run_turn("hello", &route_result(), "cli", "", caller.clone())
+        .run_turn("hello", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
     assert_eq!(reply, "recovered");
@@ -196,7 +196,7 @@ async fn the_loop_stops_after_the_round_cap() {
     ));
 
     let reply = runner
-        .run_turn("hello", &route_result(), "cli", "", caller.clone())
+        .run_turn("hello", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
     assert!(
@@ -219,6 +219,7 @@ async fn a_failing_model_writes_an_error_trace_line() {
             _tools: Option<&[serde_json::Value]>,
             _tool_names: &[String],
             _scope: &str,
+            _progress: Option<&crate::llm::ProgressCallback>,
         ) -> Result<crate::llm::CompletionResult, crate::llm::LlmError> {
             Err(crate::llm::LlmError::Unsupported("boom".into()))
         }
@@ -228,7 +229,7 @@ async fn a_failing_model_writes_an_error_trace_line() {
 
     // Loop failures degrade gracefully; the trace line records the error.
     let reply = runner
-        .run_turn("hello", &route_result(), "cli", "", caller.clone())
+        .run_turn("hello", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn degrades");
 
@@ -253,7 +254,14 @@ async fn successful_turns_write_a_trace_line_with_the_routing_fields() {
     ]));
 
     runner
-        .run_turn("hello", &route_result(), "telegram", "42", caller.clone())
+        .run_turn(
+            "hello",
+            &route_result(),
+            "telegram",
+            "42",
+            caller.clone(),
+            None,
+        )
         .await
         .expect("turn succeeds");
 
@@ -292,7 +300,14 @@ async fn a_late_confirm_is_caught_by_the_prepare_stage() {
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![]));
 
     let reply = runner
-        .run_turn("confirm 1", &route_result(), "cli", "", caller.clone())
+        .run_turn(
+            "confirm 1",
+            &route_result(),
+            "cli",
+            "",
+            caller.clone(),
+            None,
+        )
         .await
         .expect("turn succeeds");
 
@@ -325,7 +340,7 @@ async fn casual_words_never_touch_queued_actions() {
 
     // A bare "yes" is chat, not a confirmation.
     let reply = runner
-        .run_turn("yes", &route_result(), "cli", "", caller.clone())
+        .run_turn("yes", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
     assert_eq!(reply, "yes, sure");
@@ -351,7 +366,7 @@ async fn cancel_discards_a_queued_action() {
     let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![]));
 
     let reply = runner
-        .run_turn("cancel 1", &route_result(), "cli", "", caller.clone())
+        .run_turn("cancel 1", &route_result(), "cli", "", caller.clone(), None)
         .await
         .expect("turn succeeds");
 

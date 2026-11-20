@@ -22,6 +22,10 @@ pub const EMPTY_RESPONSE_MESSAGE: &str = "I received an empty response from the 
 /// is ported); tests inject a scripted fake.
 // async_trait expands the method into a `#[must_use]` boxed future that
 // clippy flags as redundant with the `Result` return; not fixable at source.
+pub use crate::llm::ProgressCallback;
+
+// async_trait expands the method into a `#[must_use]` boxed future that
+// clippy flags as redundant with the `Result` return; not fixable at source.
 #[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait ModelCaller: Send + Sync {
@@ -32,6 +36,7 @@ pub trait ModelCaller: Send + Sync {
         tools: Option<&[serde_json::Value]>,
         tool_names: &[String],
         scope: &str,
+        progress: Option<&ProgressCallback>,
     ) -> Result<CompletionResult, LlmError>;
 }
 
@@ -50,10 +55,11 @@ impl ModelCaller for ProviderCaller {
         tools: Option<&[serde_json::Value]>,
         tool_names: &[String],
         scope: &str,
+        progress: Option<&ProgressCallback>,
     ) -> Result<CompletionResult, LlmError> {
         // Every provider — claude-cli, local ollama and the multi-vendor
         // litellm cloud family — runs natively.
-        llm::complete(
+        llm::complete_with_progress(
             messages,
             &CompleteOptions {
                 model,
@@ -65,6 +71,7 @@ impl ModelCaller for ProviderCaller {
                 scope,
                 timeout: Duration::from_secs(120),
             },
+            progress,
         )
         .await
     }
@@ -73,6 +80,8 @@ impl ModelCaller for ProviderCaller {
 /// Everything one turn's model loop needs from its host.
 pub struct LoopContext<'a> {
     pub caller: &'a dyn ModelCaller,
+    /// The 流式推送 typewriter feed, wired to the originating adapter.
+    pub progress: Option<&'a ProgressCallback>,
     pub trace: &'a mut TraceRecord,
     pub max_rounds: u32,
     pub sender: &'a str,
@@ -155,7 +164,14 @@ async fn loop_body(
     for _round in 0..max_rounds {
         let result = ctx
             .caller
-            .complete(messages, model, tools_schemas, agent_tools, ctx.scope)
+            .complete(
+                messages,
+                model,
+                tools_schemas,
+                agent_tools,
+                ctx.scope,
+                ctx.progress,
+            )
             .await
             .map_err(TurnError::from)?;
 
@@ -355,6 +371,7 @@ pub mod testing {
             _tools: Option<&[serde_json::Value]>,
             _tool_names: &[String],
             _scope: &str,
+            _progress: Option<&ProgressCallback>,
         ) -> Result<CompletionResult, LlmError> {
             self.calls.lock().unwrap().push(messages.to_vec());
             self.responses

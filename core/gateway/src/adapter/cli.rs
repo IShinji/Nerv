@@ -40,7 +40,11 @@ impl super::ChannelAdapter for CliAdapter {
             let message = Message::new_text(ChannelType::Cli, "cli_user", &line);
             let (reply_tx, mut reply_rx) = mpsc::channel::<Message>(1);
 
-            let incoming = IncomingMessage { message, reply_tx };
+            let incoming = IncomingMessage {
+                message,
+                reply_tx,
+                progress_tx: None,
+            };
 
             if gateway_tx.send(incoming).await.is_err() {
                 warn!("Gateway channel closed, stopping CLI adapter");

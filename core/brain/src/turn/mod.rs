@@ -116,6 +116,7 @@ impl TurnRunner {
         channel: &str,
         sender: &str,
         caller: std::sync::Arc<dyn ModelCaller>,
+        progress: Option<&crate::llm::ProgressCallback>,
     ) -> Result<String, BrainError> {
         let scope = scope_for(channel, sender);
         let mut trace = TraceRecord::new(channel, &scope);
@@ -158,6 +159,7 @@ impl TurnRunner {
                         caller.as_ref(),
                         caller.clone(),
                         &mut trace,
+                        progress,
                     )
                     .await
                 }
@@ -225,6 +227,7 @@ impl TurnRunner {
         caller: &dyn ModelCaller,
         caller_arc: crate::memory::summarizer::ArcCaller,
         trace: &mut TraceRecord,
+        progress: Option<&crate::llm::ProgressCallback>,
     ) -> Result<String, TurnError> {
         let agent_name = agent.name.clone();
         let agent_tools = agent.tools.clone();
@@ -253,6 +256,7 @@ impl TurnRunner {
         let (loop_outcome, notifications) = {
             let mut ctx = LoopContext {
                 caller,
+                progress,
                 trace,
                 max_rounds: self.max_rounds,
                 sender,
