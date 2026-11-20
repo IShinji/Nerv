@@ -7,6 +7,9 @@ license.workspace = true
 [dependencies]
 # The turn loop's model-caller is a trait object (tests inject a fake).
 async-trait = "0.1"
+# Parallel workflow sub-steps run concurrently and are joined (PRD Phase 2
+# 复杂任务图并行调度).
+futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 # The facade drives the python sidecar through the shared JSON-RPC client.

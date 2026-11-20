@@ -38,18 +38,23 @@ use std::path::PathBuf;
 
 impl SkillRegistry {
     pub fn new(project_root: &Path) -> Self {
+        // Preset skills first, then the owner's personal ones (personal wins
+        // on a name clash), mirroring the agent registry's precedence.
         let skills_dir = project_root.join("skills");
+        let personal_dir = project_root.join("personal").join("skills");
         let mut registry = Self {
             skills_dir: skills_dir.clone(),
             skills: Vec::new(),
         };
-        registry.reload(&skills_dir);
+        registry.load_dir(&skills_dir);
+        registry.load_dir(&personal_dir);
         registry
     }
 
-    /// Reload skills from disk.
-    pub fn reload(&mut self, skills_dir: &Path) {
-        self.skills = Vec::new();
+    /// Load skills from one directory into the registry (later dirs override
+    /// earlier ones on a name clash). Clears are done by the caller — `new`
+    /// starts from empty, and `import_skill` reloads additively.
+    pub(crate) fn load_dir(&mut self, skills_dir: &Path) {
         if !skills_dir.exists() {
             return;
         }
@@ -65,11 +70,10 @@ impl SkillRegistry {
         }
         paths.sort();
         for path in paths {
-            if let Some(skill) = parse_skill_file(&path) {
-                self.skills
-                    .retain(|s| s.name.to_lowercase() != skill.name.to_lowercase());
-                self.skills.push(skill);
-            }
+            let skill = parse_skill_file(&path);
+            self.skills
+                .retain(|s| s.name.to_lowercase() != skill.name.to_lowercase());
+            self.skills.push(skill);
         }
     }
 
@@ -143,9 +147,23 @@ impl SkillRegistry {
 }
 
 /// Parse a SKILL.md file with optional YAML frontmatter.
-fn parse_skill_file(path: &Path) -> Option<SkillDefinition> {
-    let raw = std::fs::read_to_string(path).ok()?;
+pub(crate) fn parse_skill_file(path: &Path) -> SkillDefinition {
+    let raw = std::fs::read_to_string(path).unwrap_or_default();
+    skill_from_markdown(&raw, || {
+        path.parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    })
+    .unwrap_or_default()
+}
 
+/// Parse a SKILL.md-formatted markdown string (optional YAML frontmatter).
+/// `fallback_name` supplies the name when the frontmatter has none.
+pub(crate) fn skill_from_markdown(
+    raw: &str,
+    fallback_name: impl Fn() -> String,
+) -> Option<SkillDefinition> {
     let mut metadata: serde_yaml::Value = serde_yaml::Value::Null;
     let body;
     if raw.starts_with("---\n") {
@@ -179,10 +197,7 @@ fn parse_skill_file(path: &Path) -> Option<SkillDefinition> {
     };
 
     let name = if get_str("name").is_empty() {
-        path.parent()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default()
+        fallback_name()
     } else {
         get_str("name")
     };
@@ -194,6 +209,6 @@ fn parse_skill_file(path: &Path) -> Option<SkillDefinition> {
         owner_agents: get_list("owner_agents"),
         recommended_workflows: get_list("recommended_workflows"),
         body,
-        source_path: path.display().to_string(),
+        source_path: String::new(),
     })
 }

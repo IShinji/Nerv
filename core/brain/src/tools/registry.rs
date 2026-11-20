@@ -147,9 +147,11 @@ fn build_registry() -> Vec<ToolDefinition> {
         super::knowledge::get_skill(),
         super::knowledge::list_review_queue(),
         super::knowledge::mcp_presets(),
+        super::knowledge::import_skill(),
         super::knowledge::mcp_status(),
         super::delegation::delegate_task(),
         super::workflow_exec::execute_workflow(),
         super::delegation::delegation_status(),
+        super::delegation::dispatch_agents(),
     ]
 }
