@@ -30,6 +30,12 @@ function annotate(meta: ReplyMeta | undefined): string | null {
   return bits.join(" · ");
 }
 
+const QUICK_COMMANDS: string[] = [
+  "What's on my calendar today?",
+  "Summarize this week's conversations",
+  "Check my unfinished workflows",
+];
+
 export function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -173,6 +179,18 @@ export function Chat() {
           ))}
         </div>
       )}
+      <div className="quick-commands">
+        {QUICK_COMMANDS.map((cmd) => (
+          <button
+            key={cmd}
+            className="quick-command"
+            onClick={() => setInput(cmd)}
+            disabled={busy}
+          >
+            {cmd}
+          </button>
+        ))}
+      </div>
       <div className="composer">
         <textarea
           value={input}

@@ -214,6 +214,166 @@ pub struct SystemStats {
     pub recent: Vec<RequestRecord>,
 }
 
+/// Dashboard breakdown (PRD 4.4): aggregate the whole trace log per day
+/// and per model.
+#[tauri::command]
+async fn stats_breakdown(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let path = state
+        .project_root
+        .join("personal")
+        .join("logs")
+        .join("trace.jsonl");
+    let body = std::fs::read_to_string(&path).unwrap_or_default();
+    #[derive(Default, serde::Serialize)]
+    struct Bucket {
+        requests: u64,
+        est_input_tokens: i64,
+        cost_usd: f64,
+        errors: u64,
+    }
+    let mut per_day: std::collections::BTreeMap<String, Bucket> = Default::default();
+    let mut per_model: std::collections::BTreeMap<String, Bucket> = Default::default();
+    for line in body.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let day = value
+            .get("ts")
+            .and_then(|v| v.as_str())
+            .map(|ts| ts.chars().take(10).collect::<String>())
+            .unwrap_or_else(|| "unknown".to_string());
+        let model = value
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let tokens = value
+            .get("est_input_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let cost = value
+            .get("cost_usd")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let is_error = value.get("error").is_some_and(|e| !e.is_null());
+        for bucket in [
+            per_day.entry(day).or_default(),
+            per_model.entry(model).or_default(),
+        ] {
+            bucket.requests += 1;
+            bucket.est_input_tokens += tokens;
+            bucket.cost_usd += cost;
+            if is_error {
+                bucket.errors += 1;
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "per_day": per_day,
+        "per_model": per_model,
+    }))
+}
+
+/// The raw user config.yaml for the settings-page editor (empty when the
+/// file doesn't exist yet — the defaults apply).
+#[tauri::command]
+async fn get_config_yaml(state: State<'_, AppState>) -> Result<String, String> {
+    let path = state.project_root.join("config.yaml");
+    if path.exists() {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    } else {
+        Ok(String::new())
+    }
+}
+
+/// Save an edited config.yaml: parse-validated against NervConfig (merged
+/// with the defaults) before the write lands; file mode tightened to 0600.
+#[tauri::command]
+async fn save_config_yaml(state: State<'_, AppState>, yaml: String) -> Result<(), String> {
+    let defaults =
+        std::fs::read_to_string(state.project_root.join("core").join("config.default.yaml"))
+            .map_err(|e| format!("cannot read the default config: {e}"))?;
+    let mut merged_value: serde_yaml::Value =
+        serde_yaml::from_str(&defaults).map_err(|e| format!("default config invalid: {e}"))?;
+    let user_value: serde_yaml::Value =
+        serde_yaml::from_str(&yaml).map_err(|e| format!("YAML syntax error: {e}"))?;
+    if let (serde_yaml::Value::Mapping(base), serde_yaml::Value::Mapping(over)) =
+        (&mut merged_value, &user_value)
+    {
+        for (k, v) in over {
+            base.insert(k.clone(), v.clone());
+        }
+    }
+    nerv_shared::config::NervConfig::load(&state.project_root)
+        .map_err(|e| format!("config invalid: {e}"))?;
+    let path = state.project_root.join("config.yaml");
+    std::fs::write(&path, &yaml).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Data export (PRD 4.4): bundle every personal/ text file into one
+/// timestamped JSON archive under personal/exports/.
+#[tauri::command]
+async fn export_data(state: State<'_, AppState>) -> Result<String, String> {
+    let personal = state.project_root.join("personal");
+    let mut files: Vec<(String, String)> = Vec::new();
+    fn collect(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<(String, String)>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    collect(&path, base, out);
+                } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                    matches!(e, "yaml" | "md" | "json" | "jsonl" | "ics" | "env" | "txt")
+                }) && !path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with(".lock"))
+                {
+                    if let Ok(body) = std::fs::read_to_string(&path) {
+                        let rel = path
+                            .strip_prefix(base)
+                            .unwrap_or(&path)
+                            .display()
+                            .to_string();
+                        out.push((rel, body));
+                    }
+                }
+            }
+        }
+    }
+    collect(&personal, &personal, &mut files);
+    files.sort();
+    let archive = serde_json::json!({
+        "schema_version": 1,
+        "exported_at": chrono::Utc::now().to_rfc3339(),
+        "files": files.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(),
+        "contents": files,
+    });
+    let out_dir = personal.join("exports");
+    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+    let name = format!(
+        "nerv-export-{}.json",
+        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+    );
+    let path = out_dir.join(&name);
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&archive).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(format!(
+        "Exported {} file(s) to {}",
+        files.len(),
+        path.display()
+    ))
+}
+
 /// Token/cost dashboard from the trace log (the newest entries win).
 #[tauri::command]
 async fn system_stats(state: State<'_, AppState>) -> Result<SystemStats, String> {
@@ -567,7 +727,11 @@ fn main() {
             save_channels,
             memory_stats,
             ollama_loaded,
-            task_queue
+            task_queue,
+            stats_breakdown,
+            get_config_yaml,
+            save_config_yaml,
+            export_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Nerv GUI");

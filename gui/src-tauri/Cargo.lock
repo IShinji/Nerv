@@ -2944,6 +2944,7 @@ dependencies = [
 name = "nerv-gui"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "nerv-brain",
  "nerv-shared",
  "reqwest 0.12.28",
