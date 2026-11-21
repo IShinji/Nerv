@@ -374,6 +374,55 @@ async fn export_data(state: State<'_, AppState>) -> Result<String, String> {
     ))
 }
 
+/// Data import (PRD 4.4): restore a `nerv-export-*.json` archive produced by
+/// [`export_data`]. Every archive file overwrites the matching personal/
+/// path — the caller is expected to point this at their own archive.
+#[tauri::command]
+async fn import_data(state: State<'_, AppState>, archive: String) -> Result<String, String> {
+    let body = std::fs::read_to_string(&archive).map_err(|e| format!("{}: {e}", archive))?;
+    let data: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("not a Nerv export archive: {e}"))?;
+    if data.get("schema_version").and_then(|v| v.as_i64()) != Some(1) {
+        return Err("unsupported archive schema_version".into());
+    }
+    let contents = data
+        .get("contents")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "archive has no contents".to_string())?;
+    let personal = state.project_root.join("personal");
+    let mut restored = 0usize;
+    for entry in contents {
+        let Some(pair) = entry.as_array() else {
+            continue;
+        };
+        let (Some(rel), Some(body)) = (pair.first(), pair.get(1)) else {
+            continue;
+        };
+        let (Some(rel), Some(body)) = (rel.as_str(), body.as_str()) else {
+            continue;
+        };
+        // Fail closed on traversal: the restored path must stay in personal/.
+        let target = personal.join(rel);
+        if !target.starts_with(&personal) {
+            return Err(format!("archive path escapes personal/: {rel}"));
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&target, body).map_err(|e| e.to_string())?;
+        if rel.ends_with("api_keys.env") || rel.ends_with("config.yaml") {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        restored += 1;
+    }
+    Ok(format!("Imported {restored} file(s) into personal/"))
+}
+
 /// Token/cost dashboard from the trace log (the newest entries win).
 #[tauri::command]
 async fn system_stats(state: State<'_, AppState>) -> Result<SystemStats, String> {
@@ -731,7 +780,8 @@ fn main() {
             stats_breakdown,
             get_config_yaml,
             save_config_yaml,
-            export_data
+            export_data,
+            import_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Nerv GUI");
