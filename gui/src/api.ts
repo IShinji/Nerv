@@ -81,6 +81,10 @@ export async function exportData(): Promise<string> {
   return invoke<string>("export_data");
 }
 
+export async function importData(archive: string): Promise<string> {
+  return invoke<string>("import_data", { archive });
+}
+
 export async function listAgents(): Promise<Agent[]> {
   return invoke<Agent[]>("list_agents");
 }

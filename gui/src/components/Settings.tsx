@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   exportData,
   getConfigYaml,
+  importData,
   saveConfigYaml,
 } from "../api";
 
@@ -12,6 +13,8 @@ export function Settings() {
   const [configStatus, setConfigStatus] = useState<string>("");
   const [configLoading, setConfigLoading] = useState(true);
   const [exportStatus, setExportStatus] = useState<string>("");
+  const [importPath, setImportPath] = useState<string>("");
+  const [importStatus, setImportStatus] = useState<string>("");
 
   useEffect(() => {
     getConfigYaml()
@@ -48,6 +51,34 @@ export function Settings() {
           calendar) into a timestamped JSON archive under personal/exports/.
         </div>
         {exportStatus && <div className="editor-status">{exportStatus}</div>}
+      </div>
+
+      <div className="settings-section">
+        <div className="panel-title">Import</div>
+        <div className="wizard-hint">
+          Restore a nerv-export-*.json archive. Every file in the archive
+          overwrites the matching personal/ path — point it at your own
+          archive only.
+        </div>
+        <div className="wizard-field">
+          <span>Archive path</span>
+          <input
+            value={importPath}
+            placeholder="personal/exports/nerv-export-20261121-120000.json"
+            onChange={(e) => setImportPath(e.target.value)}
+          />
+          <button
+            onClick={() =>
+              void importData(importPath)
+                .then(setImportStatus)
+                .catch((e: unknown) => setImportStatus(`⚠️ ${String(e)}`))
+            }
+            disabled={importPath.trim() === ""}
+          >
+            Import
+          </button>
+        </div>
+        {importStatus && <div className="editor-status">{importStatus}</div>}
       </div>
 
       <div className="settings-section">
