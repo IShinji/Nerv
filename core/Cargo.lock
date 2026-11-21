@@ -2323,7 +2323,7 @@ dependencies = [
 
 [[package]]
 name = "nerv-brain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "nerv-gateway"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-imap",
@@ -2379,7 +2379,7 @@ dependencies = [
 
 [[package]]
 name = "nerv-shared"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "libc",
