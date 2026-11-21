@@ -3,10 +3,11 @@ import { AgentEditor } from "./components/AgentEditor";
 import { AgentList } from "./components/AgentList";
 import { Chat } from "./components/Chat";
 import { Dashboard } from "./components/Dashboard";
+import { Settings } from "./components/Settings";
 import { SetupWizard } from "./components/SetupWizard";
 import { checkHeartbeat, listAgents, type Agent } from "./api";
 
-type Tab = "chat" | "agents" | "dashboard" | "setup";
+type Tab = "chat" | "agents" | "dashboard" | "settings" | "setup";
 
 export function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -87,6 +88,12 @@ export function App() {
           >
             Dashboard
           </button>
+          <button
+            className={tab === "settings" ? "tab active" : "tab"}
+            onClick={() => setTab("settings")}
+          >
+            Settings
+          </button>
         </nav>
         {notice && (
           <div className="notice" onClick={() => setNotice("")}>
@@ -128,6 +135,7 @@ export function App() {
           </div>
         )}
         {tab === "dashboard" && <Dashboard />}
+        {tab === "settings" && <Settings />}
       </main>
     </div>
   );

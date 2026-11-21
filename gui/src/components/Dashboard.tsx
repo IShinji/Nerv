@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import {
   memoryStats,
   ollamaLoaded,
+  statsBreakdown,
   systemStats,
   taskQueue,
+  type Breakdown,
   type MemoryStats,
   type SystemStats,
   type TaskRow,
@@ -17,12 +19,16 @@ export function Dashboard() {
   const [mem, setMem] = useState<MemoryStats | null>(null);
   const [loaded, setLoaded] = useState<string[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [breakdown, setBreakdown] = useState<Breakdown | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     systemStats()
       .then(setStats)
       .catch((e) => setError(String(e)));
+    statsBreakdown()
+      .then(setBreakdown)
+      .catch(() => {});
     const refresh = () => {
       memoryStats()
         .then(setMem)
@@ -95,6 +101,38 @@ export function Dashboard() {
           ))}
         </div>
       </div>
+
+      {breakdown && (
+        <div className="dash-columns">
+          <div className="dash-panel">
+            <div className="panel-title">By day</div>
+            {Object.entries(breakdown.per_day)
+              .sort(([a], [b]) => (a < b ? 1 : -1))
+              .slice(0, 14)
+              .map(([day, b]) => (
+                <div className="panel-row" key={day}>
+                  {day}: {b.requests} req ·{" "}
+                  {b.est_input_tokens.toLocaleString()} tok · $
+                  {b.cost_usd.toFixed(4)}
+                  {b.errors > 0 ? ` · ${b.errors} err` : ""}
+                </div>
+              ))}
+          </div>
+          <div className="dash-panel">
+            <div className="panel-title">By model</div>
+            {Object.entries(breakdown.per_model)
+              .sort(([, a], [, b]) => b.requests - a.requests)
+              .map(([model, b]) => (
+                <div className="panel-row" key={model}>
+                  {model}: {b.requests} req ·{" "}
+                  {b.est_input_tokens.toLocaleString()} tok · $
+                  {b.cost_usd.toFixed(4)}
+                  {b.errors > 0 ? ` · ${b.errors} err` : ""}
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
 
       <table className="requests-table">
         <thead>

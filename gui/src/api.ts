@@ -53,6 +53,34 @@ export async function readDroppedFile(path: string): Promise<FilePayload> {
   return invoke<FilePayload>("read_dropped_file", { path });
 }
 
+export interface BreakdownBucket {
+  requests: number;
+  est_input_tokens: number;
+  cost_usd: number;
+  errors: number;
+}
+
+export interface Breakdown {
+  per_day: Record<string, BreakdownBucket>;
+  per_model: Record<string, BreakdownBucket>;
+}
+
+export async function statsBreakdown(): Promise<Breakdown> {
+  return invoke<Breakdown>("stats_breakdown");
+}
+
+export async function getConfigYaml(): Promise<string> {
+  return invoke<string>("get_config_yaml");
+}
+
+export async function saveConfigYaml(yaml: string): Promise<void> {
+  return invoke<void>("save_config_yaml", { yaml });
+}
+
+export async function exportData(): Promise<string> {
+  return invoke<string>("export_data");
+}
+
 export async function listAgents(): Promise<Agent[]> {
   return invoke<Agent[]>("list_agents");
 }
