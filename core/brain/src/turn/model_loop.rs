@@ -268,6 +268,12 @@ async fn execute_tool_calls(
         let func_name = tc.function.name.clone();
         ctx.trace.tools_called.push(func_name.clone());
 
+        // Agent 状态指示器: push the executing state into the typewriter
+        // feed so the GUI shows what the agent is doing right now.
+        if let Some(progress) = ctx.progress {
+            progress(&format!("⚙ {}", func_name));
+        }
+
         // Every registered tool executes natively; an unregistered name is a
         // model hallucination and is reported back as such (the old python
         // run_tool RPC did the same through its registry).

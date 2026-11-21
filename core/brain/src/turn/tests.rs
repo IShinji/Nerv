@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::llm::CompletionResult;
+use std::sync::Mutex;
 
 fn final_result(content: &str) -> CompletionResult {
     CompletionResult {
@@ -381,4 +382,39 @@ fn scope_for_slugs_channel_and_sender() {
     assert_eq!(scope_for("telegram", "42"), "telegram-42");
     assert_eq!(scope_for("Telegram", "User@1"), "telegram-user-1");
     assert_eq!(scope_for("  ", ""), "default");
+}
+
+#[tokio::test]
+async fn tool_execution_pushes_status_to_the_progress_feed() {
+    let dir = tempfile::tempdir().unwrap();
+    let runner = started_runner(dir.path());
+    // `current_time` is native and harmless; run through the agent path.
+    let caller = std::sync::Arc::new(model_loop::testing::FakeModelCaller::new(vec![
+        tool_calls_result(&[("current_time", serde_json::json!({}))]),
+        final_result("done"),
+    ]));
+
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let spy = Arc::clone(&seen);
+    let progress = move |snapshot: &str| {
+        spy.lock().unwrap().push(snapshot.to_string());
+    };
+
+    runner
+        .run_turn(
+            "hello",
+            &route_result(),
+            "cli",
+            "",
+            caller.clone(),
+            Some(&progress),
+        )
+        .await
+        .expect("turn succeeds");
+
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.iter().any(|s| s.contains("⚙ current_time")),
+        "tool status must reach the progress feed: {seen:?}"
+    );
 }
