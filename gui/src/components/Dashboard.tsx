@@ -131,6 +131,19 @@ export function Dashboard() {
                 </div>
               ))}
           </div>
+          <div className="dash-panel">
+            <div className="panel-title">By agent</div>
+            {Object.entries(breakdown.per_agent)
+              .sort(([, a], [, b]) => b.requests - a.requests)
+              .map(([agent, b]) => (
+                <div className="panel-row" key={agent}>
+                  {agent}: {b.requests} req ·{" "}
+                  {b.est_input_tokens.toLocaleString()} tok · $
+                  {b.cost_usd.toFixed(4)}
+                  {b.errors > 0 ? ` · ${b.errors} err` : ""}
+                </div>
+              ))}
+          </div>
         </div>
       )}
 
