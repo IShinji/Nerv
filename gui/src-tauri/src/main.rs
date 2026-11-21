@@ -887,7 +887,6 @@ mod tests {
 #[cfg(test)]
 mod command_tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn dropped_text_file_is_inlined() {
@@ -962,7 +961,5 @@ mod command_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("does-not-exist.txt");
         assert!(read_dropped_payload(&path).is_err());
-        // Silence unused-import warnings for the Path alias in test scope.
-        let _ = std::path::Path::new(".");
     }
 }
