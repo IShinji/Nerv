@@ -101,7 +101,6 @@ async fn execute_or_suspend(
             project_root: project_root.to_path_buf(),
             workspace_root: workspace_root.to_path_buf(),
             scope: scope.to_string(),
-            brain: None,
             confirmed: None,
         };
         let result = (tool.func)(&tool_ctx, &arguments).await;

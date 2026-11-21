@@ -42,7 +42,6 @@ pub fn search_memory() -> ToolDefinition {
             let ctx = ToolContext {
                 project_root: ctx.project_root.clone(),
                 workspace_root: ctx.workspace_root.clone(),
-                brain: ctx.brain.clone(),
                 scope: ctx.scope.clone(),
             confirmed: None,
         };
@@ -117,7 +116,6 @@ pub fn get_fact_section() -> ToolDefinition {
             let ctx = ToolContext {
                 project_root: ctx.project_root.clone(),
                 workspace_root: ctx.workspace_root.clone(),
-                brain: ctx.brain.clone(),
                 scope: ctx.scope.clone(),
             confirmed: None,
         };

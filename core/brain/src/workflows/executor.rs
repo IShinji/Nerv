@@ -621,7 +621,6 @@ impl WorkflowExecutor {
             project_root: self.ctx.project_root.clone(),
             workspace_root: self.ctx.workspace_root.clone(),
             scope: self.ctx.scope.clone(),
-            brain: None,
             confirmed: None,
         };
         let result: ToolResult = (tool.func)(&tool_ctx, kwargs).await;

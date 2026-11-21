@@ -139,7 +139,6 @@ async fn execute_pending_action(project_root: &Path, action: &PendingRecord) -> 
                 project_root: project_root.to_path_buf(),
                 workspace_root,
                 scope: action.scope.clone(),
-                brain: None,
                 confirmed: Some(action.clone()),
             };
             let result = (tool.func)(&tool_ctx, &action.arguments).await;
