@@ -54,7 +54,6 @@ pub struct ToolContext {
     pub project_root: PathBuf,
     pub workspace_root: PathBuf,
     pub scope: String,
-    pub brain: Option<std::sync::Arc<nerv_shared::brain_client::BrainClient>>,
     /// The record the user confirmed, when this call IS a confirmed pending
     /// action (`execute_workflow` reads it for whole-run approvals).
     pub confirmed: Option<crate::turn::PendingRecord>,

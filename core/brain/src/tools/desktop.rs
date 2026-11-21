@@ -471,7 +471,6 @@ pub fn browser_interactive() -> ToolDefinition {
                 project_root: ctx.project_root.clone(),
                 workspace_root: ctx.workspace_root.clone(),
                 scope: ctx.scope.clone(),
-                brain: ctx.brain.clone(),
             confirmed: None,
         };
             let args = args.clone();
@@ -569,7 +568,6 @@ pub fn chrome_browser() -> ToolDefinition {
                         project_root: PathBuf::new(),
                         workspace_root: PathBuf::new(),
                         scope: String::new(),
-                        brain: None,
             confirmed: None,
         },
                     &normalized,

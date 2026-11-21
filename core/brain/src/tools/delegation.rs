@@ -110,7 +110,6 @@ pub fn delegate_task() -> ToolDefinition {
                 project_root: ctx.project_root.clone(),
                 workspace_root: ctx.workspace_root.clone(),
                 scope: ctx.scope.clone(),
-                brain: ctx.brain.clone(),
             confirmed: None,
         };
             let args = args.clone();
@@ -342,7 +341,6 @@ pub fn dispatch_agents() -> ToolDefinition {
                 project_root: ctx.project_root.clone(),
                 workspace_root: ctx.workspace_root.clone(),
                 scope: ctx.scope.clone(),
-                brain: ctx.brain.clone(),
                 confirmed: ctx.confirmed.clone(),
             };
             let args = args.clone();
@@ -532,7 +530,6 @@ mod tests {
             project_root: root.clone(),
             workspace_root: root.clone(),
             scope: "cli".to_string(),
-            brain: None,
             confirmed: None,
         };
         let args = json!({
@@ -560,7 +557,6 @@ mod tests {
             project_root: ctx.project_root.clone(),
             workspace_root: ctx.workspace_root.clone(),
             scope: ctx.scope.clone(),
-            brain: None,
             confirmed: Some(record),
         };
         let result = dispatch_agents_impl(&ctx, &args).await;
@@ -584,7 +580,6 @@ mod tests {
             project_root: root.clone(),
             workspace_root: root.clone(),
             scope: "cli".to_string(),
-            brain: None,
             confirmed: None,
         };
         let args = json!({

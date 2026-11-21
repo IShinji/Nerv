@@ -331,7 +331,6 @@ async fn native_run_tool(
             project_root: ctx.project_root.to_path_buf(),
             workspace_root,
             scope: ctx.scope.to_string(),
-            brain: None,
             confirmed: None,
         };
         let result = (tool.func)(&tool_ctx, arguments).await;

@@ -154,7 +154,6 @@ fn native_tools_execute_without_confirmation_for_safe_paths() {
         project_root: dir.path().to_path_buf(),
         workspace_root: dir.path().to_path_buf(),
         scope: "test-scope".to_string(),
-        brain: None,
         confirmed: None,
     };
     let result = tokio::runtime::Runtime::new()
@@ -172,7 +171,6 @@ fn file_tools_read_and_write_workspace_files() {
         project_root: dir.path().to_path_buf(),
         workspace_root: dir.path().to_path_buf(),
         scope: "test-scope".to_string(),
-        brain: None,
         confirmed: None,
     };
     let write = registry.get_tool("write_file_full").unwrap();
@@ -275,7 +273,6 @@ fn search_memory_tool_reports_scoped_hits() {
         project_root: dir.path().to_path_buf(),
         workspace_root: dir.path().to_path_buf(),
         scope: "test-scope".to_string(),
-        brain: None,
         confirmed: None,
     };
     let tool = memory::search_memory();
@@ -300,7 +297,6 @@ fn get_fact_section_tool_lists_and_reads() {
         project_root: dir.path().to_path_buf(),
         workspace_root: dir.path().to_path_buf(),
         scope: "test-scope".to_string(),
-        brain: None,
         confirmed: None,
     };
     let tool = memory::get_fact_section();

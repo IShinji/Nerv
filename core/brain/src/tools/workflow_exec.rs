@@ -28,7 +28,6 @@ pub fn execute_workflow() -> ToolDefinition {
                 project_root: ctx.project_root.clone(),
                 workspace_root: ctx.workspace_root.clone(),
                 scope: ctx.scope.clone(),
-                brain: ctx.brain.clone(),
                 confirmed: ctx.confirmed.clone(),
             };
             let args = args.clone();
