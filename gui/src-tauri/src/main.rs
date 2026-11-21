@@ -90,7 +90,7 @@ fn read_dropped_payload(candidate: &std::path::Path) -> Result<FilePayload, Stri
             truncated: false,
         });
     }
-    let bytes = std::fs::read(&candidate).map_err(|e| format!("{}: {e}", path))?;
+    let bytes = std::fs::read(candidate).map_err(|e| format!("{}: {e}", path))?;
     // Binary heuristic: a NUL byte in the head disqualifies inlining.
     let head = &bytes[..bytes.len().min(8192)];
     let binary = bytes.is_empty() || head.contains(&0u8);
