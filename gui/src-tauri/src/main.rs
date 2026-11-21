@@ -69,11 +69,13 @@ const DROP_FILE_MAX_BYTES: u64 = 256 * 1024;
 /// through its own file tools by path instead.
 #[tauri::command]
 async fn read_dropped_file(path: String) -> Result<FilePayload, String> {
-    let candidate = std::path::PathBuf::from(&path);
-    let meta = std::fs::metadata(&candidate).map_err(|e| format!("{}: {e}", path))?;
-    if !meta.is_file() {
-        return Err(format!("{path} is not a regular file"));
-    }
+    read_dropped_payload(std::path::Path::new(&path))
+}
+
+/// The sync core of [`read_dropped_file`] (testable without the runtime).
+fn read_dropped_payload(candidate: &std::path::Path) -> Result<FilePayload, String> {
+    let path = candidate.display().to_string();
+    let meta = std::fs::metadata(candidate).map_err(|e| format!("{}: {e}", path))?;
     let size = meta.len();
     let name = candidate
         .file_name()
@@ -542,8 +544,17 @@ async fn save_api_keys(
     keys: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
     let path = state.project_root.join("personal").join("api_keys.env");
+    merge_api_keys(&path, keys)
+}
+
+/// Merge new keys into an api_keys.env file: existing values not in this
+/// submission are kept, empty submissions are ignored, result is sorted.
+fn merge_api_keys(
+    path: &std::path::Path,
+    keys: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
     let mut existing: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    if let Ok(body) = std::fs::read_to_string(&path) {
+    if let Ok(body) = std::fs::read_to_string(path) {
         for line in body.lines() {
             if let Some((k, v)) = line.split_once('=') {
                 existing.insert(k.trim().to_string(), v.trim().to_string());
@@ -560,7 +571,7 @@ async fn save_api_keys(
     std::fs::create_dir_all(path.parent().expect("has parent")).map_err(|e| e.to_string())?;
     let mut lines: Vec<String> = existing.iter().map(|(k, v)| format!("{k}={v}")).collect();
     lines.sort();
-    std::fs::write(&path, lines.join("\n") + "\n").map_err(|e| e.to_string())
+    std::fs::write(path, lines.join("\n") + "\n").map_err(|e| e.to_string())
 }
 
 /// Wizard step 4: write the channels block into the user config (merged
@@ -870,5 +881,88 @@ mod tests {
     fn extract_field_ignores_missing_and_empty_values() {
         assert_eq!(extract_field("name:\n", "name"), None);
         assert_eq!(extract_field("other: 1\n", "name"), None);
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn dropped_text_file_is_inlined() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "hello from a text file").unwrap();
+
+        let payload = read_dropped_payload(&path).unwrap();
+        assert_eq!(payload.text.as_deref(), Some("hello from a text file"));
+        assert!(!payload.truncated);
+    }
+
+    #[test]
+    fn dropped_binary_file_returns_no_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blob.bin");
+        let mut bytes = vec![b'x'; 200];
+        bytes[100] = 0; // NUL in the head disqualifies inlining
+        std::fs::write(&path, bytes).unwrap();
+
+        let payload = read_dropped_payload(&path).unwrap();
+        assert!(payload.text.is_none());
+    }
+
+    #[test]
+    fn dropped_oversize_file_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        std::fs::write(&path, vec![b'a'; (DROP_FILE_MAX_BYTES + 1) as usize]).unwrap();
+
+        let payload = read_dropped_payload(&path).unwrap();
+        assert!(payload.text.is_none(), "oversize file must not be inlined");
+        assert_eq!(payload.size_bytes, DROP_FILE_MAX_BYTES + 1);
+    }
+
+    #[test]
+    fn api_keys_merge_keeps_existing_and_ignores_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api_keys.env");
+        std::fs::write(
+            &path,
+            "ANTHROPIC_API_KEY=old-value\nGEMINI_API_KEY=keepme\n",
+        )
+        .unwrap();
+
+        let mut keys = std::collections::HashMap::new();
+        keys.insert("ANTHROPIC_API_KEY".to_string(), "new-value".to_string());
+        keys.insert("OPENAI_API_KEY".to_string(), "  ".to_string()); // empty → ignored
+        merge_api_keys(&path, keys).unwrap();
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("ANTHROPIC_API_KEY=new-value"));
+        assert!(body.contains("GEMINI_API_KEY=keepme"));
+        assert!(!body.contains("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn api_keys_merge_creates_the_file_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal").join("api_keys.env");
+
+        let mut keys = std::collections::HashMap::new();
+        keys.insert("DEEPSEEK_API_KEY".to_string(), "sk-test".to_string());
+        merge_api_keys(&path, keys).unwrap();
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(body, "DEEPSEEK_API_KEY=sk-test\n");
+    }
+
+    #[test]
+    fn dropped_missing_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.txt");
+        assert!(read_dropped_payload(&path).is_err());
+        // Silence unused-import warnings for the Path alias in test scope.
+        let _ = std::path::Path::new(".");
     }
 }
