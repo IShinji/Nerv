@@ -3,6 +3,9 @@ import {
   exportData,
   getConfigYaml,
   importData,
+  ollamaDelete,
+  ollamaModels,
+  ollamaPull,
   saveConfigYaml,
 } from "../api";
 
@@ -15,13 +18,45 @@ export function Settings() {
   const [exportStatus, setExportStatus] = useState<string>("");
   const [importPath, setImportPath] = useState<string>("");
   const [importStatus, setImportStatus] = useState<string>("");
+  const [installed, setInstalled] = useState<string[]>([]);
+  const [pullName, setPullName] = useState<string>("");
+  const [modelStatus, setModelStatus] = useState<string>("");
 
   useEffect(() => {
     getConfigYaml()
       .then(setConfigYaml)
       .catch((e) => setConfigStatus(`⚠️ ${String(e)}`))
       .finally(() => setConfigLoading(false));
+    refreshModels();
   }, []);
+
+  function refreshModels() {
+    ollamaModels()
+      .then(setInstalled)
+      .catch(() => setInstalled([]));
+  }
+
+  async function pull(name: string) {
+    if (!name.trim()) return;
+    setModelStatus(`Downloading ${name}…`);
+    try {
+      await ollamaPull(name);
+      setModelStatus(`✓ ${name} ready.`);
+      refreshModels();
+    } catch (e) {
+      setModelStatus(`⚠️ ${String(e)}`);
+    }
+  }
+
+  async function remove(name: string) {
+    try {
+      await ollamaDelete(name);
+      setModelStatus(`✓ ${name} deleted.`);
+      refreshModels();
+    } catch (e) {
+      setModelStatus(`⚠️ ${String(e)}`);
+    }
+  }
 
   async function save() {
     setConfigStatus("");
@@ -51,6 +86,31 @@ export function Settings() {
           calendar) into a timestamped JSON archive under personal/exports/.
         </div>
         {exportStatus && <div className="editor-status">{exportStatus}</div>}
+      </div>
+
+      <div className="settings-section">
+        <div className="panel-title">Local models (Ollama)</div>
+        {installed.length === 0 && (
+          <div className="panel-empty">No models installed.</div>
+        )}
+        {installed.map((name) => (
+          <div className="model-row" key={name}>
+            <span>{name}</span>
+            <button className="model-delete" onClick={() => void remove(name)}>
+              Delete
+            </button>
+          </div>
+        ))}
+        <div className="wizard-field">
+          <span>Pull a model by name</span>
+          <input
+            value={pullName}
+            placeholder="qwen2.5:7b"
+            onChange={(e) => setPullName(e.target.value)}
+          />
+          <button onClick={() => void pull(pullName)}>Pull</button>
+        </div>
+        {modelStatus && <div className="editor-status">{modelStatus}</div>}
       </div>
 
       <div className="settings-section">

@@ -63,6 +63,7 @@ export interface BreakdownBucket {
 export interface Breakdown {
   per_day: Record<string, BreakdownBucket>;
   per_model: Record<string, BreakdownBucket>;
+  per_agent: Record<string, BreakdownBucket>;
 }
 
 export async function statsBreakdown(): Promise<Breakdown> {
@@ -123,6 +124,10 @@ export async function ollamaModels(): Promise<string[]> {
 
 export async function ollamaPull(model: string): Promise<void> {
   return invoke<void>("ollama_pull", { model });
+}
+
+export async function ollamaDelete(model: string): Promise<void> {
+  return invoke<void>("ollama_delete", { model });
 }
 
 export interface MemoryStats {

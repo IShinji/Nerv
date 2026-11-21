@@ -233,6 +233,7 @@ async fn stats_breakdown(state: State<'_, AppState>) -> Result<serde_json::Value
     }
     let mut per_day: std::collections::BTreeMap<String, Bucket> = Default::default();
     let mut per_model: std::collections::BTreeMap<String, Bucket> = Default::default();
+    let mut per_agent: std::collections::BTreeMap<String, Bucket> = Default::default();
     for line in body.lines() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
@@ -256,9 +257,15 @@ async fn stats_breakdown(state: State<'_, AppState>) -> Result<serde_json::Value
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
         let is_error = value.get("error").is_some_and(|e| !e.is_null());
+        let agent = value
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
         for bucket in [
             per_day.entry(day).or_default(),
             per_model.entry(model).or_default(),
+            per_agent.entry(agent).or_default(),
         ] {
             bucket.requests += 1;
             bucket.est_input_tokens += tokens;
@@ -271,6 +278,7 @@ async fn stats_breakdown(state: State<'_, AppState>) -> Result<serde_json::Value
     Ok(serde_json::json!({
         "per_day": per_day,
         "per_model": per_model,
+        "per_agent": per_agent,
     }))
 }
 
@@ -502,6 +510,28 @@ async fn ollama_models(state: State<'_, AppState>) -> Result<Vec<String>, String
 async fn ollama_pull(state: State<'_, AppState>, model: String) -> Result<(), String> {
     let config = NervConfig::load(&state.project_root).map_err(|e| e.to_string())?;
     nerv_brain::llm::ollama::ollama_pull(&config.models.router.base_url, &model).await
+}
+
+/// Delete a local Ollama model (模型管理: 删).
+#[tauri::command]
+async fn ollama_delete(state: State<'_, AppState>, model: String) -> Result<(), String> {
+    let config = NervConfig::load(&state.project_root).map_err(|e| e.to_string())?;
+    let base = config.models.router.base_url;
+    let response = reqwest::Client::new()
+        .delete(format!("{base}/api/delete"))
+        .json(&serde_json::json!({"name": model}))
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    if body.get("error").is_some() {
+        return Err(format!(
+            "ollama delete failed: {}",
+            body["error"].as_str().unwrap_or("?")
+        ));
+    }
+    Ok(())
 }
 
 /// Wizard step 3: persist cloud API keys into personal/api_keys.env
@@ -772,6 +802,7 @@ fn main() {
             hardware_profile,
             ollama_models,
             ollama_pull,
+            ollama_delete,
             save_api_keys,
             save_channels,
             memory_stats,
